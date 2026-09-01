@@ -105,7 +105,7 @@
     "officeparser": "^7.2.3",
     "openai": "^6.39.1",
     "pdf-parse": "^2.4.5",
-    "pdfjs-dist": "^6.1.200",
+    "pdfjs-dist": "^6.2.108",
     "pptxgenjs": "^4.0.1",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
