@@ -30,7 +30,11 @@ const SLEEP_CMD = IS_WIN
   ? 'Start-Sleep -Seconds 30; Write-Output done'
   : 'sleep 30; echo done'
 
-function waitForBgExit(processId: string, timeoutMs = 8000): Promise<ShellBackgroundExitEvent> {
+// CI runners (Windows especially) can take well over 8 s to spawn and reap a shell; the vitest
+// per-test budget is 45 s, so a wider wait on CI turns a scheduling hiccup back into a pass.
+const BG_EXIT_TIMEOUT_MS = process.env.CI ? 30_000 : 8000
+
+function waitForBgExit(processId: string, timeoutMs = BG_EXIT_TIMEOUT_MS): Promise<ShellBackgroundExitEvent> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       shellBackgroundBus.off('bg-exit', onExit)
