@@ -203,12 +203,14 @@ export function evaluateMetaLiteral(metaSource: string): WorkflowMeta {
   try {
     const ctx = vm.createContext(Object.create(null) as object)
     const script = new vm.Script(wrapped, { filename: 'workflow-meta.js' })
-    result = script.runInContext(ctx, { timeout: 100 })
+    // 1 s, not 100 ms: a literal evaluates in microseconds, but under a loaded machine (the full
+    // test suite, a busy build) the vm can be starved past 100 ms and a valid script is rejected.
+    result = script.runInContext(ctx, { timeout: 1000 })
   } catch (err) {
     if (err instanceof Error) {
       throw new WorkflowMetaError(`meta is not a pure literal: ${messageOf(err)}`)
     }
-    throw new WorkflowMetaError('meta is not a pure literal')
+    throw new WorkflowMetaError(`meta is not a pure literal: ${String(err)}`)
   }
 
   if (!result || typeof result !== 'object' || Array.isArray(result)) {
