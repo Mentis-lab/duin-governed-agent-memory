@@ -47,7 +47,8 @@ extraction (which builds the graph) sends note passages too. The full statement 
 A turn is several model calls, not one: the answer, a retrieval agent with up to a few tool
 calls, and extraction of what is worth remembering. The first graph build after connecting a
 key is a batched pass over the whole vault. Use a provider with a free tier or a small model
-first, watch the cost meter in the app, and set a per-turn ceiling in Settings.
+first and watch the token ticker in the app. Subagent and executor budgets have caps; there is
+no per-turn spend ceiling yet.
 
 **Can I use a local model?**
 Yes. Run [Ollama](https://ollama.com) and DUIN detects it. Quality depends on the model you

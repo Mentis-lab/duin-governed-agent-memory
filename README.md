@@ -80,7 +80,7 @@ work: [docs/getting-started.md](docs/getting-started.md#9-verify-a-download).
 <tr><td><b>An agent that asks first</b></td><td>Files, shell, MCP servers, skills, hooks and subagents. Shell commands, deletes, moves and writes outside your notes prompt for approval.</td></tr>
 <tr><td><b>Autonomy is earned</b></td><td>Background loops and unattended model passes ship off. Each has a switch in Settings, and the agent widens what it may do on its own only as it earns it.</td></tr>
 <tr><td><b>Works without a key</b></td><td>With no model connected, DUIN answers from your notes. Connect a key for OpenAI, Anthropic, Google Gemini, DeepSeek, Moonshot, Zhipu, DashScope (Qwen), xAI, Mistral, Groq, DeepInfra, GitHub Models or OpenRouter, or run a local model through Ollama.</td></tr>
-<tr><td><b>Your files, your language</b></td><td>Plain Markdown in a folder you own. An Obsidian vault is a valid folder: wikilinks resolve, and DUIN adds four Markdown files and two dot folders you can ignore in git. Interface in English, Chinese and Japanese.</td></tr>
+<tr><td><b>Your files, your language</b></td><td>Plain Markdown in a folder you own. An Obsidian vault is a valid folder: wikilinks resolve. DUIN adds four Markdown files in the root plus its own state folders (<code>.brain/</code>, <code>.duin/</code>, <code>.trash/</code>, <code>_agui_outputs/</code>), all plain text you can ignore in sync or git. Interface in English, Chinese and Japanese.</td></tr>
 </table>
 
 ## What DUIN is, and is not
@@ -109,9 +109,10 @@ The full list, with what is planned for each: [#10](https://github.com/Mentis-la
 1. Choose any folder of Markdown, including an empty one. DUIN writes four foundation files
    (`ME.md`, `BRAIN.md`, `SOUL.md`, `GOALS.md`) and two dot folders (`.brain/`, `.duin/`) into it.
    Everything it keeps is plain text you can read and edit.
-2. Optional: connect a model in Settings → API Keys, or run Ollama. Keys are stored in the OS
-   keychain. Once a key is saved, DUIN builds the entity graph from your notes; that takes minutes
-   on a large vault.
+2. Optional: connect a model in Settings → API Keys, or run Ollama. Keys are stored encrypted with
+   the OS credential store (Keychain, DPAPI, Secret Service). Once a key is saved, DUIN offers to
+   build the entity graph from your notes; that sends your notes to the provider in batches and
+   takes minutes on a large vault.
 3. Ask your first question. Keyless, you get an extractive answer from your notes. With a key,
    a conversational answer that cites them.
 

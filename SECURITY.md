@@ -79,7 +79,7 @@ These are the permissive surfaces and how a fresh public install ships.
 | **File tools** | Reads and in-vault writes are ungated. Deletes and moves go to `.trash/` and prompt. Writes outside the vault prompt and need a granted folder. | Settings → General |
 | **Catastrophic-command screen** | Always on, in both access modes. A deny list for drive-root deletes, `format`/`mkfs`/`diskpart`, raw device writes, shutdown, disabling antivirus or the firewall, registry-hive deletes, shadow-copy deletion, boot-config deletion, fork bombs. It is a floor, not a sandbox. | `electron/services/local-brain/command-screen.ts` |
 | **MCP servers** | Two seeds are present but **disabled**: a Node REPL (arbitrary JavaScript in a `vm`, with `fetch`) and Chrome via `npx -y @playwright/mcp`. Enabling either runs code with your privileges; the Chrome seed also downloads an npm package. Servers you add prompt with a native dialog. | Customize → Connectors |
-| **Hooks** | **On**, with a toggle. Three seeded JavaScript hooks (session audit, destructive-command guard, tool audit) run in a frozen `vm` with no filesystem or network. Creating or editing a hook prompts with a native dialog. Legacy shell hooks inherit the full environment. | Settings → Hooks |
+| **Hooks** | **On**, with a toggle. Three seeded JavaScript hooks (session audit, destructive-command guard, tool audit) run in a Node `vm` context that exposes no filesystem or network APIs. Node documents `vm` as not a security boundary, so the real boundary is the native dialog on hook creation and edit. Creating or editing a hook prompts with a native dialog. Legacy shell hooks inherit the full environment. | Settings → Hooks |
 | **External executor** (`delegate_task`) | Enabled, **requires approval** on every call, and refuses under the unattended posture. Runs the DeepSeek Harness as a child process in an isolated git worktree; needs a DeepSeek key. | Settings → Executors |
 | **Background autonomy, loops, automations** | **Off.** Unattended model work (vault-wide extraction, recurring checks) is gated behind these switches or an explicit consent. | Settings → Loops, Settings → Automations |
 | **Channels** (Telegram, Discord, Slack, Feishu, WeCom, DingTalk, Email) | Not started until configured. Pairing is deny-first; an inbound message never carries the execution token, so it cannot run shell commands or send mail on its own. | Settings → Channels |
@@ -132,7 +132,7 @@ Settings → General.
   process under your account can read them.
 - No Electron fuses and no asar integrity: `--inspect`, `--remote-debugging-port` and
   `NODE_OPTIONS` are honored by the binary.
-- The conversation database is not encrypted, and the encryption option in Settings is not
-  functional in this release.
+- The conversation database is not encrypted, and the encryption section in Settings is
+  hidden in this release because the SQLCipher binding is not bundled.
 - The bundled encoder models are fetched from Hugging Face without a hash pin when a build lacks
   them.
