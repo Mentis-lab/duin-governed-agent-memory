@@ -174,3 +174,10 @@ Every contribution is made under the
 [Developer Certificate of Origin 1.1](https://developercertificate.org/): by opening a PR you
 certify that you have the right to submit the work under the MIT License. Sign-off trailers
 (`git commit -s`) are welcome; CI does not enforce them.
+
+## Running a second DUIN beside an installed one
+
+Give the second instance its own state: `DUIN_USER_DATA_DIR=<dir>` (user data) and
+`DUIN_BRAIN_PORT=8899` (its brain listens there instead of `8799`; the bridge, the renderer and
+every self-call follow the port). `BF_DEBUG_PORT=9444` adds DevTools over CDP. `DUIN_TURN_STALL_MS`
+raises the 90 s idle budget when a slow local model is the engine.

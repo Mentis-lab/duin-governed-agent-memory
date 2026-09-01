@@ -62,7 +62,7 @@ describe.skipIf(!HAS_NATIVE_SQLITE)('backup-runner (PS5)', () => {
     const insert = db.prepare('INSERT INTO t (v) VALUES (?)')
     for (let i = 0; i < 50; i++) insert.run(`val-${i}`)
     db.close()
-  })
+  }, 60_000)
 
   afterEach(() => {
     // Best-effort temp cleanup. On Windows, better-sqlite3 13 (N-API) can hold the sqlite file
@@ -75,7 +75,7 @@ describe.skipIf(!HAS_NATIVE_SQLITE)('backup-runner (PS5)', () => {
     } catch (e) {
       void e // EPERM: OS still holds a sqlite handle; leave the temp dir for OS cleanup
     }
-  })
+  }, 60_000)
 
   it('createBackup creates a valid copy under YYYY-MM-DD filename', async () => {
     const info = await createBackup(dbPath, backupDir, 'test')

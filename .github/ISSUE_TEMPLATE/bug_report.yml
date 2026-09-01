@@ -12,8 +12,8 @@ body:
     id: version
     attributes:
       label: DUIN version
-      description: The release tag or installer file name (for example `DUIN-x64.exe` from v0.9.0). For a source build, the commit SHA.
-      placeholder: v0.9.0
+      description: The release tag or installer file name (for example `DUIN-x64.exe` from v0.1.0). For a source build, the commit SHA.
+      placeholder: v0.1.0
     validations:
       required: true
   - type: dropdown

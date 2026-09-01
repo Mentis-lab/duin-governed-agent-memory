@@ -4,7 +4,7 @@
 // ARCHITECTURE/BRANDING.md. Keep this in sync with electron/brand.ts (main process);
 // that file lists all four spots to update when rebranding.
 export const PRODUCT_NAME = 'DUIN'
-export const PRODUCT_TAGLINE = 'Your second brain agent'
+export const PRODUCT_TAGLINE = 'A local-first second brain for your notes'
 // DUIN is built on the open-source Lamprey-Harness (USS-Parks/Lamprey-Harness, MIT).
 export const FRAMEWORK_CREDIT = 'Built on Lamprey-Harness'
 // Public product repository. The Help menu's "View on GitHub" / "Report an issue" items

@@ -1,8 +1,8 @@
 {
   "name": "duin",
   "productName": "DUIN",
-  "version": "0.9.0",
-  "description": "DUIN — your second brain agent: an animated 2D/3D causal-graph brain with foresight, plus a coding-capable agent harness for non-coders.",
+  "version": "0.1.0",
+  "description": "Local-first second brain: turn a folder of Markdown notes into a knowledge graph you can ask, see, and hand to an agent.",
   "main": "./out/main/index.js",
   "bin": {
     "duin": "./out/main/cli.js"

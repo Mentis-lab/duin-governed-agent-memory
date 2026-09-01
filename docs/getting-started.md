@@ -135,3 +135,28 @@ The `lamprey` names are inherited from the upstream harness; see
 - **Remove DUIN:** uninstall the app and delete the user-data directory. Your vault keeps the
   foundation files and the `.brain/`, `.duin/`, `.trash/` and `_agui_outputs/` folders; delete
   them if you want the folder back exactly as it was.
+
+## 9. Verify a download
+
+Each release attaches `latest.yml` (Windows), `latest-mac.yml` and `latest-linux.yml`. The
+`sha512` field is the base64-encoded SHA-512 of each file. Compute yours and compare:
+
+```powershell
+# Windows (PowerShell)
+[Convert]::ToBase64String([Security.Cryptography.SHA512]::Create().ComputeHash([IO.File]::ReadAllBytes("$PWD\DUIN-x64.exe")))
+```
+
+```bash
+# macOS / Linux
+openssl dgst -sha512 -binary DUIN-arm64.dmg | base64
+```
+
+Installers are unsigned for now. Windows shows a SmartScreen warning (**More info → Run
+anyway**); macOS needs a right-click → **Open** the first time. Code signing and notarization
+are planned.
+
+## 10. Updates
+
+An installed DUIN checks GitHub Releases at launch and every six hours (Settings → General to
+turn this off). Until the builds are signed, updates are notify-only: DUIN tells you a new
+version exists and you download and install it yourself.

@@ -1,220 +1,182 @@
 # DUIN
 
-**A second brain that thinks in your notes.**
-
-DUIN is a local-first second brain for people who think in notes. Point it at a folder of
-Markdown and it builds a causal knowledge graph you can ask questions of, see as a living
-map, and hand to an agent that acts on your files with your approval. Every answer is
-grounded in your own notes and shows which notes it stood on. DUIN forecasts how open
-threads converge, and it learns your judgment over time. It runs on your machine, and you
-choose which model, if any, it talks to.
-
-[![CI](https://img.shields.io/github/actions/workflow/status/Mentis-lab/DUIN/ci.yml?branch=main)](https://github.com/Mentis-lab/DUIN/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/Mentis-lab/DUIN)](https://github.com/Mentis-lab/DUIN/releases/latest)
-[![License](https://img.shields.io/github/license/Mentis-lab/DUIN)](LICENSE)
-
-**Status: 0.9 — first public release, expect rough edges.**
+### A local-first second brain: turn a folder of Markdown notes into a knowledge graph you can ask, see, and hand to an agent.
 
 <p align="center">
-  <img src="docs/assets/screenshot-graph.png" alt="A real vault of roughly 1,200 notes in the Brain view: clusters, hubs and the threads between them" width="90%" />
+  <a href="https://github.com/Mentis-lab/DUIN/releases/latest"><b>Download</b></a> ·
+  <a href="docs/getting-started.md">Getting started</a> ·
+  <a href="docs/faq.md">FAQ</a> ·
+  <a href="docs/architecture.md">Architecture</a> ·
+  <a href="https://github.com/Mentis-lab/DUIN/discussions">Discussions</a> ·
+  <a href="https://github.com/Mentis-lab/DUIN/issues/new/choose">Report a bug</a> ·
+  <a href="SECURITY.md">Security</a>
 </p>
-<p align="center"><sub>A real vault of roughly 1,200 notes as DUIN sees it. The two captures below are from the fictional sample vault.</sub></p>
+
 <p align="center">
-  <img src="docs/assets/screenshot-chat.png" alt="A grounded answer citing the notes it stood on (local model)" width="45%" />
-  <img src="docs/assets/screenshot-onboarding.png" alt="First run: choose a folder of notes" width="45%" />
+  <a href="https://github.com/Mentis-lab/DUIN/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/Mentis-lab/DUIN/ci.yml?branch=main" /></a>
+  <a href="https://github.com/Mentis-lab/DUIN/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/Mentis-lab/DUIN" /></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/Mentis-lab/DUIN" /></a>
 </p>
 
+<p align="center">
+  <img src="docs/assets/screenshot-app.png" alt="DUIN with a real vault of roughly 1,200 notes: the Brain view, the chat composer and the Explorer surfaces" width="100%" />
+</p>
+<p align="center"><sub>DUIN with a real vault of roughly 1,200 notes.</sub></p>
 
----
+DUIN is a desktop app for people who think in Markdown. Point it at a folder of notes and it
+indexes them on your machine, draws the people, projects and decisions in them as a graph, and
+answers questions with citations to the notes it used. Connect a model when you want
+conversation and an agent that can act on your files; shell commands, deletes, moves and writes
+outside your vault ask you first.
 
-## Why DUIN
-
-- **Grounded answers with citations.** Retrieval runs on your machine: the embedding and
-  reranking encoders (`multilingual-e5-small`, `bge-reranker-base`, quantized ONNX) ship inside
-  the installers. Retrieval is a visible `search_notes` call, answers cite the notes they used,
-  and an evidence gate refuses to answer from thin evidence instead of guessing.
-- **A graph you can see.** Your notes become a causal graph of people, projects, decisions and
-  topics, drawn as a 2D map and an orbitable 3D field. Foresight engines track open loops,
-  predicted risks and where converging threads meet. Click a node to open a chat scoped to it.
-- **An agent with real tools.** Files, shell, MCP servers, skills, hooks and subagents, under a
-  capability allowlist and approval gates. A `preToolUse` hook can veto any call. Shell
-  commands, deletes, moves and writes outside your vault ask you first.
-- **Autonomy is earned, not assumed.** Background loops, automations and unattended model
-  passes ship off. Each has a switch in Settings, and the agent widens what it may do on its
-  own only as it earns it: per-action review, a rule-of-two floor, and cost ceilings.
-- **Works without a key.** With no model connected, DUIN answers from your notes (search plus
-  its own insights). Connect a key for OpenAI, Anthropic, Google Gemini, DeepSeek, Moonshot,
-  Zhipu, DashScope (Qwen), xAI, Mistral, Groq, DeepInfra, GitHub Models or OpenRouter, or run
-  a local model through Ollama. The list of providers lives in
-  `electron/services/providers/registry.ts`.
-- **Three languages.** The interface ships in English, Chinese and Japanese and follows your
-  OS language.
+**Status: 0.1, first public release. Expect rough edges.** The known ones, and what is planned
+for each: [#10](https://github.com/Mentis-lab/DUIN/issues/10).
 
 ---
 
 ## Download
 
-Installers are on [GitHub Releases](https://github.com/Mentis-lab/DUIN/releases/latest). They
-are large (several hundred MB) because the on-device encoders are bundled, so search works
+<p align="center">
+  <a href="https://github.com/Mentis-lab/DUIN/releases/latest/download/DUIN-x64.exe"><img alt="Download for Windows (x64)" src="https://img.shields.io/badge/Windows-x64%20installer%2C%20~650%20MB-0078D4" /></a>
+  <a href="https://github.com/Mentis-lab/DUIN/releases/latest/download/DUIN-arm64.dmg"><img alt="Download for macOS (Apple Silicon)" src="https://img.shields.io/badge/macOS-Apple%20Silicon%2C%20~710%20MB-111111" /></a>
+  <a href="https://github.com/Mentis-lab/DUIN/releases/latest/download/DUIN-x86_64.AppImage"><img alt="Download for Linux (AppImage)" src="https://img.shields.io/badge/Linux-AppImage%2C%20~950%20MB-777777" /></a>
+</p>
+
+Also: [`DUIN-amd64.deb`](https://github.com/Mentis-lab/DUIN/releases/latest/download/DUIN-amd64.deb)
+and [`DUIN-arm64.zip`](https://github.com/Mentis-lab/DUIN/releases/latest/download/DUIN-arm64.zip).
+
+No account. No key needed to start. Your notes and the search index stay on this machine.
+Installers are large because the on-device search encoders are bundled, so search works
 offline from the first launch.
 
-| Platform | File | Notes |
-| --- | --- | --- |
-| **Windows** (x64) | `DUIN-x64.exe` | Per-user NSIS installer, no admin needed. **Unsigned**: SmartScreen shows a warning on first run. Choose **More info → Run anyway**. |
-| **macOS** (Apple Silicon) | `DUIN-arm64.dmg` | Ad-hoc signed, not notarized. The first time, right-click the app and choose **Open** to get past Gatekeeper. |
-| **Linux** (x64) | `.AppImage` / `.deb` | Produced by CI but not yet tested by the maintainers. Reports welcome. |
-
-**Verify a download.** Each release attaches `latest.yml` (Windows), `latest-mac.yml` and
-`latest-linux.yml`; the `sha512` field is the base64-encoded SHA-512 of each file. Compute
-yours and compare:
-
-```powershell
-# Windows (PowerShell)
-[Convert]::ToBase64String([Security.Cryptography.SHA512]::Create().ComputeHash([IO.File]::ReadAllBytes("$PWD\DUIN-x64.exe")))
-```
-
-```bash
-# macOS / Linux
-openssl dgst -sha512 -binary DUIN-arm64.dmg | base64
-```
-
-**Updates.** An installed DUIN checks GitHub Releases at launch and every six hours
-(Settings → General to turn this off). Until the builds are signed, updates are notify-only:
-DUIN tells you a new version exists and you download and install it yourself.
-
-Prefer to build it yourself? See [Build from source](#build-from-source).
-
----
+**Unsigned builds, for now.** Windows shows a SmartScreen warning: choose **More info → Run
+anyway**. macOS: right-click the app and choose **Open** the first time. Linux builds come from
+CI and have not yet been run by the maintainers. How to verify a download, and how updates
+work: [docs/getting-started.md](docs/getting-started.md#9-verify-a-download).
 
 ## Try it in 60 seconds
 
-1. Install DUIN from the table above and launch it.
-2. When the welcome screen asks for a folder, point it at [`examples/sample-vault`](examples/sample-vault) from a
-   clone of this repository. It is a small **fictional** vault (made-up people, projects and
-   decisions), so you can see the graph before committing your own notes.
-3. Ask a question about the notes in the chat. No key is needed: DUIN answers from the notes
-   it indexed.
-4. Open the **Brain** tool. With no model connected you see the notes and their links. Connect
-   a model and DUIN extracts people, projects, decisions and relations into the graph.
+1. Install DUIN and launch it.
+2. Download [`DUIN-sample-vault.zip`](https://github.com/Mentis-lab/DUIN/releases/latest/download/DUIN-sample-vault.zip),
+   a small fictional studio's notes (3 projects, 8 people, 6 decisions), and unzip it anywhere.
+   Any folder of Markdown works just as well.
+3. When the welcome screen asks for a folder, choose that folder.
+4. Ask: **Why did we switch to LoRa?** · **What is blocking the community launch?** ·
+   **Who owns the enclosure redesign?** No key needed; the answers cite the notes they stood on.
+5. Open **Brain** to see the notes as a map. Connect a model (Settings → API Keys, or a running
+   Ollama) and DUIN extracts the people, projects and decisions into the graph.
+
+<p align="center">
+  <img src="docs/assets/screenshot-chat.png" alt="A grounded answer citing the notes it stood on (local model)" width="49%" />
+  <img src="docs/assets/screenshot-onboarding.png" alt="First run: choose a folder of notes" width="49%" />
+</p>
+<p align="center"><sub>The fictional sample vault: an answer with its three citations through a local Ollama model, and the first-run screen.</sub></p>
+
+## Why DUIN
+
+<table>
+<tr><td><b>Answers you can check</b></td><td>Every answer cites the notes it used. Retrieval and reranking run on your machine with bundled encoders. If your notes do not cover the question, DUIN says so instead of guessing.</td></tr>
+<tr><td><b>A graph you can see</b></td><td>People, projects, decisions and topics from your notes, as a 2D map and a 3D field. Open loops, predicted risks and converging threads are tracked over time. Click a node to chat about it.</td></tr>
+<tr><td><b>An agent that asks first</b></td><td>Files, shell, MCP servers, skills, hooks and subagents. Shell commands, deletes, moves and writes outside your notes prompt for approval.</td></tr>
+<tr><td><b>Autonomy is earned</b></td><td>Background loops and unattended model passes ship off. Each has a switch in Settings, and the agent widens what it may do on its own only as it earns it.</td></tr>
+<tr><td><b>Works without a key</b></td><td>With no model connected, DUIN answers from your notes. Connect a key for OpenAI, Anthropic, Google Gemini, DeepSeek, Moonshot, Zhipu, DashScope (Qwen), xAI, Mistral, Groq, DeepInfra, GitHub Models or OpenRouter, or run a local model through Ollama.</td></tr>
+<tr><td><b>Your files, your language</b></td><td>Plain Markdown in a folder you own. An Obsidian vault is a valid folder: wikilinks resolve, and DUIN adds four Markdown files and two dot folders you can ignore in git. Interface in English, Chinese and Japanese.</td></tr>
+</table>
+
+## What DUIN is, and is not
+
+- It reads a folder of Markdown you already have. Keep editing it with Obsidian or any editor;
+  DUIN keeps its own state in `.brain/` and `.duin/`.
+- It is a second brain with an agent attached, not a coding agent with notes attached. The
+  graph, the grounding and the memory are the product.
+- It is local-first, not offline-only. Search and the note graph work with no key. Entity
+  extraction and conversational answers need a model: a cloud key or a local Ollama.
+- It is single-user. No sync, no team space, no server mode. Nothing listens beyond `127.0.0.1`.
+
+## Known limitations in 0.1
+
+- Installers are unsigned; updates are notify-only until signing lands.
+- Linux builds come from CI and have not been run by the maintainers.
+- With a key connected, one turn is several model calls, and the first graph build reads the
+  whole vault. Start with a small model or a free tier.
+- Slow local models can trip the 90 s idle budget (`DUIN_TURN_STALL_MS` raises it).
+- The conversation database is not encrypted. Use disk encryption.
+
+The full list, with what is planned for each: [#10](https://github.com/Mentis-lab/DUIN/issues/10).
 
 ## Use it with your own notes
 
-1. **Install** DUIN and launch it.
-2. **Choose a notes folder.** Any folder of Markdown works, including an empty one. DUIN
-   writes four foundation files (`ME.md`, `BRAIN.md`, `SOUL.md`, `GOALS.md`) and two dot
-   folders (`.brain/`, `.duin/`) into it. Everything it keeps is plain text you can read and
-   edit.
-3. **Optional: connect a model.** Settings → API Keys, or the "Connect a model" button on the
-   ready screen. Keys are stored in the OS keychain. Once a key is saved, DUIN builds the
-   entity graph from your notes in the background. This takes minutes on a large vault.
-4. **Ask your first question.** Keyless, you get an extractive answer from your notes. With a
-   key, you get a conversational answer that cites them.
+1. Choose any folder of Markdown, including an empty one. DUIN writes four foundation files
+   (`ME.md`, `BRAIN.md`, `SOUL.md`, `GOALS.md`) and two dot folders (`.brain/`, `.duin/`) into it.
+   Everything it keeps is plain text you can read and edit.
+2. Optional: connect a model in Settings → API Keys, or run Ollama. Keys are stored in the OS
+   keychain. Once a key is saved, DUIN builds the entity graph from your notes; that takes minutes
+   on a large vault.
+3. Ask your first question. Keyless, you get an extractive answer from your notes. With a key,
+   a conversational answer that cites them.
 
-The step-by-step walkthrough, including what lands on disk, is in
+The step-by-step walkthrough, including what lands on disk:
 [docs/getting-started.md](docs/getting-started.md).
 
----
+## Privacy and cloud usage
+
+- Your notes stay where they are, as Markdown. DUIN keeps its index, conversations and settings in
+  the app's user-data directory and its own state in your vault under `.brain/` and `.duin/`.
+- Embedding and reranking run on your machine. There is no telemetry, and crash reports are not
+  uploaded.
+- Without a key, the only network traffic is the update check against GitHub Releases
+  (Settings → General to disable) and, if your build lacks the bundled encoders, a one-time
+  model download.
+- When you connect a key, your question plus relevant note excerpts go to that provider on every
+  turn, and DUIN's graph building sends your notes to it in batches. DUIN asks before the first
+  vault-wide extraction; recurring loops stay off until you enable Background autonomy.
+- The agent asks before it acts. Full computer access (Settings → General, off by default)
+  removes those prompts for local operations. The threat model: [SECURITY.md](SECURITY.md).
 
 ## Build from source
 
-Requirements:
-
-- **Node.js 22.12 or newer** and npm.
-- **git**.
-- **Windows:** clone into a short path (for example `C:\src\DUIN`) or enable long paths
-  (`LongPathsEnabled`). Deep `node_modules` trees exceed `MAX_PATH` otherwise.
-- **Disk:** about 4 GB free for a full installer build (`node_modules` ~1.5 GB, Electron
-  ~110 MB, bundled models ~412 MB, `dist/` ~2.3 GB).
-- **Optional, for contributors who rebuild native modules:** Python 3 and a C/C++ toolchain
-  (Visual Studio Build Tools, Xcode Command Line Tools, or `build-essential`). A plain
-  `npm run setup` does not need them: it installs with scripts disabled and uses the prebuilt
-  `better-sqlite3` binding (a plain `npm ci` triggers a no-op native build that still wants Python).
+Node.js 22.12 or newer and git. On Windows, clone into a short path or enable long paths.
 
 ```bash
 git clone https://github.com/Mentis-lab/DUIN
 cd DUIN
 npm run setup        # npm ci --ignore-scripts + the Electron binary; no Python or C++ needed
 npm run dev          # launch the app in development
+npm run typecheck && npm run lint && npm test
+npm run build:win    # or build:mac / build:linux → ./dist (fetches ~412 MB of encoders once)
 ```
 
-To run a second DUIN beside an installed one (for development or QA), give it its own state:
-`DUIN_USER_DATA_DIR=<dir>` (user data) and `DUIN_BRAIN_PORT=8899` (its brain then listens there
-instead of `8799`), then point that instance at its own brain in Settings → Brain (URL
-`http://127.0.0.1:8899/agui`); the renderer's default stays `8799`. `BF_DEBUG_PORT=9444` adds
-DevTools over CDP.
-
-Check and build:
-
-```bash
-npm run typecheck    # both tsc projects
-npm run lint         # eslint
-npm test             # vitest
-npm run build        # electron-vite build → ./out (no installer)
-```
-
-Build an installer:
-
-```bash
-node scripts/fetch-bundled-models.mjs   # ~412 MB of encoders, once (cached)
-npm run build:win                       # NSIS installer + zip → ./dist
-npm run build:mac                       # dmg + zip
-npm run build:linux                     # AppImage + deb
-```
-
-Skipping `fetch-bundled-models.mjs` produces a smaller installer that downloads the encoders
-from Hugging Face on first run. Git hooks are opt-in (`npm run hooks:install`); see
+Contributor setup, running a second DUIN beside an installed one, and the checks CI runs:
 [CONTRIBUTING.md](CONTRIBUTING.md).
-
----
-
-## Privacy and cloud usage
-
-- **Your notes stay where they are**, as Markdown. DUIN keeps its index, conversations and
-  settings in the app's user-data directory and writes its own state into your vault under
-  `.brain/` and `.duin/` (see [docs/getting-started.md](docs/getting-started.md#7-where-things-live)).
-- **Embedding and reranking run on your machine.** There is no telemetry, and crash reports
-  are not uploaded.
-- **Without a key**, the only network traffic is the update check against GitHub Releases
-  (Settings → General to disable) and, if your build lacks the bundled encoders, a one-time
-  model download from Hugging Face.
-- **When you connect a key, your question plus relevant note excerpts go to that provider**
-  on every turn. DUIN's own background work uses the same provider: extracting entities from
-  your notes to build the graph, and generating titles if you turn that on. Vault-wide passes
-  and recurring loops are gated: DUIN asks before the first vault-wide extraction, and the
-  recurring loops stay off until you enable Background autonomy in Settings → Loops. A keyed
-  turn is several model calls (answer, retrieval agent, extraction), so expect real usage on a
-  metered account.
-- **Web search** (`web_search`) queries DuckDuckGo only when the model calls the tool.
-- **The agent asks before it acts.** Shell commands, deletes, moves and writes outside the
-  vault prompt for approval. Full computer access (Settings → General, off by default) removes
-  those prompts for local operations. The threat model is in [SECURITY.md](SECURITY.md).
-
----
 
 ## Documentation
 
-- [Getting started](docs/getting-started.md): first run, step by step.
+- [Getting started](docs/getting-started.md): first run, step by step; verifying a download; updates.
 - [Architecture](docs/architecture.md): the three processes, the brain server on
   `127.0.0.1:8799`, storage layout, providers, skills, MCP, and the AG-UI contract for
-  connecting an external brain (the default endpoint is `http://127.0.0.1:8799/agui`;
-  `DUIN_BRAIN_URL` points DUIN at another AG-UI server).
-- [Skills](docs/skills.md): how skills are authored, loaded and rendered.
-- [FAQ](docs/faq.md): unsigned builds, offline use, model downloads, common build errors.
-- [What DUIN is](docs/constitution.md) and the [glossary](docs/glossary.md).
-- [Security policy](SECURITY.md), [contributing](CONTRIBUTING.md),
-  [changelog](CHANGELOG.md), [releasing](docs/RELEASING.md).
+  connecting an external brain (default endpoint `http://127.0.0.1:8799/agui`; `DUIN_BRAIN_URL`
+  points DUIN at another AG-UI server).
+- [Skills](docs/skills.md), [FAQ](docs/faq.md), [what DUIN is](docs/constitution.md),
+  [glossary](docs/glossary.md).
+- [Security policy](SECURITY.md), [contributing](CONTRIBUTING.md), [changelog](CHANGELOG.md),
+  [releasing](docs/RELEASING.md).
 
----
+## Community
+
+- Questions: [Discussions → Q&A](https://github.com/Mentis-lab/DUIN/discussions/categories/q-a).
+- Ideas and votes: [Discussions → Ideas](https://github.com/Mentis-lab/DUIN/discussions/categories/ideas).
+- Bugs: [Issues](https://github.com/Mentis-lab/DUIN/issues/new/choose). Security:
+  [private report](https://github.com/Mentis-lab/DUIN/security/advisories/new).
+- What is planned: [#10](https://github.com/Mentis-lab/DUIN/issues/10).
+
+There is no Discord yet: one maintainer, and Discussions stay searchable. If DUIN is useful to
+you, a star helps others find it.
 
 ## Contributing
 
 Bug reports, fixes and documentation improvements are welcome. Read
 [CONTRIBUTING.md](CONTRIBUTING.md) for the setup, the checks every PR must pass, and the PR
-size guidance. Security issues go through
-[private vulnerability reporting](https://github.com/Mentis-lab/DUIN/security/advisories/new),
-not public issues.
-
----
+size guidance.
 
 ## Attribution
 

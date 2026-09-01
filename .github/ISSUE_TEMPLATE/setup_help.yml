@@ -1,0 +1,35 @@
+name: Setup or install help
+description: DUIN will not install, launch, or find your notes.
+title: "[Setup]: "
+labels: ["setup"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Quick checks first: the [FAQ](https://github.com/Mentis-lab/DUIN/blob/main/docs/faq.md) covers the SmartScreen and Gatekeeper prompts, offline use and the model download. Questions rather than problems fit better in [Discussions](https://github.com/Mentis-lab/DUIN/discussions).
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: How did you install
+      options: ["DUIN-x64.exe", "DUIN-arm64.dmg", "AppImage", ".deb", "npm run dev (source)"]
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS version
+      placeholder: Windows 11 23H2 / macOS 15.1 / Ubuntu 24.04
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happens
+      description: Where it stops, the exact text of any dialog, and whether a model key was connected.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Console output (View → Toggle DevTools → Console), private data removed
+      render: text

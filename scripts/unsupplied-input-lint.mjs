@@ -52,7 +52,10 @@ const SCAN_DIRS = ['electron', 'src']
 // unsupplied field is a dead capability rather than an unused struct member.
 const OPTIONS_TYPE = /(Input|Options|Opts|Config|Params|Args|Deps)$/
 
-const isTest = (p) => /\.(test|spec)\.[cm]?[jt]sx?$/.test(p) || /[\\/]__tests__[\\/]/.test(p)
+// Fixtures and *.eval.ts suites serve tests and offline evals; they are neither production readers
+// nor production suppliers (the public source tree ships without the eval suites).
+const isTest = (p) =>
+  /\.(test|spec|eval)\.[cm]?[jt]sx?$/.test(p) || /[\\/](__tests__|__fixtures__)[\\/]/.test(p)
 const isSource = (p) => /\.[cm]?[jt]sx?$/.test(p) && !/\.d\.ts$/.test(p)
 
 function walk(dir, out = []) {

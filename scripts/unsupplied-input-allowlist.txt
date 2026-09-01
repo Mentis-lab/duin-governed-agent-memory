@@ -94,8 +94,6 @@ electron/shared/env-number.ts::EnvNumberOptions.integer
 electron/ipc/conversation.ts::ForkParams.seedBlobJson
 electron/ipc/worktree.ts::WorktreeCreateInput.baseRef
 electron/services/agent-bench/harness.ts::RunBenchOptions.onResult
-electron/services/brain/__fixtures__/eval-harness.ts::StageOpts.neighbourCap
-electron/services/brain/__fixtures__/eval-harness.ts::TurnOpts.minGapMs
 electron/services/brain/brain-root.ts::BrainConfig.linkedSources
 electron/services/brain/cjk-tokens.ts::CjkTokenizeOptions.minLatin
 electron/services/brain/coherence-lint.ts::CoherenceLintInput.benchmarks

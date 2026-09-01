@@ -10,13 +10,13 @@ All notable changes to **DUIN** are documented here. The project follows
 > [lamprey-harness](https://github.com/USS-Parks/Lamprey-Harness) by Basho Parks. See
 > [docs/branding.md](docs/branding.md).
 >
-> Versions between `0.2.0` and `0.9.0` were private tester builds (`v0.8.0-tester.N`) and are
-> not listed separately. `v0.9.0` is the first public release; public history and tags start
+> The Brainframe-era entries below and the private tester builds (`v0.8.0-tester.N`) predate the
+> public line and are not listed separately. `v0.1.0` is the first public release; public history and tags start
 > there.
 
 ## [Unreleased]
 
-## [0.9.0] - 2026-09-04
+## [0.1.0] - 2026-09-01
 
 The first public release. Since the last Brainframe entry the product was renamed, the brain
 moved in-process, and the agent, graph, memory and governance layers were built out.
@@ -162,7 +162,7 @@ moved in-process, and the agent, graph, memory and governance layers were built 
 - A plugin install can no longer spawn an MCP stdio connector without the approval dialog, and
   an extra slash cannot walk a spawn past the install gate.
 
-## 0.2.0 - 2026-06-20 (Brainframe, not published)
+## Brainframe 0.2.0 - 2026-06-20 (predecessor, not published)
 
 The built-in local brain: Brainframe became useful with no external server.
 
@@ -183,7 +183,7 @@ The built-in local brain: Brainframe became useful with no external server.
 - Welcome and onboarding rebranded and made skippable; the brain became the default model and
   the first workspace tool; 3D graph framing and node visibility.
 
-## 0.1.0 - 2026-06-20 (Brainframe, not published)
+## Brainframe 0.1.0 - 2026-06-20 (predecessor, not published)
 
 First standalone build of **Brainframe**: a desktop agent shell with an animated 2D/3D
 brain-graph console and a pluggable brain connector, built on lamprey-harness and rebranded as
@@ -206,5 +206,5 @@ a standalone product.
 - Rebranded from "Lamprey" to **Brainframe**, with the product name centralized in
   `electron/brand.ts` and `src/lib/brand.ts`.
 
-[Unreleased]: https://github.com/Mentis-lab/DUIN/compare/v0.9.0...HEAD
-[0.9.0]: https://github.com/Mentis-lab/DUIN/releases/tag/v0.9.0
+[Unreleased]: https://github.com/Mentis-lab/DUIN/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/Mentis-lab/DUIN/releases/tag/v0.1.0

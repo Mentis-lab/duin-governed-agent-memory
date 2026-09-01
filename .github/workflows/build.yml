@@ -3,8 +3,8 @@ name: Build DUIN
 # Installer builds run ONLY on a version tag or by hand. Every push would otherwise
 # run three ~25-minute packaging jobs and upload ~650 MB per platform.
 #
-# Release attach: a tag with a prerelease component (`v0.9.0-rc.1`) publishes a
-# prerelease; a plain `v0.9.0` publishes a full release, which is the only kind
+# Release attach: a tag with a prerelease component (`v0.1.0-rc.1`) publishes a
+# prerelease; a plain `v0.1.0` publishes a full release, which is the only kind
 # electron-updater offers to installed builds (it reads /releases/latest).
 on:
   push:
@@ -148,6 +148,11 @@ jobs:
         env:
           DUIN_MODEL_CACHE: ${{ github.workspace }}/.model-cache
 
+      - name: Package the sample vault
+        run: |
+          mkdir -p dist
+          (cd examples && zip -qr ../dist/DUIN-sample-vault.zip sample-vault)
+          ls -la dist/DUIN-sample-vault.zip
       - name: Build AppImage + deb
         run: npm run build:linux
         env:
@@ -185,6 +190,7 @@ jobs:
           files: |
             dist/*.AppImage
             dist/*.deb
+            dist/DUIN-sample-vault.zip
             dist/latest-linux.yml
             dist/*.blockmap
 

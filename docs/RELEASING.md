@@ -9,7 +9,7 @@ How a version of DUIN gets from `main` to GitHub Releases. Maintainers only.
    and strands anyone who already downloaded it. If a release is wrong, ship `X.Y.Z+1`.
 2. **Public releases carry no prerelease suffix.** The updater in installed apps only considers
    a non-prerelease "latest" whose version is greater than the installed one. A tag with a
-   hyphen (`v0.9.0-rc.1`) is published as a prerelease and is invisible to installed apps; use
+   hyphen (`v0.1.0-rc.1`) is published as a prerelease and is invisible to installed apps; use
    that for rehearsals.
 3. **`package.json` `version` is the single source of the version.** Artifact names are
    versionless (`DUIN-x64.exe`); `latest.yml` carries the version the updater reads.
@@ -18,7 +18,7 @@ How a version of DUIN gets from `main` to GitHub Releases. Maintainers only.
 ## Steps
 
 1. **Green `main`.** CI (lint, test on Ubuntu and Windows) is green at the commit you will tag.
-2. **Bump the version.** Edit `version` in `package.json` (`0.9.0`, no suffix).
+2. **Bump the version.** Edit `version` in `package.json` (`0.1.0`, no suffix).
 3. **Update `CHANGELOG.md`.** Move the `[Unreleased]` entries into `## [X.Y.Z] - YYYY-MM-DD`,
    add the compare/tag links at the bottom, and leave an empty `[Unreleased]`.
 4. **Write the release notes.** `docs/release-notes/vX.Y.Z.md`: headline bullets, what is
