@@ -87,7 +87,7 @@ jobs:
         # storing a second ~650 MB copy as an artifact filled the 10 GB quota and, because
         # a failed upload aborts the job, took the release attach down with it.
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: duin-windows
           path: dist/*.exe
@@ -164,7 +164,7 @@ jobs:
       - name: Upload Linux artifacts
         # MANUAL RUNS ONLY (see build-windows).
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: duin-linux
           path: |
@@ -267,7 +267,7 @@ jobs:
       - name: Upload DMG artifact
         # MANUAL RUNS ONLY (see build-windows).
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: duin-macos
           path: dist/*.dmg
