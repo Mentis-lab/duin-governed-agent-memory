@@ -40,7 +40,7 @@ jobs:
       # them into resources/models. Cached by content of the fetch script, so a model
       # list change re-downloads and an unchanged one does not.
       - name: Cache bundled encoder models
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .model-cache
           key: duin-models-${{ hashFiles('scripts/fetch-bundled-models.mjs') }}
@@ -138,7 +138,7 @@ jobs:
         run: npx tsc --noEmit -p tsconfig.web.json
 
       - name: Cache bundled encoder models
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .model-cache
           key: duin-models-${{ hashFiles('scripts/fetch-bundled-models.mjs') }}
@@ -215,7 +215,7 @@ jobs:
         run: npx tsc --noEmit -p tsconfig.web.json
 
       - name: Cache bundled encoder models
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .model-cache
           key: duin-models-${{ hashFiles('scripts/fetch-bundled-models.mjs') }}
