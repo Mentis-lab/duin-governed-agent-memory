@@ -1,0 +1,73 @@
+name: Bug report
+description: Something in DUIN does not work as documented.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Security issues go through
+        [private vulnerability reporting](https://github.com/Mentis-lab/DUIN/security/advisories/new),
+        not this form.
+  - type: input
+    id: version
+    attributes:
+      label: DUIN version
+      description: The release tag or installer file name (for example `DUIN-x64.exe` from v0.9.0). For a source build, the commit SHA.
+      placeholder: v0.9.0
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Windows
+        - macOS (Apple Silicon)
+        - Linux
+        - Source build (npm run dev)
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS version
+      placeholder: Windows 11 23H2 / macOS 15.1 / Ubuntu 24.04
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Numbered steps from launch. Say whether a model key was connected and which provider.
+      placeholder: |
+        1. Launch DUIN, choose folder X
+        2. …
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Console output
+      description: View → Toggle DevTools → Console, or the terminal output of `npm run dev`. Remove anything private (note contents, keys, paths you do not want public).
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: I removed private data (note contents, API keys, personal paths) from this report.
+          required: true

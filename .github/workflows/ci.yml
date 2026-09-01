@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Static gate (lint, tsc, script lints)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          # Full history. The script lints resolve commits against the tree; the default
+          # shallow clone made every run red from 2026-08-11 to 2026-08-27.
+          fetch-depth: 0
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      # Lint + typecheck need only JS deps and @types. `--ignore-scripts` skips the
+      # Electron binary download; better-sqlite3 ships an N-API prebuild that loads
+      # without any build step, so nothing else is lost.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      # verify:proof is the canonical proof policy gate. `--no-tests` because the
+      # sibling `test` jobs run vitest; this job is the lint + tsc + script-lint
+      # composition check.
+      - name: Proof policy static gate
+        run: npm run verify:proof -- --no-tests
+
+  test:
+    name: Tests (ubuntu, coverage)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      # Vitest runs under Node and imports `electron`, whose main export throws
+      # unless the binary is present: install deps without scripts, then fetch just
+      # the Electron binary. The native DB is the shipped better-sqlite3 prebuild,
+      # so the SQLite-backed suites run for real here (the probe below proves it).
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Install Electron binary
+        run: node node_modules/electron/install.js
+
+      - name: Assert the native SQLite binding is usable
+        env:
+          DUIN_REQUIRE_NATIVE_SQLITE: '1'
+        run: node scripts/verify-proof.cjs --list-native-skips
+
+      - name: Unit + integration tests (with coverage)
+        # `--coverage` prints the table in the CI log AND enforces the thresholds
+        # pinned in vitest.config.ts (a regression floor, not a quality target).
+        run: npm test -- --coverage
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v6
+        with:
+          name: coverage-report
+          path: coverage/
+          if-no-files-found: warn
+          retention-days: 14
+
+  # 20 suites only execute on win32 (PATHEXT resolution, the Windows sandbox, the
+  # win32 keychain). Without this job they are skipped on every run.
+  test-windows:
+    name: Tests (windows)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Install Electron binary
+        run: node node_modules/electron/install.js
+
+      - name: Unit + integration tests
+        run: npm test

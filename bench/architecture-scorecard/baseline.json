@@ -1,0 +1,95 @@
+{
+  "score": 33.60705954219296,
+  "metrics": {
+    "files": 474,
+    "total_loc": 108146,
+    "max_loc": 5155,
+    "over2000": [
+      [
+        "electron\\services\\local-brain\\server.ts",
+        5155
+      ]
+    ],
+    "over1000": [
+      [
+        "electron\\services\\local-brain\\server.ts",
+        5155
+      ],
+      [
+        "electron\\ipc\\chat.ts",
+        1784
+      ],
+      [
+        "electron\\preload.ts",
+        1768
+      ],
+      [
+        "electron\\services\\providers\\registry.ts",
+        1735
+      ],
+      [
+        "electron\\services\\github-service.ts",
+        1567
+      ],
+      [
+        "electron\\services\\local-brain\\index-store.ts",
+        1366
+      ],
+      [
+        "electron\\services\\brain\\retrieve-agent.ts",
+        1307
+      ],
+      [
+        "electron\\services\\tool-registry.ts",
+        1254
+      ],
+      [
+        "electron\\ipc\\settings.ts",
+        1123
+      ],
+      [
+        "electron\\services\\rag\\store.ts",
+        1077
+      ],
+      [
+        "electron\\main.ts",
+        1029
+      ]
+    ],
+    "brain_shared": 3,
+    "chat_shared": 21,
+    "dup_dispatch": 1,
+    "proxy_refs": 64,
+    "py_engine": 1,
+    "empty_catch": 230,
+    "any_use": 446,
+    "todos": 0,
+    "test_files": 357
+  },
+  "dimensions": [
+    {
+      "name": "Monolith / file size",
+      "weight": 0.25,
+      "score": 28.208238168771842,
+      "evidence": "max 5155 LOC; 1>2000, 11>1000; 18% of code in >1000-LOC files (target: <10%)"
+    },
+    {
+      "name": "Agent-engine unification",
+      "weight": 0.3,
+      "score": 15.0,
+      "evidence": "brain loop reuses lamprey tool-machinery 3x vs ipc/chat.ts 21x; duplicated subagent dispatch: YES"
+    },
+    {
+      "name": "One-TS-brain progress",
+      "weight": 0.2,
+      "score": 25.0,
+      "evidence": "python engine present: YES (north star: retire); sidecar/proxy refs: 64"
+    },
+    {
+      "name": "Code health (errors / types / tests)",
+      "weight": 0.25,
+      "score": 68.22,
+      "evidence": "230 blanket catch{}; 446 any; 0 TODO; 357 test files (100% coverage credit)"
+    }
+  ]
+}

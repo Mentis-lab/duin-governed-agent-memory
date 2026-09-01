@@ -1,0 +1,95 @@
+﻿import { t } from '@/lib/i18n'
+import { useEffect, useRef, useState } from 'react'
+import { useChatStore } from '@/stores/chat-store'
+import { toast } from '@/stores/toast-store'
+import type { ProcessedFile } from '@/lib/types'
+
+export function FileDropZone() {
+  const [isDragging, setIsDragging] = useState(false)
+  const dragDepth = useRef(0)
+  const addAttachments = useChatStore((s) => s.addAttachments)
+  const setProcessing = useChatStore((s) => s.setAttachmentsProcessing)
+
+  useEffect(() => {
+    if (!window.api) return
+
+    const hasFiles = (e: DragEvent): boolean => {
+      const types = e.dataTransfer?.types
+      if (!types) return false
+      for (let i = 0; i < types.length; i++) if (types[i] === 'Files') return true
+      return false
+    }
+
+    const onDragEnter = (e: DragEvent) => {
+      if (!hasFiles(e)) return
+      e.preventDefault()
+      dragDepth.current += 1
+      setIsDragging(true)
+    }
+
+    const onDragOver = (e: DragEvent) => {
+      if (!hasFiles(e)) return
+      e.preventDefault()
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+    }
+
+    const onDragLeave = (e: DragEvent) => {
+      if (!hasFiles(e)) return
+      e.preventDefault()
+      dragDepth.current = Math.max(0, dragDepth.current - 1)
+      if (dragDepth.current === 0) setIsDragging(false)
+    }
+
+    const onDrop = async (e: DragEvent) => {
+      if (!hasFiles(e)) return
+      e.preventDefault()
+      dragDepth.current = 0
+      setIsDragging(false)
+
+      const files = e.dataTransfer?.files
+      if (!files || files.length === 0) return
+
+      setProcessing(true)
+      try {
+        const result = await window.api.files.processDropped(Array.from(files))
+        if (result.success) {
+          addAttachments(result.data as ProcessedFile[])
+        } else {
+          toast.error(`File processing failed: ${result.error}`)
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Desktop bridge unavailable'
+        toast.error(`File processing failed: ${message}`)
+      } finally {
+        setProcessing(false)
+      }
+    }
+
+    window.addEventListener('dragenter', onDragEnter)
+    window.addEventListener('dragover', onDragOver)
+    window.addEventListener('dragleave', onDragLeave)
+    window.addEventListener('drop', onDrop)
+    return () => {
+      window.removeEventListener('dragenter', onDragEnter)
+      window.removeEventListener('dragover', onDragOver)
+      window.removeEventListener('dragleave', onDragLeave)
+      window.removeEventListener('drop', onDrop)
+    }
+  }, [addAttachments, setProcessing])
+
+  if (!isDragging) return null
+
+  return (
+    <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center bg-[var(--bg-primary)]/80 backdrop-blur-sm">
+      <div className="rounded-lg border-2 border-dashed border-[var(--accent)] bg-[var(--bg-secondary)] px-10 py-8 text-center">
+        <div className="font-mono text-[16px] font-semibold uppercase tracking-wider text-[var(--accent)]">
+          {t('Drop files to attach')}
+        </div>
+        <p className="mt-2 text-[12px] text-[var(--text-secondary)]">
+          .txt .md .py .js .ts .html .css .json .csv .pdf · images
+        </p>
+        <p className="mt-1 text-[12px] text-[var(--text-muted)]">100 MB per file · 250 MB total</p>
+      </div>
+    </div>
+  )
+}

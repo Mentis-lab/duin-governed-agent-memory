@@ -1,0 +1,4 @@
+# Placeholder so resources/ocr/models exists for the electron-builder
+# extraResources copy. Drop the real PP-OCRv5 mobile *.onnx model files
+# (det / rec / optional cls) plus ppocrv5_dict.txt here — see README.md.
+# These binaries are NOT committed.

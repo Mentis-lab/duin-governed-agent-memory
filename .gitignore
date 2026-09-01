@@ -1,0 +1,105 @@
+node_modules/
+dist/
+dist-electron/
+out/
+coverage/
+.env
+*.log
+lamprey.db
+lamprey.db-shm
+lamprey.db-wal
+lamprey.db-journal
+.tmp-snip-*/
+.opencode/
+.tmp-test-user-data/
+SESSION-LOG/
+# .claude/ used to be ignored WHOLESALE, which meant no coordination policy could
+# ever travel with a clone: every session hook and setting was per-machine, and a
+# fresh worktree started unguarded. Narrowed so the SHARED, reviewable parts are
+# tracked and the volatile per-machine parts stay ignored.
+# `.claude/*` (not `.claude/`) is required: git will not descend into an excluded
+# DIRECTORY, so a trailing-slash ignore makes the negations below unreachable.
+.claude/*
+!.claude/settings.json
+!.claude/hooks/
+# ...and the volatile ones stay out, including anything a session drops in hooks/.
+.claude/settings.local.json
+.claude/hooks/*.local.*
+.cf/
+opencode.jsonc
+
+# Bucket pipeline — project-scoped secrets (NEVER commit)
+.aws/
+.cf/
+.bucket.json
+dist2/
+
+# (The `resources/brain/**` PyInstaller build-cache ignores that used to sit here
+# were dropped: the Python sidecar was retired and resources/brain/ no longer
+# exists, so they matched nothing.)
+
+.deploy.lock
+
+# OCR model binaries (Tier 1 tessdata + Tier 2 PaddleOCR ONNX/dict) — large,
+# drop-in-pre-build, NEVER committed (see resources/ocr/*/README.md).
+resources/ocr/tessdata/*.traineddata
+resources/ocr/models/*.onnx
+resources/ocr/models/*.txt
+
+# Bundled default embedder (multilingual-e5-small ONNX + tokenizer) — large,
+# drop-in-pre-build via `npm run prepare:models`, NEVER committed
+# (see resources/models/README.md). Keep the README tracked, ignore the binaries.
+resources/models/transformers/
+
+# Review-loop state: the durable memory that stops each run re-discovering the same
+# findings. Machine-local by design -- the durable public record is the git history
+# and the generated report, not this cache.
+.review-loop/
+
+# Harness Handbook build-local ledger (regenerated each deploy)
+ARCHITECTURE/.harness-handbook-state.json
+ARCHITECTURE/.harness-handbook-history.jsonl
+ARCHITECTURE/HARNESS_HANDBOOK_CATALOG.json
+ARCHITECTURE/.gap-verdicts.json
+ARCHITECTURE/.notlive-findings.json
+ARCHITECTURE/handbook/RECONCILE-PROPOSAL.json
+
+# Build outputs and staged binaries — must never enter git.
+# resources/models is ~412 MB of transformers weights staged by
+# scripts/stage-models-for-release.mjs at build time; it is reproducible.
+release/
+resources/models/
+.vite/
+
+# Evaluation/session scratch tarballs (90 MB of snapshot archives staged 2026-08-03).
+# Ignored rather than deleted: they are not ours to remove, and leaving them merely
+# untracked is what lets a `git add -A`-shaped commit sweep them into history.
+_to_delete/
+
+# ship-gate.mjs writes vitest's json report here; it is a measurement artifact, and leaving
+# it untracked would dirty the tree and abort the ship factory's own clean-tree precondition.
+.ship-gate-vitest.json
+
+# Hand-written live-app QA drivers (Playwright/CDP against a running DUIN), dropped in the
+# repo root by whichever session is doing runtime QA. Untracked they dirty the tree and abort
+# the ship factory's clean-tree gate; ignored, a concurrent session can work without blocking
+# an unattended build. Also ignored by eslint.config.mjs for the same reason.
+_qa-*.cjs
+
+# dsh executor runtime — staged by scripts/stage-dsh-runtime.mjs, never committed
+resources/executors/dsh/node_modules/
+
+# The operator's private leak denylist (see electron/services/governance/operator-leak-denylist.ts).
+# It is the list of names that must never appear in the tree, so it must never enter the tree.
+.leak-denylist.local.json
+
+# Local env overrides, per-session scratch dirs, editor and OS droppings, build caches.
+.env.*
+!.env.example
+.duin-tmp-*/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.tsbuildinfo
+.eslintcache

@@ -1,0 +1,11 @@
+<svg width="32" height="32" viewBox="25 6 116 116" xmlns="http://www.w3.org/2000/svg">
+  <!-- DUIN favicon — simplified SOLID brain glyph for 16–24px.
+       Line/fill adapts to the browser's light/dark scheme; node is the brand accent.
+       Self-contained: use directly as <link rel="icon" href="duin-favicon.svg">. -->
+  <style>
+    .body{ fill:#191A1E; }
+    @media (prefers-color-scheme: dark){ .body{ fill:#F2F0EA; } }
+  </style>
+  <path class="body" d="M34 64 C34 50 44 40 56 42 C58 30 74 24 86 32 C98 26 114 32 116 46 C130 50 132 72 118 82 C112 98 92 104 70 100 C48 96 34 84 34 64 Z"/>
+  <circle cx="42" cy="94" r="11" fill="#d97757"/>
+</svg>

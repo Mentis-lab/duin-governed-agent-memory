@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "outDir": "./out",
+    "rootDir": ".",
+    "strict": true,
+    "skipLibCheck": true,
+    "target": "ESNext",
+    "types": ["node"],
+    "resolveJsonModule": true
+  },
+  "include": [
+    "electron.vite.config.ts",
+    "electron/**/*.ts",
+    // The locale dictionaries, shared with the renderer. Main produces user-visible text too —
+    // notification titles, the daily digest, the tray — and importing the SAME json is what keeps
+    // one translation serving both processes instead of two copies that drift apart.
+    "src/locales/zh.json",
+    "src/locales/ja.json"
+  ]
+}

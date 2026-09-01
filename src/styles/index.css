@@ -1,0 +1,412 @@
+@import 'tailwindcss';
+
+/* Bump every named text-* utility by ~2 CSS pixels (~2pt). Arbitrary
+   text-[Npx] sizes are bumped at the source. */
+@theme {
+  /* Fonts — UI is a clean humanist sans (IBM Plex Sans). `font-mono` is
+     INTENTIONALLY remapped to the same sans stack so UI chrome (badges, counts,
+     status lines, paths, cron, model ids) reads as plain text, not code. TRUE
+     monospace for code/diffs is applied explicitly via the `.code-font` class
+     below; markdown.css and the xterm terminal set their own mono directly.
+
+     CJK: IBM Plex Sans and Segoe UI have NO CJK coverage, so without the CJK
+     families below, 中文 and 日本語 fall through to generic `sans-serif` — which
+     on Windows resolves to SimSun (宋体), a bitmap-era face that looks broken at
+     UI sizes. Latin families stay FIRST so Latin still renders in Plex; the CJK
+     families only catch what Plex cannot draw.
+
+     HAN UNIFICATION — why this is per-language and not one list. Chinese and
+     Japanese SHARE Unicode codepoints for many characters while drawing them
+     differently: 直 骨 今 曜 令 海 all have distinct standard forms in each
+     locale. So whichever CJK family comes first in a single stack decides how the
+     shared characters look for BOTH languages — and a Simplified-Chinese face
+     rendering Japanese is not a subtle difference to a Japanese reader, it is
+     visibly the wrong writing system.
+
+     The default below stays CN-first, because the vault this was built for is
+     predominantly Simplified Chinese. The override further down switches the
+     whole stack when `lang="ja"` is set, which i18n.setUiLanguage stamps on
+     <html>. That attribute is why this works at all — without it the browser has
+     no idea which locale's forms to prefer. */
+  --font-cjk:
+    'Microsoft YaHei UI', 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB',
+    'Noto Sans CJK SC', 'Source Han Sans SC';
+  --font-sans:
+    'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', var(--font-cjk), sans-serif;
+  --font-mono:
+    'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', var(--font-cjk), sans-serif;
+
+  /* TRUE monospace stack, shared by .code-font, markdown code, and any aligned
+     tool output. Three groups, in order and each load-bearing:
+       1. the preferred code faces (Plex Mono, Fira Code);
+       2. box-drawing fallbacks — Plex Mono has NO ─│┌┐└┘├┤┬┴┼ ═║╔╗ glyphs, so
+          terminal-style diagrams fell back per-glyph to a face with different
+          metrics and the boxes came apart. Cascadia/Consolas/DejaVu carry them;
+       3. a FIXED-WIDTH CJK fallback. CJK is double-width, and a proportional
+          CJK fallback breaks column alignment outright. MS Gothic and Sarasa
+          Mono render CJK at exactly 2x the Latin advance, which is what keeps
+          a diagram containing 中文 square. */
+  --font-code:
+    'IBM Plex Mono', 'Fira Code', 'Cascadia Mono', Consolas, 'DejaVu Sans Mono', ui-monospace,
+    'Sarasa Mono SC', 'MS Gothic', 'Noto Sans Mono CJK SC', monospace;
+  /* Same han-unification split for code. MS Gothic is already a JAPANESE face and
+     is kept in both, since it is the reliable fixed-width CJK fallback on Windows. */
+  --font-code-ja:
+    'IBM Plex Mono', 'Fira Code', 'Cascadia Mono', Consolas, 'DejaVu Sans Mono', ui-monospace,
+    'Sarasa Mono J', 'MS Gothic', 'Noto Sans Mono CJK JP', monospace;
+
+  --text-xs: 0.875rem;        /* 12 → 14 */
+  --text-xs--line-height: 1.25rem;
+  --text-sm: 1rem;            /* 14 → 16 */
+  --text-sm--line-height: 1.5rem;
+  --text-base: 1.125rem;      /* 16 → 18 */
+  --text-base--line-height: 1.75rem;
+  --text-lg: 1.25rem;         /* 18 → 20 */
+  --text-lg--line-height: 1.75rem;
+  --text-xl: 1.375rem;        /* 20 → 22 */
+  --text-xl--line-height: 2rem;
+  --text-2xl: 1.625rem;       /* 24 → 26 */
+  --text-2xl--line-height: 2.25rem;
+  --text-3xl: 2rem;           /* 30 → 32 */
+  --text-3xl--line-height: 2.5rem;
+}
+
+/* ── Per-language CJK faces ─────────────────────────────────────────────────
+   Selected by the `lang` attribute that i18n.setUiLanguage stamps on <html>.
+   Nothing else in the app needs to know: every rule already reads --font-cjk.
+
+   JAPANESE. Hiragino Sans is the macOS system UI face (ヒラギノ角ゴシック) and
+   Yu Gothic UI is the Windows 10+ one (游ゴシック UI); both are what a Japanese
+   user sees in every other app on the machine, which is the bar for UI type.
+   Meiryo is kept behind them for Windows installs without Yu Gothic — heavier,
+   but far more legible at small sizes than MS PGothic, which is deliberately
+   ABSENT: it is a bitmap-era face and looks broken in a modern UI.
+
+   Note 'Hiragino Sans GB' in the default stack is the CHINESE Hiragino, not
+   this one. The similar names are a real trap: listing the GB face for Japanese
+   would reintroduce exactly the wrong-forms problem this split exists to fix. */
+:root:lang(ja),
+[lang='ja'] {
+  --font-cjk:
+    'Hiragino Sans', 'Yu Gothic UI', 'Yu Gothic', 'Meiryo', 'Noto Sans CJK JP',
+    'Source Han Sans JP', 'Noto Sans JP';
+  --font-code: var(--font-code-ja);
+}
+
+/* SIMPLIFIED CHINESE. PingFang SC has been the macOS system face since El
+   Capitan; Microsoft YaHei is the Windows one. Same principle: match what the
+   OS already uses everywhere else. Stated explicitly rather than relying on the
+   default, so the two locales read as a matched pair in this file. */
+:root:lang(zh),
+[lang='zh'] {
+  --font-cjk:
+    'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Hiragino Sans GB',
+    'Noto Sans CJK SC', 'Source Han Sans SC', 'Noto Sans SC';
+}
+
+
+/* shadcn/ui design tokens. The ported src/duin components (brain-shell, sheet,
+   doc-view, node-panel + the ui primitives) are authored against shadcn semantic
+   classes (bg-card, text-muted-foreground, border-border, bg-muted, …). Tailwind v4
+   only emits those utilities if the matching --color-* theme tokens exist; without
+   them the whole DUIN node/folder right-panel renders as a transparent "wireframe"
+   (faint borders, invisible fills + text). Map each shadcn token onto lamprey's
+   runtime palette via @theme inline so the utilities stay reactive to the light/dark
+   :root overrides below. */
+@theme inline {
+  --color-background: var(--bg-primary);
+  --color-foreground: var(--text-primary);
+  --color-card: var(--bg-secondary);
+  --color-card-foreground: var(--text-primary);
+  --color-popover: var(--bg-secondary);
+  --color-popover-foreground: var(--text-primary);
+  /* NB: deliberately NO --color-muted / --color-secondary / --color-primary.
+     lamprey's own components use bare `text-muted` (852×), `text-primary` (588×),
+     `text-secondary`, `bg-primary`, `bg-secondary` as NO-OP utilities that render
+     only via inherited body color. Defining those shared color tokens would make
+     Tailwind v4 emit real utilities and repaint thousands of spots (primary text →
+     orange, muted text → dark-on-dark). We only define the *distinct* tokens the
+     duin shadcn components need; the colliding base names stay no-ops. */
+  --color-muted-foreground: var(--text-secondary);
+  --color-secondary-foreground: var(--text-primary);
+  --color-primary-foreground: #ffffff;
+  --color-border: var(--border);
+  --color-input: var(--border);
+  --color-ring: var(--accent);
+  --color-destructive: var(--error);
+  --color-destructive-foreground: #ffffff;
+}
+
+:root {
+  --bg-primary: #0d0d0d;
+  --bg-secondary: #161616;
+  --bg-tertiary: #1f1f1f;
+  --border: #2a2a2a;
+  --text-primary: #e8e8e8;
+  --text-secondary: #888888;
+  --text-muted: #444444;
+  --accent: #d97757;
+  --accent-dim: #4a2c20;
+  --success: #3d9e60;
+  --warning: #c47a2a;
+  --error: #c43a3a;
+  --code-bg: #111111;
+  /* Foreground for text/icons sitting ON an --accent fill. White works in both
+     modes because the light accent is contrast-darkened (theme-presets.ts). Use
+     text-[var(--on-accent)] instead of literal text-white / text-black. */
+  --on-accent: #ffffff;
+
+  /* ─── Panels Phase substrate system ──────────────────────────────────
+     Layout chrome convention (introduced in v0.6.0 — Panels Phase):
+
+       --app-bg       Outer shell substrate. The two sidebar panels and
+                      the (transparent) chat column sit on top of this.
+       --panel-bg     The two sidebar panels' surface tone. The chat
+                      column is NOT a panel — it stays transparent.
+       --panel-border Low-alpha edge for soft panel edges + the chat
+                      input pill. Use sparingly; tonal contrast carries
+                      most of the work.
+       --panel-radius Corner radius for panels and pills (12px).
+       --panel-gap    Substrate gap between panels and chat (8px).
+
+     When adding new chrome: prefer whitespace + tonal lift over a 1px
+     border. Borders are reserved for floating UI (popovers, modals,
+     toasts), form controls (input, textarea, select), and semantic
+     stripes (risk-tier, diff gutters, role accents). Structural-chrome
+     borders are a regression — see PLANNING/LAMPREY_PANELS_PLAN.md §2
+     allow-list. */
+  --app-bg: #1a1714;
+  --panel-bg: #262320;
+  --panel-border: rgba(255, 255, 255, 0.06);
+  --panel-radius: 12px;
+  --panel-gap: 8px;
+  /* Drop shadow under the two sidebar panels + the chat input pill.
+     Off in dark mode — the dark substrate already separates panels
+     by tone, and a shadow there reads as muddy. Overridden in light
+     mode below to match Tailwind's `shadow-lg`. */
+  --panel-shadow: none;
+}
+
+/* Light-mode fallback values — these are overwritten the moment
+   applyThemePreset() runs with mode === 'light', but they keep the
+   first-paint usable if a theme load is slow. */
+:root[data-theme-mode='light'] {
+  --bg-primary: #f8f9fa;
+  --bg-secondary: #f7f7f8;
+  --bg-tertiary: #eef0f3;
+  --border: #dcdfe4;
+  --text-primary: #0f1115;
+  --text-secondary: #4a5160;
+  --text-muted: #6b7280;
+  --code-bg: #f3ede2;
+  --app-bg: #efe9df;
+  --panel-bg: #faf7f1;
+  --accent: #c15f3c;
+  /* Previously omitted here, so these kept their dark base values until the JS
+     preset loaded — a dark-brown ::selection and semantic hues at first paint.
+     Light values now match buildLightTokens() so the pre-JS paint is correct. */
+  --accent-dim: #ecdcd2;
+  --success: #3d8a55;
+  --warning: #b07628;
+  --error: #b83a32;
+  --panel-border: rgba(15, 17, 21, 0.06);
+  --panel-shadow:
+    0 10px 15px -3px rgb(0 0 0 / 0.1),
+    0 4px 6px -4px rgb(0 0 0 / 0.1);
+}
+
+/* Utility — apply the substrate-aware panel shadow. Use on the two
+   sidebar containers (left + right). The chat input pill keeps its
+   own Tailwind `shadow-lg` and renders identically in light mode. */
+.panel-shadow {
+  box-shadow: var(--panel-shadow);
+}
+
+/* TRUE monospace — for genuine code, diffs, and aligned tool output only.
+   Everything else uses the sans stack (see the --font-mono note above).
+   `font-variant-ligatures: none` because Fira Code turns -> and != into single
+   glyphs, which silently shortens a line of ASCII art. */
+.code-font {
+  font-family: var(--font-code);
+  font-variant-ligatures: none;
+}
+
+/* Shiki dual-theme output (CodeBlock uses defaultColor:false, so each token
+   carries --shiki-light / --shiki-dark vars). Default to the dark theme's tokens
+   + background; switch to the light theme's under data-theme-mode='light'. This
+   recolors code on a theme toggle without re-highlighting. */
+.shiki {
+  background-color: var(--shiki-dark-bg);
+}
+.shiki,
+.shiki span {
+  color: var(--shiki-dark);
+}
+:root[data-theme-mode='light'] .shiki {
+  background-color: var(--shiki-light-bg);
+}
+:root[data-theme-mode='light'] .shiki,
+:root[data-theme-mode='light'] .shiki span {
+  color: var(--shiki-light);
+}
+
+@layer base {
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* In light mode --border is near-white, so the thumb vanishes against the
+   transparent track. Give it a real neutral with contrast on the light field. */
+:root[data-theme-mode='light'] ::-webkit-scrollbar-thumb,
+:root[data-theme-mode='light'] .scrollbar-visible::-webkit-scrollbar-thumb {
+  background: rgba(15, 17, 21, 0.18);
+}
+:root[data-theme-mode='light'] ::-webkit-scrollbar-thumb:hover,
+:root[data-theme-mode='light'] .scrollbar-visible::-webkit-scrollbar-thumb:hover {
+  background: rgba(15, 17, 21, 0.34);
+}
+
+::selection {
+  background-color: var(--accent-dim);
+  color: var(--text-primary);
+}
+
+/* Brand icons (ASSETS/*.png) — every PNG ships with a transparent
+   background. No filter: plain wireframe on every backdrop, both themes. */
+img.icon-asset {
+  filter: none;
+}
+
+/* Crisp variant — no halo, no soft drop-shadow. Used on icons that must
+   remain pixel-sharp at larger sizes (send button, hero icons). */
+img.icon-asset-crisp {
+  filter: none;
+  image-rendering: -webkit-optimize-contrast;
+}
+
+/* In dark mode, every .icon-asset and .icon-asset-crisp renders the
+   existing light-wireframe PNG inverted to solid white. The legacy
+   dark-view PNGs (with baked-in cream glow) are never displayed.
+   .themed-variant-dark stays hidden in both modes as a safety net for
+   any leftover dual-img markup. */
+.themed-variant-dark { display: none; }
+:root[data-theme-mode='dark'] img.icon-asset,
+:root[data-theme-mode='dark'] img.icon-asset-crisp {
+  filter: brightness(0) invert(1);
+}
+
+/* Top row of a FULL-WINDOW panel (Settings, Customize). Those are `fixed inset-0`,
+   so their header sits in the window's top-left corner — which on macOS is exactly
+   where the traffic lights are drawn (the window is frameless with
+   titleBarStyle:'hidden', and hiding the title bar does not hide the controls).
+   --titlebar-inset-left is set by applyPlatformAttribute: 78px on macOS, 0 elsewhere,
+   so this is a no-op on Windows and Linux. */
+.app-full-window-top-row {
+  padding-left: calc(1rem + var(--titlebar-inset-left, 0px));
+}
+
+/* Chat content must always be selectable so users can copy prompts and
+   model output. Buttons inside (copy, vote, fork, etc.) still get their
+   own no-select treatment via the rule below. */
+.chat-column,
+.chat-column * {
+  -webkit-user-select: text;
+  user-select: text;
+  cursor: auto;
+}
+.chat-column button,
+.chat-column button * {
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: pointer;
+}
+.chat-column textarea,
+.chat-column input {
+  cursor: text;
+}
+
+/* Resize handles — wide invisible hit area with a 2px visible center
+   that brightens on hover. Use on vertical (column) splitters. */
+.resize-handle-v {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 10px;
+  cursor: col-resize;
+  z-index: 20;
+  background: transparent;
+  transition: background-color 120ms ease;
+}
+.resize-handle-v::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  background-color: transparent;
+  transition: background-color 120ms ease;
+}
+.resize-handle-v:hover::before,
+.resize-handle-v.dragging::before {
+  background-color: var(--accent);
+}
+
+/* Variant: handle pinned to the right edge of its parent (sidebar). */
+.resize-handle-v-right {
+  right: -5px;
+}
+/* Variant: handle pinned to the left edge of its parent (right panel). */
+.resize-handle-v-left {
+  left: -5px;
+}
+
+/* More prominent scrollbar variant — used for the sidebar projects list
+   so the user can see at a glance that there's more to scroll. */
+.scrollbar-visible::-webkit-scrollbar {
+  width: 10px;
+}
+.scrollbar-visible::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scrollbar-visible::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border: 2px solid var(--bg-secondary);
+  border-radius: 5px;
+}
+.scrollbar-visible::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}

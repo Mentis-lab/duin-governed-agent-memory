@@ -1,0 +1,58 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "jsx": "react-jsx",
+    "outDir": "./out",
+    "rootDir": ".",
+    "strict": true,
+    "skipLibCheck": true,
+    "target": "ESNext",
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"]
+    },
+    "types": ["node"],
+    // Locale dictionaries are imported as modules by src/lib/i18n.ts.
+    "resolveJsonModule": true
+  },
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "src/locales/*.json",
+    // Cross-process contract, visible to BOTH projects: it is the single declaration the
+    // renderer-facing request type and its main-process transport share. Pure types + consts (no
+    // node APIs), so it compiles under the web settings unchanged. Listed FILE-BY-FILE on purpose —
+    // a `shared/**/*.ts` glob would also pull in the co-located .test.ts, whose import of
+    // duin-bridge drags the entire main-process tree into the renderer project.
+    "electron/shared/chat-send-contract.ts",
+    // Same cross-process-contract class: the one CONTROLLED_GET_PATHS policy the renderer's
+    // token-attach helper (src/duin/lib/loopback-auth.ts) and the main-process control-plane
+    // guard both consume, so the two can never drift. Pure consts, no node APIs.
+    "electron/shared/control-plane-policy.ts",
+    // Build provenance, imported by preload.ts — which this project already pulls in
+    // transitively via src/env.d.ts's `LampreyAPI` type. Pure consts + `process.env`
+    // reads, no node APIs, so it compiles under the web settings unchanged. Listed
+    // file-by-file for the same reason as the contract above.
+    "electron/build-info.ts",
+    // The main-process half of the ANSI-strip mirror. src/lib/ansi.test.ts imports it
+    // to pin the two copies to identical behaviour; nothing in the renderer BUNDLE
+    // imports it, so this adds no cross-process runtime edge.
+    "electron/shared/strip-ansi.ts",
+    // JSON Canvas document types + parser. The canvas EDITOR runs in the renderer
+    // while the loader and outline serializer run in main, and both must agree on
+    // the document shape — duplicating the types is how the two views drift. Pure
+    // types + string parsing, no node APIs. Listed file-by-file for the same reason
+    // as the entries above.
+    "electron/services/canvas/canvas-outline.ts",
+    // Memory provenance vocabulary. The MemoryPanel renders and filters on it while the writer /
+    // parser stamps it in main, and it was DUPLICATED in src/lib/types.ts under a comment asking a
+    // human to "keep the two in step" — the property-1 failure the constitution names. Now one
+    // owner both sides import. Dependency-free (no gray-matter, no node APIs), which is why it
+    // lives in shared/ rather than services/. Listed file-by-file for the same reason as above.
+    "electron/shared/memory-source.ts"
+  ]
+}

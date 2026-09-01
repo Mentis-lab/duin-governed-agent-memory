@@ -1,0 +1,8 @@
+{
+  "id": "operator-brain",
+  "name": "Operator Brain",
+  "description": "The evergreen second-brain skill set for any DUIN user, in six clusters: Judgment (capture/frame/audit), Learning (reflect/resolve), Foresight (forecast/decide), Comprehension (distill/comprehend/recall), Graph (surface/relate/dedup/lint), and Lifecycle (revise/consolidate/archive). Fills and keeps honest the per-operator learning loop, and keeps the knowledge current as it ages.",
+  "version": "0.3.0",
+  "author": "DUIN",
+  "category": "Second Brain"
+}

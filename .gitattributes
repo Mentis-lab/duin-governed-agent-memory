@@ -1,0 +1,38 @@
+# Line endings. Everything git detects as text is committed LF and checked out LF on every
+# platform. The repo's own lint scripts split on '\n' and strip comments with `.*$`, and
+# one of them (lint:unsupplied-input) gave three different verdicts for the same source on
+# CRLF, mixed and LF checkouts. One rule, no per-machine core.autocrlf dependence.
+* text=auto eol=lf
+
+# Windows batch files must stay CRLF: cmd.exe misparses some LF-only scripts (labels/goto).
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# A patch is byte-exact by definition.
+*.patch -text
+
+# Binary assets: never autodetect, never convert.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.icns binary
+*.onnx binary
+*.node binary
+*.dll binary
+*.dylib binary
+*.so binary
+*.exe binary
+*.zip binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.wasm binary
+*.traineddata binary
+*.pdf binary
+*.xlsx binary
+*.pptx binary
+*.docx binary

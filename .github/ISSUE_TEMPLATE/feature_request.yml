@@ -1,0 +1,46 @@
+name: Feature request
+description: Propose a change to what DUIN does.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the problem before the solution. A request that names a user-facing problem and
+        why the existing surfaces cannot solve it is far more likely to land than one that names
+        only a feature.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do, and what happens today?
+    validations:
+      required: true
+  - type: textarea
+    id: existing
+    attributes:
+      label: Why the existing surfaces are not enough
+      description: Skills, methods, MCP servers, hooks, automations and Settings cover a lot. Say what you tried.
+    validations:
+      required: true
+  - type: textarea
+    id: ux
+    attributes:
+      label: A UX you would accept
+      description: Be specific. Where would it live, what would you click, what would you see?
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Chat and answers
+        - Knowledge graph and Brain view
+        - Memory and learning
+        - Agent tools, approvals and sandbox
+        - Skills, methods, MCP, hooks
+        - Models and providers
+        - Channels and automations
+        - Onboarding and Settings
+        - Build, packaging, install
+        - Other

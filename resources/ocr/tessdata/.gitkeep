@@ -1,0 +1,3 @@
+# Placeholder so resources/ocr/tessdata exists for the electron-builder
+# extraResources copy. Drop the real *.traineddata model files here
+# (eng / chi_sim / jpn) — see ../README.md. These binaries are NOT committed.

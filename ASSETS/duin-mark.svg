@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 150 120" width="150" height="120">
+  <!-- DUIN mark. Set stroke to your foreground (ink #191A1E on light, #F2F0EA on dark).
+       The node reads the CSS accent variable so it recolors with the active theme preset.
+       NOTE: CSS vars only resolve when this SVG is INLINE in the DOM (not an img element).
+       Loaded as a static file it falls back to #d97757 (Warm). -->
+  <path fill="none" stroke="#191A1E" stroke-width="6.2" stroke-linecap="round" stroke-linejoin="round"
+    d="M50 96 C29 93 18 74 25 55 C29 43 41 37 51 41 C51 29 67 21 81 27 C87 17 105 19 111 31 C125 32 133 50 126 65 C120 82 107 93 89 90 C69 87 57 73 64 59 C69 49 84 47 93 55"/>
+  <circle cx="50" cy="96" r="6.2" fill="var(--accent, #d97757)"/>
+</svg>

@@ -1,0 +1,7 @@
+{
+  "name": "duin-brain",
+  "displayName": "DUIN Brain",
+  "version": "0.1.0",
+  "description": "Mount DUIN Brain as your agent's executive function: operator-calibrated context, beliefs, and a shared fleet goal state with leases and operator-gated completion.",
+  "author": { "name": "Gao Research" }
+}

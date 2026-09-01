@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 460 120" width="460" height="120">
+  <!-- DUIN horizontal lockup — mark + monoline wordmark. Swap stroke color per background. -->
+  <g>
+    <path fill="none" stroke="#191A1E" stroke-width="6.2" stroke-linecap="round" stroke-linejoin="round"
+      d="M50 96 C29 93 18 74 25 55 C29 43 41 37 51 41 C51 29 67 21 81 27 C87 17 105 19 111 31 C125 32 133 50 126 65 C120 82 107 93 89 90 C69 87 57 73 64 59 C69 49 84 47 93 55"/>
+    <circle cx="50" cy="96" r="6.2" fill="var(--accent, #d97757)"/>
+  </g>
+  <g transform="translate(178,28)" fill="none" stroke="#191A1E" stroke-width="9" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 10 L12 70"/>
+    <path d="M12 10 C54 10 54 70 12 70"/>
+    <path d="M74 10 L74 50 C74 70 108 70 108 50 L108 10"/>
+    <path d="M132 10 L132 70"/>
+    <path d="M156 70 L156 10 L200 70 L200 10"/>
+  </g>
+</svg>
