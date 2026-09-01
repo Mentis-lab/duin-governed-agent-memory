@@ -1,0 +1,8 @@
+data/
+runs/
+jury.local.json
+scratch_vault/
+__pycache__/
+*.graded
+_selfcheck*
+run_iso.sh

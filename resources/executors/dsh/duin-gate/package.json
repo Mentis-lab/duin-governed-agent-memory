@@ -1,0 +1,9 @@
+{
+  "name": "duin-gate",
+  "private": true,
+  "license": "MIT",
+  "version": "0.0.0",
+  "type": "module",
+  "main": "index.mjs",
+  "description": "DUIN's gate inside a delegated dsh child: every tool call the child is about to make is decided by DUIN over /exec/hook before it runs. Fail-closed."
+}

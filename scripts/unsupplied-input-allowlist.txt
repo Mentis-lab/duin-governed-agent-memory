@@ -1,0 +1,179 @@
+# unsupplied-input allowlist -- optional options-object fields that production READS but
+# never SUPPLIES. Generated as a baseline on 2026-08-18 so `unsupplied-input-lint` could land as
+# a hard gate on NEW instances without waiting for this list to be triaged first.
+#
+# THIS FILE IS DEBT, NOT CONFIGURATION -- the same contract reachability-allowlist.txt carries.
+# Every line is either something to wire or something to delete. Shortening it is the goal, and
+# the lint fails on a STALE entry (one that is now supplied) precisely so the list cannot quietly
+# become permanent.
+#
+# WHY THIS LIST EXISTS AT ALL. Two of the most expensive bugs found in August were exactly this
+# shape, and both lived in files that `reachability-lint` counted as fully reached:
+#   ForkAgentDeps.parentTools        -> every `general` sub-agent ran with zero tools   (ce828a4)
+#   WorkflowRunInput.journalDir      -> nothing was journaled, so nothing could resume  (290818c)
+# The lint was verified against both: reverting 290818c makes it report them and go red.
+#
+# TRIAGING A LINE. Two different things are on this list and they deserve different verdicts:
+#
+#   *Deps.*  (45 entries) -- dependency-injection seams. Production takes a default and only tests
+#            inject. That is usually deliberate and correct. It is NOT automatically safe: the
+#            parentTools bug was a Deps field whose unsupplied path silently produced the WRONG
+#            VALUE ([] instead of '*') rather than a working default. Ask what happens when it is
+#            absent, not whether absence is expected.
+#
+#   everything else (86 entries) -- a caller-intent option nothing on the production path expresses.
+#            Each is either a capability with no way to reach it, or a knob that should be deleted.
+#
+# Nothing here is broken code. It is complete, reviewed, tested work that no production call site
+# supplies -- which is exactly why the suite is green and why review never flagged it.
+#
+# 2026-09-01: the lint now normalises CRLF before matching, so this list is calibrated on the
+# as-committed (LF) tree rather than on one machine's checkout. Two Deps seams surfaced that a
+# CRLF-masked comment had hidden: BrainHealthDeps.seeds (absent => top-degree note nodes are
+# derived, brain-health.ts:420-424) and OrchestratorDeps.embeddings (absent => the RAG embeddings
+# service is lazy-loaded, research/index.ts:257). Both absent paths are the intended production
+# path, so they are listed as seams, not wired.
+
+# -- dependency-injection seams (verify the absent path, do not assume it is safe) --
+electron/services/act/external-action.ts::RegisterExternalActionDeps.contextResolver
+electron/services/ask-user-runtime.ts::AskUserRuntimeDeps.genId
+electron/services/backend-health-monitor.ts::CollectDeps.getDb
+electron/services/backup-runner.ts::RestoreDeps.copyInto
+electron/services/brain/brain-health.ts::BrainHealthDeps.entityVecs
+electron/services/brain/brain-health.ts::BrainHealthDeps.seeds
+electron/services/brain/edge-judgment.ts::EdgeJudgmentDeps.postLearn
+electron/services/brain/operator-supersede.ts::AutoSupersedeDeps.maxJudgeCalls
+electron/services/brain/operator-supersede.ts::AutoSupersedeDeps.minOverlap
+electron/services/brain/reconcile-projection-native.ts::ReconcileDeps.groundSteps
+electron/services/brain/world-update-act-write-native.ts::ActWorldUpdateDeps.reproject
+electron/services/channels/transports/dingtalk-stream.ts::DingTalkTransportDeps.wsFactory
+electron/services/channels/transports/email-imap.ts::EmailTransportDeps.imapFactory
+electron/services/channels/transports/email-imap.ts::EmailTransportDeps.newMessageId
+electron/services/channels/transports/email-imap.ts::EmailTransportDeps.smtpFactory
+electron/services/channels/transports/feishu-ws.ts::FeishuTransportDeps.loadSdk
+electron/services/channels/transports/slack-socket.ts::SlackTransportDeps.connectTimeoutMs
+electron/services/channels/transports/slack-socket.ts::SlackTransportDeps.createClients
+electron/services/executor/executor-review.ts::ReviewDeps.runGit
+electron/services/executor/executor-run.ts::DshRunDeps.brainPort
+electron/services/executor/executor-run.ts::DshRunDeps.execPath
+electron/services/executor/executor-run.ts::DshRunDeps.extraChildEnv
+electron/services/executor/executor-run.ts::DshRunDeps.getKey
+electron/services/executor/executor-run.ts::DshRunDeps.mintPrincipal
+electron/services/executor/executor-run.ts::DshRunDeps.revokePrincipal
+electron/services/keychain.ts::SetKeyOptions.allowPlaintext
+electron/services/loop-controller.ts::LoopIterationDeps.iterationTimeoutMs
+electron/services/loop-controller.ts::LoopIterationDeps.repeatWindow
+electron/services/loop-controller.ts::LoopIterationDeps.verifyRegressionTolerance
+electron/services/proactive/builtin-nudges.ts::ForecastNudgeDeps.deliverDigest
+electron/services/proactive/builtin-nudges.ts::ForecastNudgeDeps.sendNudge
+electron/services/rag/rerank.ts::RerankDeps.llmRerank
+electron/services/research/claims.ts::ExtractClaimsDeps.callLlm
+electron/services/research/index.ts::OrchestratorDeps.accessedAt
+electron/services/research/index.ts::OrchestratorDeps.collectSources
+electron/services/research/index.ts::OrchestratorDeps.corroborate
+electron/services/research/index.ts::OrchestratorDeps.embeddings
+electron/services/research/index.ts::OrchestratorDeps.extractAll
+electron/services/research/index.ts::OrchestratorDeps.extractClaimsAll
+electron/services/research/index.ts::OrchestratorDeps.planQueries
+electron/services/research/index.ts::OrchestratorDeps.synthesizeReport
+electron/services/research/index.ts::OrchestratorDeps.writeArtifact
+electron/services/research/planner.ts::PlanQueriesDeps.callLlm
+electron/services/research/synthesizer.ts::SynthesizeDeps.accessedAt
+electron/services/research/synthesizer.ts::SynthesizeDeps.callLlm
+electron/services/spawn-task.ts::SpawnTaskDeps.saveMessage
+electron/services/spawn-task.ts::SpawnTaskDeps.updateConversationTitle
+electron/services/subagent-runner.ts::ForkAgentDeps.genId
+electron/services/subagent-runner.ts::ForkAgentDeps.parentTools
+electron/services/workflow-runner.ts::WorkflowRunnerDeps.genId
+electron/services/workspace-context-tool.ts::WorkspaceContextDeps.getActiveContract
+electron/services/workspace-context-tool.ts::WorkspaceContextDeps.getPolicy
+electron/services/workspace-context-tool.ts::WorkspaceContextDeps.listReceipts
+electron/shared/env-number.ts::EnvNumberOptions.integer
+
+# -- caller-intent options nothing on the production path supplies --
+electron/ipc/conversation.ts::ForkParams.seedBlobJson
+electron/ipc/worktree.ts::WorktreeCreateInput.baseRef
+electron/services/agent-bench/harness.ts::RunBenchOptions.onResult
+electron/services/brain/brain-root.ts::BrainConfig.linkedSources
+electron/services/brain/cjk-tokens.ts::CjkTokenizeOptions.minLatin
+electron/services/brain/coherence-lint.ts::CoherenceLintInput.benchmarks
+electron/services/brain/context-compiler.ts::CompileOptions.snippetFor
+electron/services/brain/decision-simulator.ts::CommitForecastInput.evalBy
+electron/services/brain/edge-judgment.ts::EdgeJudgmentInput.candidateRule
+electron/services/brain/entity-resolver.ts::EntityResolverOpts.highDegree
+electron/services/brain/entity-resolver.ts::EntityResolverOpts.onBlocked
+electron/services/brain/graph-expand-retrieve.ts::GraphExpandOpts.beta
+electron/services/brain/graph-expand-retrieve.ts::GraphExpandOpts.fanoutPerNode
+electron/services/brain/graph-expand-retrieve.ts::GraphExpandOpts.frontierCap
+electron/services/brain/graph-expand-retrieve.ts::GraphExpandOpts.gamma
+electron/services/brain/graph-expand-retrieve.ts::GraphExpandOpts.hubDfCap
+electron/services/brain/graph-expand-retrieve.ts::GraphExpandOpts.maxFrontierPerHop
+electron/services/brain/graph-expand-retrieve.ts::GraphExpandOpts.maxHops
+electron/services/brain/graph-expand-retrieve.ts::GraphExpandOpts.patience
+electron/services/brain/graph-expand-retrieve.ts::GraphExpandOpts.seedN
+electron/services/brain/make-decision-write-native.ts::MakeDecisionArgs.the_call
+electron/services/brain/operator-fingerprint.ts::FingerprintOptions.nFloor
+electron/services/brain/operator-fingerprint.ts::FingerprintOptions.nGate
+electron/services/brain/operator-fingerprint.ts::FingerprintOptions.windowDays
+electron/services/brain/retrieve-agent.ts::RetrieveOptions.nliScore
+electron/services/brain/reveal-frames.ts::RunRevealOptions.annotateEdge
+electron/services/brain/reveal-frames.ts::RunRevealOptions.edgeVerdicts
+electron/services/brain/reveal-frames.ts::RunRevealOptions.wave1
+electron/services/brain/reveal-service.ts::RevealServiceOptions.existingEntities
+electron/services/brain/reveal-service.ts::RevealServiceOptions.wave1
+electron/services/browser-tools.ts::PreviewSnapshotArgs.max_bytes
+electron/services/browser-tools.ts::PreviewStartArgs.open_tab
+electron/services/browser-tools.ts::PreviewStartArgs.ready_pattern
+electron/services/channels/transports/email-imap.ts::EmailTransportOptions.imapPort
+electron/services/channels/transports/email-imap.ts::EmailTransportOptions.mailbox
+electron/services/channels/transports/email-imap.ts::EmailTransportOptions.smtpPort
+electron/services/channels/transports/slack-socket.ts::SlackEventArgs.ack
+electron/services/channels/transports/wecom-ws.ts::WeComTransportOptions.webSocket
+electron/services/channels/transports/wecom-ws.ts::WeComTransportOptions.wsUrl
+electron/services/channels/webhook-server.ts::SlackVerifyInput.nowSeconds
+electron/services/channels/webhook-server.ts::SlackVerifyInput.toleranceSeconds
+electron/services/channels/webhook-server.ts::WebhookServerConfig.feishuEncryptKey
+electron/services/channels/webhook-server.ts::WebhookServerConfig.feishuVerificationToken
+electron/services/channels/webhook-server.ts::WebhookServerConfig.slackSigningSecret
+electron/services/database.ts::WriteRetryOpts.baseDelayMs
+electron/services/event-log.ts::PruneEventsOptions.maxRows
+electron/services/github-service.ts::CreatePullRequestReviewInput.commitId
+electron/services/github-types.ts::CreatePullRequestInput.headLabel
+electron/services/github-types.ts::PushBranchInput.setUpstream
+electron/services/governance/sandbox-config.ts::SandboxConfigOptions.clipboardRedirection
+electron/services/governance/sandbox-config.ts::SandboxConfigOptions.logonCommand
+electron/services/governance/sandbox-config.ts::SandboxConfigOptions.mappedFolders
+electron/services/governance/sandbox-config.ts::SandboxConfigOptions.memoryMB
+electron/services/governance/sandbox-config.ts::SandboxConfigOptions.networking
+electron/services/governance/sandbox-config.ts::SandboxConfigOptions.vGpu
+electron/services/idle-scheduler.ts::RunWhenIdleOpts.getIdleMs
+electron/services/local-brain/active-skills.ts::RenderActiveSkillsOptions.perSkillCharBudget
+electron/services/local-brain/active-skills.ts::RenderActiveSkillsOptions.totalCharBudget
+electron/services/local-brain/agui-approval.ts::AguiGateInput.elevatedRisk
+electron/services/local-brain/agui-approval.ts::AguiGateInput.sandboxed
+electron/services/local-brain/agui-run.ts::RunStateOpts.maxBytes
+electron/services/local-brain/agui-run.ts::RunStateOpts.maxFrames
+electron/services/local-brain/grounding-breadth.ts::BreadthInput.spreadMin
+electron/services/local-brain/personalization-recall.ts::CalibrationOpts.kindOf
+electron/services/local-brain/raw-escalation.ts::RawEscalationInput.maxFiles
+electron/services/model-compaction.ts::ModelCompactionInput.minReductionPct
+electron/services/multi-agent-run-tool.ts::ExecuteMultiAgentRunOptions.insideSubAgent
+electron/services/proactive/notices-store.ts::ListOptions.includeRead
+electron/services/rag/chat-augmentation.ts::RagAugmentOptions.queryKind
+electron/services/rag/chat-augmentation.ts::RagAugmentOptions.rerankDeps
+electron/services/rag/rerank.ts::RerankInput.llmCharCap
+electron/services/rag/retrieve.ts::RetrievalInput.queryEmbedding
+electron/services/research/collector.ts::CollectOpts.cascadeOpts
+electron/services/research/collector.ts::CollectOpts.domainCap
+electron/services/research/collector.ts::CollectOpts.maxPerDepth
+electron/services/research/corroborator.ts::CorroborateOpts.callLlm
+electron/services/research/corroborator.ts::CorroborateOpts.clusterThreshold
+electron/services/research/corroborator.ts::CorroborateOpts.maxOppositionPairs
+electron/services/research/index.ts::RunDeepResearchOpts.cheapModel
+electron/services/research/index.ts::RunDeepResearchOpts.synthModel
+electron/services/research/intent.ts::RouteOpts.confidenceThreshold
+electron/services/task-graph.ts::TaskGraphInput.unreadCounts
+electron/services/worktree-runner.ts::AgentWorktreeManagerOptions.baseRef
+electron/services/worktree-runner.ts::AgentWorktreeManagerOptions.runGit
+src/duin/lib/graph-lod.ts::LodOptions.minDegree
+src/lib/types.ts::ForkParams.seedBlobJson

@@ -1,0 +1,200 @@
+{"sample_id":"conv-26","qi":3,"category":1,"hyp":"counseling and mental health careers","correct":false,"judge_raw":"WRONG","secs":1.7,"docs":19}
+{"sample_id":"conv-26","qi":31,"category":2,"hyp":"The week before June 27, 2023.","correct":true,"judge_raw":"CORRECT","secs":4.2,"docs":19}
+{"sample_id":"conv-26","qi":78,"category":1,"hyp":"wooden figurines and running shoes","correct":true,"judge_raw":"CORRECT","secs":4.1,"docs":19}
+{"sample_id":"conv-26","qi":145,"category":4,"hyp":"Thankful — they meant the world to her.","correct":true,"judge_raw":"CORRECT","secs":3.9,"docs":19}
+{"sample_id":"conv-26","qi":141,"category":4,"hyp":"Freedom, authenticity, and embracing her womanhood.","correct":true,"judge_raw":"CORRECT","secs":3.6,"docs":19}
+{"sample_id":"conv-26","qi":109,"category":4,"hyp":"their own pots","correct":true,"judge_raw":"CORRECT","secs":2.1,"docs":19}
+{"sample_id":"conv-26","qi":122,"category":4,"hyp":"To catch the eye, make people smile, and express her feelings.","correct":true,"judge_raw":"CORRECT","secs":2.3,"docs":19}
+{"sample_id":"conv-26","qi":104,"category":4,"hyp":"Becoming Nicole by Amy Ellis Nutt","correct":true,"judge_raw":"CORRECT","secs":2,"docs":19}
+{"sample_id":"conv-26","qi":30,"category":3,"hyp":"Probably not.","correct":true,"judge_raw":"CORRECT","secs":3.9,"docs":19}
+{"sample_id":"conv-26","qi":52,"category":1,"hyp":"Luna, Oliver, and Bailey","correct":true,"judge_raw":"CORRECT","secs":3.2,"docs":19}
+{"sample_id":"conv-26","qi":77,"category":3,"hyp":"Probably not soon.","correct":true,"judge_raw":"CORRECT","secs":6.7,"docs":19}
+{"sample_id":"conv-26","qi":128,"category":4,"hyp":"a rainbow sidewalk for Pride Month","correct":true,"judge_raw":"CORRECT","secs":3.1,"docs":19}
+{"sample_id":"conv-26","qi":105,"category":4,"hyp":"Self-acceptance, finding support, and hope/love.","correct":true,"judge_raw":"CORRECT","secs":2.2,"docs":19}
+{"sample_id":"conv-26","qi":98,"category":4,"hyp":"therapeutic methods for working with trans people","correct":true,"judge_raw":"CORRECT","secs":2.5,"docs":19}
+{"sample_id":"conv-26","qi":72,"category":2,"hyp":"Last year","correct":false,"judge_raw":"WRONG","secs":2.9,"docs":19}
+{"sample_id":"conv-26","qi":19,"category":1,"hyp":"Dinosaurs, animals/nature, camping, the beach, and playing outdoors.","correct":true,"judge_raw":"CORRECT","secs":2.4,"docs":19}
+{"sample_id":"conv-26","qi":144,"category":4,"hyp":"He was okay.","correct":false,"judge_raw":"WRONG","secs":2.3,"docs":19}
+{"sample_id":"conv-26","qi":69,"category":3,"hyp":"Strong, inspiring, brave, passionate, thoughtful, loving, supportive, dedicated.","correct":false,"judge_raw":"WRONG","secs":4.6,"docs":19}
+{"sample_id":"conv-26","qi":59,"category":3,"hyp":"Somewhat religious/spiritual","correct":true,"judge_raw":"CORRECT","secs":2.8,"docs":19}
+{"sample_id":"conv-26","qi":119,"category":4,"hyp":"Tiny and in awe of the universe.","correct":true,"judge_raw":"CORRECT","secs":2.4,"docs":19}
+{"sample_id":"conv-30","qi":42,"category":4,"hyp":"A contemporary piece called “Finding Freedom.”","correct":true,"judge_raw":"CORRECT","secs":3.4,"docs":19}
+{"sample_id":"conv-30","qi":30,"category":2,"hyp":"June 20, 2023","correct":true,"judge_raw":"CORRECT","secs":2.5,"docs":19}
+{"sample_id":"conv-30","qi":60,"category":4,"hyp":"So happy","correct":true,"judge_raw":"CORRECT","secs":2.5,"docs":19}
+{"sample_id":"conv-30","qi":14,"category":2,"hyp":"3 April 2023","correct":true,"judge_raw":"CORRECT","secs":5,"docs":19}
+{"sample_id":"conv-30","qi":51,"category":4,"hyp":"Her own style and making customers feel cozy.","correct":true,"judge_raw":"CORRECT","secs":1.9,"docs":19}
+{"sample_id":"conv-30","qi":8,"category":2,"hyp":"28 January 2023","correct":true,"judge_raw":"CORRECT","secs":2.1,"docs":19}
+{"sample_id":"conv-30","qi":40,"category":4,"hyp":"I don’t know.","correct":false,"judge_raw":"WRONG","secs":3.1,"docs":19}
+{"sample_id":"conv-30","qi":23,"category":1,"hyp":"An ad campaign.","correct":false,"judge_raw":"WRONG","secs":1.9,"docs":19}
+{"sample_id":"conv-30","qi":70,"category":4,"hyp":"a dance studio","correct":true,"judge_raw":"CORRECT","secs":1.6,"docs":19}
+{"sample_id":"conv-30","qi":4,"category":4,"hyp":"To share his passion for dancing with others.","correct":false,"judge_raw":"WRONG","secs":2.1,"docs":19}
+{"sample_id":"conv-41","qi":125,"category":4,"hyp":"what we have and the need to give back","correct":false,"judge_raw":"WRONG","secs":2.3,"docs":32}
+{"sample_id":"conv-41","qi":136,"category":4,"hyp":"Respect and appreciate veterans.","correct":true,"judge_raw":"CORRECT","secs":1.9,"docs":32}
+{"sample_id":"conv-41","qi":0,"category":2,"hyp":"her mom","correct":true,"judge_raw":"CORRECT","secs":2.9,"docs":32}
+{"sample_id":"conv-41","qi":114,"category":4,"hyp":"support at home and his own grit","correct":true,"judge_raw":"CORRECT","secs":3.2,"docs":32}
+{"sample_id":"conv-41","qi":145,"category":4,"hyp":"Peaceful and awesome.","correct":true,"judge_raw":"CORRECT","secs":2,"docs":32}
+{"sample_id":"conv-41","qi":24,"category":2,"hyp":"April 2023","correct":true,"judge_raw":"CORRECT","secs":2.3,"docs":32}
+{"sample_id":"conv-41","qi":15,"category":1,"hyp":"Poetry class","correct":false,"judge_raw":"WRONG","secs":2.3,"docs":32}
+{"sample_id":"conv-41","qi":39,"category":3,"hyp":"Fourth of July / Independence Day","correct":true,"judge_raw":"CORRECT","secs":2,"docs":32}
+{"sample_id":"conv-41","qi":11,"category":1,"hyp":"Jean, Cindy, Laura, and kids/shelter residents.","correct":false,"judge_raw":"WRONG","secs":2.9,"docs":32}
+{"sample_id":"conv-41","qi":18,"category":1,"hyp":"a colleague","correct":false,"judge_raw":"WRONG","secs":1.7,"docs":32}
+{"sample_id":"conv-41","qi":73,"category":4,"hyp":"A struggling family on the streets","correct":false,"judge_raw":"WRONG","secs":2.2,"docs":32}
+{"sample_id":"conv-41","qi":70,"category":4,"hyp":"Pizza","correct":true,"judge_raw":"CORRECT","secs":1.6,"docs":32}
+{"sample_id":"conv-41","qi":78,"category":4,"hyp":"Kyle","correct":true,"judge_raw":"CORRECT","secs":1.8,"docs":32}
+{"sample_id":"conv-41","qi":101,"category":4,"hyp":"a fundraiser next week","correct":true,"judge_raw":"CORRECT","secs":3.9,"docs":32}
+{"sample_id":"conv-41","qi":69,"category":4,"hyp":"her old car","correct":true,"judge_raw":"CORRECT","secs":4.4,"docs":32}
+{"sample_id":"conv-41","qi":57,"category":1,"hyp":"Veterans/families, domestic abuse victims, local fire station.","correct":false,"judge_raw":"WRONG","secs":2,"docs":32}
+{"sample_id":"conv-41","qi":50,"category":3,"hyp":"community-minded, family-oriented, passionate, resilient, supportive, outdoorsy, politically engaged, volunteer/mentor, aspiring firefighter","correct":false,"judge_raw":"WRONG","secs":3.2,"docs":32}
+{"sample_id":"conv-41","qi":126,"category":4,"hyp":"Appreciation for what we have and the need to give back.","correct":true,"judge_raw":"CORRECT","secs":2,"docs":32}
+{"sample_id":"conv-41","qi":151,"category":4,"hyp":"a brand new fire truck","correct":true,"judge_raw":"CORRECT","secs":1.8,"docs":32}
+{"sample_id":"conv-41","qi":77,"category":4,"hyp":"a beginner's yoga class","correct":true,"judge_raw":"CORRECT","secs":2.4,"docs":32}
+{"sample_id":"conv-41","qi":141,"category":4,"hyp":"a local organization","correct":true,"judge_raw":"CORRECT","secs":1.8,"docs":32}
+{"sample_id":"conv-41","qi":9,"category":1,"hyp":"Her aunt","correct":true,"judge_raw":"CORRECT","secs":4.1,"docs":32}
+{"sample_id":"conv-41","qi":146,"category":4,"hyp":"He doesn’t feel he’s making much of an impact.","correct":true,"judge_raw":"CORRECT","secs":2.1,"docs":32}
+{"sample_id":"conv-41","qi":117,"category":4,"hyp":"a marching event","correct":true,"judge_raw":"CORRECT","secs":2.1,"docs":32}
+{"sample_id":"conv-42","qi":24,"category":2,"hyp":"June 18–19, 2022","correct":false,"judge_raw":"WRONG","secs":3.8,"docs":29}
+{"sample_id":"conv-42","qi":114,"category":4,"hyp":"Fantasy series with adventure, magic, battles, and strong characters.","correct":true,"judge_raw":"CORRECT","secs":2.1,"docs":29}
+{"sample_id":"conv-42","qi":15,"category":2,"hyp":"Last week before 15 April 2022.","correct":true,"judge_raw":"CORRECT","secs":2.7,"docs":29}
+{"sample_id":"conv-42","qi":9,"category":2,"hyp":"Finished her first full screenplay.","correct":false,"judge_raw":"WRONG","secs":2.4,"docs":29}
+{"sample_id":"conv-42","qi":129,"category":4,"hyp":"Iron Man","correct":true,"judge_raw":"CORRECT","secs":3.2,"docs":29}
+{"sample_id":"conv-42","qi":169,"category":4,"hyp":"Keeps Tilly with her.","correct":true,"judge_raw":"CORRECT","secs":1.8,"docs":29}
+{"sample_id":"conv-42","qi":13,"category":2,"hyp":"23 March 2022","correct":true,"judge_raw":"CORRECT","secs":1.8,"docs":29}
+{"sample_id":"conv-42","qi":36,"category":2,"hyp":"Last week — mid-August 2022","correct":true,"judge_raw":"CORRECT","secs":2.7,"docs":29}
+{"sample_id":"conv-42","qi":96,"category":4,"hyp":"Action and sci-fi movies","correct":true,"judge_raw":"CORRECT","secs":2.3,"docs":29}
+{"sample_id":"conv-42","qi":48,"category":2,"hyp":"Last Friday — October 7, 2022","correct":true,"judge_raw":"CORRECT","secs":2.6,"docs":29}
+{"sample_id":"conv-42","qi":103,"category":4,"hyp":"Little Women","correct":true,"judge_raw":"CORRECT","secs":1.5,"docs":29}
+{"sample_id":"conv-42","qi":5,"category":1,"hyp":"Writing, reading, watching movies, exploring nature/hiking, and baking dairy-free desserts.","correct":false,"judge_raw":"WRONG","secs":2,"docs":29}
+{"sample_id":"conv-42","qi":136,"category":4,"hyp":"Four tournaments","correct":true,"judge_raw":"CORRECT","secs":2.2,"docs":29}
+{"sample_id":"conv-42","qi":165,"category":4,"hyp":"a bookcase filled with DVDs and movies","correct":true,"judge_raw":"CORRECT","secs":1.8,"docs":29}
+{"sample_id":"conv-42","qi":76,"category":1,"hyp":"On his own cooking show.","correct":false,"judge_raw":"WRONG","secs":5.2,"docs":29}
+{"sample_id":"conv-42","qi":112,"category":4,"hyp":"Finding Home","correct":true,"judge_raw":"CORRECT","secs":1.6,"docs":29}
+{"sample_id":"conv-42","qi":170,"category":4,"hyp":"After her old dog in Michigan.","correct":true,"judge_raw":"CORRECT","secs":1.9,"docs":29}
+{"sample_id":"conv-42","qi":113,"category":4,"hyp":"Action and sci-fi movies","correct":false,"judge_raw":"WRONG","secs":3.2,"docs":29}
+{"sample_id":"conv-42","qi":108,"category":4,"hyp":"Low-maintenance — just keep their area clean, feed them properly, and give them enough light.","correct":true,"judge_raw":"CORRECT","secs":5.4,"docs":29}
+{"sample_id":"conv-42","qi":154,"category":4,"hyp":"cooking show","correct":true,"judge_raw":"CORRECT","secs":2.7,"docs":29}
+{"sample_id":"conv-42","qi":57,"category":2,"hyp":"November 5, 2022","correct":true,"judge_raw":"CORRECT","secs":5,"docs":29}
+{"sample_id":"conv-42","qi":92,"category":4,"hyp":"Purple lighting","correct":false,"judge_raw":"WRONG","secs":3.6,"docs":29}
+{"sample_id":"conv-42","qi":8,"category":2,"hyp":"By March 18, 2022","correct":false,"judge_raw":"WRONG","secs":5,"docs":29}
+{"sample_id":"conv-42","qi":54,"category":2,"hyp":"23 October, 2022","correct":true,"judge_raw":"CORRECT","secs":13.3,"docs":29}
+{"sample_id":"conv-42","qi":196,"category":4,"hyp":"his turtles","correct":true,"judge_raw":"CORRECT","secs":1.7,"docs":29}
+{"sample_id":"conv-43","qi":139,"category":4,"hyp":"His love for writing and reading","correct":true,"judge_raw":"CORRECT","secs":8.4,"docs":29}
+{"sample_id":"conv-43","qi":54,"category":2,"hyp":"Last year","correct":false,"judge_raw":"WRONG","secs":2.5,"docs":29}
+{"sample_id":"conv-43","qi":125,"category":4,"hyp":"“Turn on the light — happiness hides in the darkest of times.”","correct":true,"judge_raw":"CORRECT","secs":2.8,"docs":29}
+{"sample_id":"conv-43","qi":68,"category":2,"hyp":"Friday, January 5, 2024","correct":true,"judge_raw":"CORRECT","secs":3.7,"docs":29}
+{"sample_id":"conv-43","qi":140,"category":4,"hyp":"Worked hard to get better.","correct":true,"judge_raw":"CORRECT","secs":2.1,"docs":29}
+{"sample_id":"conv-43","qi":103,"category":4,"hyp":"Butternut squash soup","correct":false,"judge_raw":"WRONG","secs":1.8,"docs":29}
+{"sample_id":"conv-43","qi":56,"category":2,"hyp":"Around August 2023","correct":true,"judge_raw":"CORRECT","secs":3.4,"docs":29}
+{"sample_id":"conv-43","qi":55,"category":2,"hyp":"Early 2023","correct":false,"judge_raw":"WRONG","secs":4.5,"docs":29}
+{"sample_id":"conv-43","qi":92,"category":4,"hyp":"An autographed basketball.","correct":true,"judge_raw":"CORRECT","secs":2.2,"docs":29}
+{"sample_id":"conv-43","qi":16,"category":2,"hyp":"About three weeks.","correct":true,"judge_raw":"CORRECT","secs":3.6,"docs":29}
+{"sample_id":"conv-43","qi":36,"category":1,"hyp":"LeBron James","correct":true,"judge_raw":"CORRECT","secs":2.1,"docs":29}
+{"sample_id":"conv-43","qi":100,"category":4,"hyp":"Four years.","correct":true,"judge_raw":"CORRECT","secs":4.9,"docs":29}
+{"sample_id":"conv-43","qi":110,"category":4,"hyp":"The Name of the Wind","correct":true,"judge_raw":"CORRECT","secs":2.5,"docs":29}
+{"sample_id":"conv-43","qi":0,"category":1,"hyp":"Win a championship and make a positive impact off the court.","correct":false,"judge_raw":"WRONG","secs":2.1,"docs":29}
+{"sample_id":"conv-43","qi":160,"category":4,"hyp":"visited a travel agency","correct":true,"judge_raw":"CORRECT","secs":3.4,"docs":29}
+{"sample_id":"conv-43","qi":127,"category":4,"hyp":"Cooking","correct":true,"judge_raw":"CORRECT","secs":2.9,"docs":29}
+{"sample_id":"conv-43","qi":118,"category":4,"hyp":"a trophy","correct":true,"judge_raw":"CORRECT","secs":1.8,"docs":29}
+{"sample_id":"conv-43","qi":43,"category":1,"hyp":"his skills and leadership","correct":false,"judge_raw":"WRONG","secs":2.9,"docs":29}
+{"sample_id":"conv-43","qi":48,"category":1,"hyp":"Last season.","correct":false,"judge_raw":"WRONG","secs":2,"docs":29}
+{"sample_id":"conv-44","qi":44,"category":3,"hyp":"Acadia National Park","correct":false,"judge_raw":"WRONG","secs":8.6,"docs":28}
+{"sample_id":"conv-44","qi":16,"category":2,"hyp":"Saturday","correct":false,"judge_raw":"WRONG","secs":4.1,"docs":28}
+{"sample_id":"conv-44","qi":8,"category":2,"hyp":"No.","correct":true,"judge_raw":"CORRECT","secs":1.9,"docs":28}
+{"sample_id":"conv-44","qi":79,"category":4,"hyp":"Chicken Pot Pie","correct":true,"judge_raw":"CORRECT","secs":1.9,"docs":28}
+{"sample_id":"conv-44","qi":28,"category":1,"hyp":"party hats","correct":true,"judge_raw":"CORRECT","secs":4,"docs":28}
+{"sample_id":"conv-44","qi":10,"category":2,"hyp":"June 2023","correct":true,"judge_raw":"CORRECT","secs":2.1,"docs":28}
+{"sample_id":"conv-44","qi":121,"category":4,"hyp":"Take them to a nearby park.","correct":true,"judge_raw":"CORRECT","secs":5.1,"docs":28}
+{"sample_id":"conv-44","qi":54,"category":1,"hyp":"Play fetch and Frisbee.","correct":false,"judge_raw":"WRONG","secs":2.9,"docs":28}
+{"sample_id":"conv-44","qi":32,"category":1,"hyp":"her four dogs with sunflowers","correct":true,"judge_raw":"CORRECT","secs":2.6,"docs":28}
+{"sample_id":"conv-44","qi":9,"category":1,"hyp":"Agility classes, a dog grooming course, and a dog owners group.","correct":false,"judge_raw":"WRONG","secs":6.3,"docs":28}
+{"sample_id":"conv-44","qi":39,"category":1,"hyp":"a new place with a bigger backyard","correct":false,"judge_raw":"WRONG","secs":7.1,"docs":28}
+{"sample_id":"conv-44","qi":104,"category":4,"hyp":"Donates a portion of her jewelry profits.","correct":true,"judge_raw":"CORRECT","secs":3.6,"docs":28}
+{"sample_id":"conv-44","qi":89,"category":4,"hyp":"Regular grooming.","correct":false,"judge_raw":"WRONG","secs":3.3,"docs":28}
+{"sample_id":"conv-44","qi":34,"category":2,"hyp":"About 2 months","correct":false,"judge_raw":"WRONG","secs":4.4,"docs":28}
+{"sample_id":"conv-44","qi":72,"category":4,"hyp":"Punishment is never the proper way.","correct":false,"judge_raw":"WRONG","secs":1.8,"docs":28}
+{"sample_id":"conv-44","qi":78,"category":4,"hyp":"a stunning lake in the mountains","correct":true,"judge_raw":"CORRECT","secs":1.8,"docs":28}
+{"sample_id":"conv-47","qi":43,"category":2,"hyp":"Next month","correct":false,"judge_raw":"WRONG","secs":3.6,"docs":31}
+{"sample_id":"conv-47","qi":102,"category":4,"hyp":"Reading while snuggled under the covers","correct":true,"judge_raw":"CORRECT","secs":4.9,"docs":31}
+{"sample_id":"conv-47","qi":68,"category":4,"hyp":"A dog walking and pet care app.","correct":true,"judge_raw":"CORRECT","secs":1.9,"docs":31}
+{"sample_id":"conv-47","qi":144,"category":4,"hyp":"An apartment near McGee’s bar.","correct":true,"judge_raw":"CORRECT","secs":1.7,"docs":31}
+{"sample_id":"conv-47","qi":134,"category":4,"hyp":"Watches tutorials and keeps up with developer forums.","correct":true,"judge_raw":"CORRECT","secs":4.8,"docs":31}
+{"sample_id":"conv-47","qi":121,"category":4,"hyp":"lager beer","correct":true,"judge_raw":"CORRECT","secs":3.1,"docs":31}
+{"sample_id":"conv-47","qi":26,"category":1,"hyp":"Italy, Turkey, and Mexico.","correct":false,"judge_raw":"WRONG","secs":3.5,"docs":31}
+{"sample_id":"conv-47","qi":91,"category":4,"hyp":"tracking inventory, resources, and donations","correct":true,"judge_raw":"CORRECT","secs":5.7,"docs":31}
+{"sample_id":"conv-47","qi":77,"category":4,"hyp":"Communicate with the team and don’t put ego above team success.","correct":true,"judge_raw":"CORRECT","secs":2.2,"docs":31}
+{"sample_id":"conv-47","qi":34,"category":1,"hyp":"Canada and Greenland","correct":true,"judge_raw":"CORRECT","secs":3,"docs":31}
+{"sample_id":"conv-47","qi":124,"category":4,"hyp":"To learn something new.","correct":true,"judge_raw":"CORRECT","secs":1.9,"docs":31}
+{"sample_id":"conv-47","qi":85,"category":4,"hyp":"Labrador","correct":true,"judge_raw":"CORRECT","secs":1.8,"docs":31}
+{"sample_id":"conv-48","qi":83,"category":1,"hyp":"Internships, workshops, networking, and virtual conferences.","correct":true,"judge_raw":"CORRECT","secs":2.2,"docs":30}
+{"sample_id":"conv-48","qi":113,"category":4,"hyp":"To find comfort after losing a friend.","correct":true,"judge_raw":"CORRECT","secs":3.3,"docs":30}
+{"sample_id":"conv-48","qi":145,"category":4,"hyp":"Spending time with Susie/her snakes and playing video games with her partner.","correct":true,"judge_raw":"CORRECT","secs":4.9,"docs":30}
+{"sample_id":"conv-48","qi":155,"category":4,"hyp":"Yoga and meditation.","correct":false,"judge_raw":"WRONG","secs":1.9,"docs":30}
+{"sample_id":"conv-48","qi":66,"category":2,"hyp":"29 August 2023","correct":true,"judge_raw":"CORRECT","secs":4.3,"docs":30}
+{"sample_id":"conv-48","qi":137,"category":4,"hyp":"a running group","correct":true,"judge_raw":"CORRECT","secs":2.1,"docs":30}
+{"sample_id":"conv-48","qi":120,"category":4,"hyp":"Breaking tasks into smaller pieces and using a planner/schedule.","correct":true,"judge_raw":"CORRECT","secs":1.9,"docs":30}
+{"sample_id":"conv-48","qi":99,"category":4,"hyp":"fresh pastries","correct":false,"judge_raw":"WRONG","secs":1.9,"docs":30}
+{"sample_id":"conv-48","qi":23,"category":3,"hyp":"Busy with her internship/studies.","correct":false,"judge_raw":"WRONG","secs":3.2,"docs":30}
+{"sample_id":"conv-48","qi":103,"category":4,"hyp":"At yoga in the park.","correct":true,"judge_raw":"CORRECT","secs":2.5,"docs":30}
+{"sample_id":"conv-48","qi":79,"category":1,"hyp":"Yes.","correct":true,"judge_raw":"CORRECT","secs":1.6,"docs":30}
+{"sample_id":"conv-48","qi":71,"category":2,"hyp":"Last Friday","correct":false,"judge_raw":"WRONG","secs":2,"docs":30}
+{"sample_id":"conv-48","qi":53,"category":2,"hyp":"Two years ago.","correct":false,"judge_raw":"WRONG","secs":2.8,"docs":30}
+{"sample_id":"conv-48","qi":159,"category":4,"hyp":"Thrilled and rewarded.","correct":true,"judge_raw":"CORRECT","secs":2.1,"docs":30}
+{"sample_id":"conv-48","qi":126,"category":4,"hyp":"Instrumental tracks with mellow melodies and rhythms.","correct":true,"judge_raw":"CORRECT","secs":2.4,"docs":30}
+{"sample_id":"conv-48","qi":166,"category":4,"hyp":"a tranquil spot by a pond","correct":true,"judge_raw":"CORRECT","secs":3.7,"docs":30}
+{"sample_id":"conv-48","qi":29,"category":2,"hyp":"Last Wednesday — February 1, 2023","correct":true,"judge_raw":"CORRECT","secs":5,"docs":30}
+{"sample_id":"conv-48","qi":172,"category":4,"hyp":"Monster Hunter: World","correct":true,"judge_raw":"CORRECT","secs":2.8,"docs":30}
+{"sample_id":"conv-48","qi":111,"category":4,"hyp":"Invite them as guest speakers for workshops.","correct":true,"judge_raw":"CORRECT","secs":1.9,"docs":30}
+{"sample_id":"conv-48","qi":93,"category":4,"hyp":"Renewable energy (solar) and clean water access projects.","correct":true,"judge_raw":"CORRECT","secs":4.3,"docs":30}
+{"sample_id":"conv-48","qi":31,"category":2,"hyp":"Last summer","correct":true,"judge_raw":"CORRECT","secs":1.5,"docs":30}
+{"sample_id":"conv-48","qi":19,"category":1,"hyp":"Once","correct":false,"judge_raw":"WRONG","secs":2.8,"docs":30}
+{"sample_id":"conv-48","qi":160,"category":4,"hyp":"a virtual conference","correct":true,"judge_raw":"CORRECT","secs":2,"docs":30}
+{"sample_id":"conv-48","qi":130,"category":4,"hyp":"Feeling like she’s still experiencing art with her mom.","correct":true,"judge_raw":"CORRECT","secs":2,"docs":30}
+{"sample_id":"conv-48","qi":186,"category":4,"hyp":"pineapple birthday cakes","correct":true,"judge_raw":"CORRECT","secs":2.6,"docs":30}
+{"sample_id":"conv-48","qi":97,"category":4,"hyp":"Yes — Jolene yesterday; Deborah three years ago.","correct":true,"judge_raw":"CORRECT","secs":2.4,"docs":30}
+{"sample_id":"conv-49","qi":97,"category":4,"hyp":"It symbolizes strength and resilience.","correct":true,"judge_raw":"CORRECT","secs":1.7,"docs":25}
+{"sample_id":"conv-49","qi":26,"category":1,"hyp":"His family.","correct":false,"judge_raw":"WRONG","secs":1.6,"docs":25}
+{"sample_id":"conv-49","qi":56,"category":1,"hyp":"His navigation app keeps malfunctioning.","correct":true,"judge_raw":"CORRECT","secs":2.1,"docs":25}
+{"sample_id":"conv-49","qi":63,"category":2,"hyp":"Last weekend before Oct 17, 2023.","correct":true,"judge_raw":"CORRECT","secs":9.2,"docs":25}
+{"sample_id":"conv-49","qi":116,"category":4,"hyp":"a painting of a person on a cliff","correct":false,"judge_raw":"WRONG","secs":3.3,"docs":25}
+{"sample_id":"conv-49","qi":146,"category":4,"hyp":"Their marriage.","correct":true,"judge_raw":"CORRECT","secs":1.8,"docs":25}
+{"sample_id":"conv-49","qi":81,"category":1,"hyp":"painting","correct":false,"judge_raw":"WRONG","secs":1.5,"docs":25}
+{"sample_id":"conv-49","qi":90,"category":4,"hyp":"Swap soda for flavored seltzer and candy for dark chocolate.","correct":true,"judge_raw":"CORRECT","secs":2.1,"docs":25}
+{"sample_id":"conv-49","qi":67,"category":2,"hyp":"December 2023","correct":true,"judge_raw":"CORRECT","secs":3.5,"docs":25}
+{"sample_id":"conv-49","qi":65,"category":3,"hyp":"Close to a beach","correct":true,"judge_raw":"CORRECT","secs":2.1,"docs":25}
+{"sample_id":"conv-49","qi":15,"category":1,"hyp":"Sugary drinks and snacks — especially soda and candy.","correct":true,"judge_raw":"CORRECT","secs":2.3,"docs":25}
+{"sample_id":"conv-49","qi":2,"category":1,"hyp":"Jasper via the Icefields Parkway.","correct":false,"judge_raw":"WRONG","secs":2.1,"docs":25}
+{"sample_id":"conv-49","qi":57,"category":3,"hyp":"California","correct":true,"judge_raw":"CORRECT","secs":8.8,"docs":25}
+{"sample_id":"conv-49","qi":17,"category":2,"hyp":"Last Friday — 21 July 2023","correct":true,"judge_raw":"CORRECT","secs":12,"docs":25}
+{"sample_id":"conv-49","qi":69,"category":1,"hyp":"Partner is pregnant; Evan got married.","correct":true,"judge_raw":"CORRECT","secs":2.4,"docs":25}
+{"sample_id":"conv-49","qi":137,"category":4,"hyp":"A close friend.","correct":true,"judge_raw":"CORRECT","secs":2.4,"docs":25}
+{"sample_id":"conv-49","qi":70,"category":2,"hyp":"Unknown.","correct":false,"judge_raw":"WRONG","secs":11.2,"docs":25}
+{"sample_id":"conv-49","qi":94,"category":4,"hyp":"flavored seltzer water","correct":true,"judge_raw":"CORRECT","secs":1.9,"docs":25}
+{"sample_id":"conv-49","qi":119,"category":4,"hyp":"lifting weights","correct":true,"judge_raw":"CORRECT","secs":2.1,"docs":25}
+{"sample_id":"conv-49","qi":118,"category":4,"hyp":"Broken self-checkout machines.","correct":false,"judge_raw":"WRONG","secs":2,"docs":25}
+{"sample_id":"conv-49","qi":124,"category":4,"hyp":"He started lifting weights a year ago and is seeing some gains.","correct":true,"judge_raw":"CORRECT","secs":3.9,"docs":25}
+{"sample_id":"conv-49","qi":60,"category":2,"hyp":"kayaking","correct":true,"judge_raw":"CORRECT","secs":2.1,"docs":25}
+{"sample_id":"conv-49","qi":98,"category":4,"hyp":"Progress","correct":true,"judge_raw":"CORRECT","secs":6.5,"docs":25}
+{"sample_id":"conv-49","qi":151,"category":4,"hyp":"The Godfather","correct":true,"judge_raw":"CORRECT","secs":1.8,"docs":25}
+{"sample_id":"conv-50","qi":24,"category":1,"hyp":"Yes.","correct":true,"judge_raw":"CORRECT","secs":3.4,"docs":30}
+{"sample_id":"conv-50","qi":100,"category":4,"hyp":"in the studio at Calvin’s mansion","correct":true,"judge_raw":"CORRECT","secs":2.1,"docs":30}
+{"sample_id":"conv-50","qi":33,"category":1,"hyp":"Attending a car restoration/modification workshop.","correct":true,"judge_raw":"CORRECT","secs":2.3,"docs":30}
+{"sample_id":"conv-50","qi":86,"category":4,"hyp":"Skiing","correct":true,"judge_raw":"CORRECT","secs":2,"docs":30}
+{"sample_id":"conv-50","qi":148,"category":4,"hyp":"car mods","correct":true,"judge_raw":"CORRECT","secs":1.8,"docs":30}
+{"sample_id":"conv-50","qi":103,"category":4,"hyp":"An octopus.","correct":true,"judge_raw":"CORRECT","secs":1.8,"docs":30}
+{"sample_id":"conv-50","qi":57,"category":2,"hyp":"Photography","correct":true,"judge_raw":"CORRECT","secs":1.9,"docs":30}
+{"sample_id":"conv-50","qi":48,"category":2,"hyp":"Went to a car show.","correct":true,"judge_raw":"CORRECT","secs":4,"docs":30}
+{"sample_id":"conv-50","qi":64,"category":1,"hyp":"Regular park walks, a countryside road trip, card night, celebrating his car shop opening, and a music festival.","correct":false,"judge_raw":"WRONG","secs":2.3,"docs":30}
+{"sample_id":"conv-50","qi":79,"category":4,"hyp":"Immerses himself in concerts or favorite albums.","correct":true,"judge_raw":"CORRECT","secs":3.7,"docs":30}
+{"sample_id":"conv-50","qi":38,"category":2,"hyp":"Last night","correct":false,"judge_raw":"WRONG","secs":2.6,"docs":30}
+{"sample_id":"conv-50","qi":4,"category":3,"hyp":"Japan","correct":false,"judge_raw":"WRONG","secs":2.4,"docs":30}
+{"sample_id":"conv-50","qi":12,"category":2,"hyp":"Late May 2023","correct":true,"judge_raw":"CORRECT","secs":8.1,"docs":30}
+{"sample_id":"conv-50","qi":151,"category":4,"hyp":"Photography","correct":true,"judge_raw":"CORRECT","secs":2.1,"docs":30}
+{"sample_id":"conv-50","qi":49,"category":1,"hyp":"Tinkered with engines.","correct":true,"judge_raw":"CORRECT","secs":2,"docs":30}
+{"sample_id":"conv-50","qi":129,"category":4,"hyp":"Performing and connecting with the crowd","correct":true,"judge_raw":"CORRECT","secs":2.5,"docs":30}
+{"sample_id":"conv-50","qi":80,"category":4,"hyp":"take a break and explore other things","correct":true,"judge_raw":"CORRECT","secs":8.5,"docs":30}
+{"sample_id":"conv-50","qi":136,"category":4,"hyp":"Last year.","correct":true,"judge_raw":"CORRECT","secs":3.9,"docs":30}
+{"sample_id":"conv-50","qi":7,"category":3,"hyp":"Yes — a group of people.","correct":true,"judge_raw":"CORRECT","secs":2.3,"docs":30}
+{"sample_id":"conv-50","qi":20,"category":1,"hyp":"His dad.","correct":true,"judge_raw":"CORRECT","secs":4.3,"docs":30}
+{"sample_id":"conv-50","qi":116,"category":4,"hyp":"Ford Mustang","correct":true,"judge_raw":"CORRECT","secs":1.8,"docs":30}
+{"sample_id":"conv-50","qi":118,"category":4,"hyp":"Support and encouragement","correct":false,"judge_raw":"WRONG","secs":1.7,"docs":30}
+{"sample_id":"conv-50","qi":2,"category":2,"hyp":"Last weekend — around 18–19 March 2023.","correct":true,"judge_raw":"CORRECT","secs":8.3,"docs":30}
+{"sample_id":"conv-50","qi":27,"category":2,"hyp":"Miami","correct":true,"judge_raw":"CORRECT","secs":3.4,"docs":30}

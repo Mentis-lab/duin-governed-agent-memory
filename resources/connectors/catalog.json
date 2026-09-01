@@ -1,0 +1,117 @@
+{
+  "$schema": "https://duin.local/connectors-catalog.json",
+  "entries": [
+    {
+      "id": "terminator",
+      "name": "Windows Desktop (Terminator)",
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "terminator-mcp-agent"],
+      "auth": "none",
+      "enabled": false,
+      "description": "Computer use: drive real Windows apps (WeChat, Excel, native tools) via the UI Automation accessibility tree — click, type, and read controls by name/role. Attended by default: every actuating tool requires approval and is CAP-floored in unattended runs. Off until you enable it.",
+      "category": "Computer Use"
+    },
+    {
+      "id": "computer-use",
+      "name": "Computer Use (screen + mouse + keyboard)",
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@zavora-ai/computer-use-mcp"],
+      "auth": "none",
+      "enabled": false,
+      "description": "Computer use: screenshot the desktop and drive mouse/keyboard on any Windows app (UIA with a pixel fallback). Attended by default — actuating tools require approval. Off until you enable it.",
+      "category": "Computer Use"
+    },
+    {
+      "id": "playwright",
+      "name": "Playwright Browser",
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@latest"],
+      "auth": "none",
+      "enabled": true,
+      "description": "Headless Chromium driving via Playwright. Lets the agent navigate URLs, click elements, and snapshot pages.",
+      "category": "Browser"
+    },
+    {
+      "id": "filesystem",
+      "name": "Filesystem",
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "./"],
+      "auth": "none",
+      "enabled": true,
+      "description": "Read + write files inside the current workspace. Defaults to the project root; pass an explicit directory in args to scope it.",
+      "category": "Files"
+    },
+    {
+      "id": "github",
+      "name": "GitHub",
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "auth": "none",
+      "enabled": true,
+      "description": "Read repositories, open PRs, manage issues. Set GITHUB_TOKEN in the env block to authenticate.",
+      "category": "Dev tools",
+      "env": { "GITHUB_TOKEN": "" }
+    },
+    {
+      "id": "postgres",
+      "name": "Postgres",
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-postgres", "postgresql://user:pass@localhost:5432/dbname"],
+      "auth": "none",
+      "enabled": false,
+      "description": "Run read-only queries against a Postgres database. Replace the placeholder connection string in args, then enable.",
+      "category": "Databases"
+    },
+    {
+      "id": "sqlite",
+      "name": "SQLite",
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-sqlite", "./db.sqlite"],
+      "auth": "none",
+      "enabled": false,
+      "description": "Query a SQLite database file. Replace the placeholder path in args with your `.sqlite` file, then enable.",
+      "category": "Databases"
+    },
+    {
+      "id": "memory",
+      "name": "Knowledge Graph Memory",
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory"],
+      "auth": "none",
+      "enabled": true,
+      "description": "Persistent knowledge-graph memory the agent can write to and recall from across turns.",
+      "category": "Knowledge"
+    },
+    {
+      "id": "fetch",
+      "name": "HTTP Fetch",
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-fetch"],
+      "auth": "none",
+      "enabled": true,
+      "description": "Fetch arbitrary URLs and convert them to Markdown for grounded reading.",
+      "category": "Web"
+    },
+    {
+      "id": "slack",
+      "name": "Slack",
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-slack"],
+      "auth": "none",
+      "enabled": true,
+      "description": "Read channels, messages, and threads, and post messages. Set SLACK_BOT_TOKEN + SLACK_TEAM_ID in the env block. (Slack ingest into your brain is configured separately under Connections.)",
+      "category": "Communication",
+      "env": { "SLACK_BOT_TOKEN": "", "SLACK_TEAM_ID": "" }
+    }
+  ]
+}

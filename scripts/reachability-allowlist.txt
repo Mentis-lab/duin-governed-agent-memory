@@ -1,0 +1,157 @@
+# Reachability allowlist — renderer files not reachable from src/main.tsx over
+# value imports. Generated as a baseline on 2026-07-30 so `reachability-lint`
+# could land as a hard gate on NEW dead code without waiting for the Phase 3
+# cleanup (PLANNING/DUIN_GAP_BRIDGE_PLAN.md).
+#
+# THIS FILE IS DEBT, NOT CONFIGURATION. Every line is either something to mount
+# or something to delete. Shortening it is the goal; the lint fails on a stale
+# entry precisely so it cannot quietly become permanent.
+#
+# Nothing here is broken code. Almost all of it is complete, reviewed and tested
+# work that no call site reaches — which is exactly why a grep-based review never
+# flagged it.
+
+# ── One abandoned navigation redesign (decide it once, not file by file) ──
+# app-sidebar carries a 12-entry NAV/TOOLS model and is reachable ONLY through an
+# `import type { View }` edge in brain-shell.tsx, which the build erases. Its
+# whole duin/ui subtree goes dark with it. Three of its NAV entries are also the
+# three ToolIds that ToolsPanel lazy-registers and no call site ever sets.
+src/duin/components/app-sidebar.tsx
+src/duin/components/ui/input.tsx
+src/duin/components/ui/separator.tsx
+src/duin/components/ui/sidebar.tsx
+src/duin/components/ui/skeleton.tsx
+src/duin/components/ui/tooltip.tsx
+src/duin/hooks/use-mobile.ts
+
+# ── The operator's own compounding state — the product, unmounted ──
+# These are the surfaces that would show the operator what DUIN has learned about
+# them. Mounting these is Phase 3's highest-value item, not its cleanup.
+# decision-mirror-nudge is deliberate (pull-only v1, parked); the rest are not.
+src/duin/components/views/how-you-decide-card.tsx
+src/duin/components/views/decision-mirror-nudge.tsx
+src/duin/lib/how-you-decide.ts
+src/duin/components/RevealOverlay.tsx
+src/duin/lib/reveal-reducer.ts
+
+# ── The sanctioned brain write path, unadopted ──
+# Built to kill the 2026-06-30 wrong-brain bug class; every write still goes
+# through the legacy /state/* fetches it was meant to replace. Do not delete —
+# the gap is adoption, not design.
+src/duin/lib/brain-client.ts
+
+# ── Dead directories sitting on live backends ──
+# github/ is 1,158 lines on top of a 1,568-line service and 557-line IPC layer,
+# all live, with no operator surface at all.
+src/components/github/InlineCommentComposer.tsx
+src/components/github/IssuesPanel.tsx
+src/components/github/PRDiffView.tsx
+src/components/github/PRStatusChecks.tsx
+src/components/github/PullRequestsPanel.tsx
+
+# ── Superseded, never retired ──
+# Skills UI now lives in customize/SkillsColumn.tsx; the rest were replaced by
+# newer surfaces and left in the tree.
+src/components/skills/SkillEditor.tsx
+src/components/skills/SkillPanel.tsx
+src/components/mcp/MCPStatusBar.tsx
+src/components/model/ModelSwitcher.tsx
+src/components/ui/Input.tsx
+
+# AddToolMenu and its orphans were DELETED 2026-08-08 rather than kept allowlisted:
+# a launcher nothing mounts is how four panels quietly became keyboard-only.
+src/components/layout/SidebarFilterMenu.tsx
+
+# ── Chat surfaces built and not mounted ──
+src/components/chat/AgentRunBanner.tsx
+# CitationChip lost its last mount at 5b29443, which stopped the prompt asking
+# for [N] markers -- nothing generates input for it now. Parked, not dead: it is
+# the middle of the R12 trio with src/lib/citation-parser.ts and
+# SourcePreviewPane.tsx, both already listed here, and that parser's header
+# carries the wiring order for picking R12 back up.
+src/components/chat/CitationChip.tsx
+src/components/chat/ContextAttachBar.tsx
+src/components/chat/PlanChecklist.tsx
+src/components/chat/SourcePreviewPane.tsx
+src/components/chat/TurnActivityTimeline.tsx
+src/components/chat/WelcomeScreen.tsx
+
+# ── Library ingest components; LibraryView uses none of them ──
+src/components/library/CollectionList.tsx
+src/components/library/DocumentTable.tsx
+src/components/library/IngestDropzone.tsx
+src/components/library/IngestProgressCard.tsx
+
+# ── Workflows subtree, dead from its root ──
+src/components/workflows/WorkflowsPanel.tsx
+src/components/workflows/WorkflowRunCard.tsx
+src/components/workflows/PhaseGroup.tsx
+src/components/workflows/AgentChip.tsx
+
+# ── Assorted orphans (no reference anywhere in src outside themselves) ──
+src/components/artifacts/ResearchArtifact.tsx
+src/duin/lib/conversations.ts
+src/duin/lib/i18n.ts
+src/hooks/useIpc.ts
+src/lib/agent-run-routing.ts
+src/lib/citation-parser.ts
+src/lib/interleave-notices.ts
+src/lib/people.ts
+src/lib/themed-icon.ts
+src/stores/people-store.ts
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MAIN PROCESS — added 2026-07-30 when the lint was extended past the renderer.
+#
+# Roots are the build config's own rollup inputs plus the out-of-process MCP
+# server, so "unreachable" here means: no entry point and no importer. Pure-type
+# modules, tests, fixtures and eval harnesses are excluded from the census
+# upstream rather than listed here.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── An entire family of brain write endpoints with no caller ──
+# Five *-write-native modules, none reachable. This is the strongest single
+# finding of the main-process pass: not one orphan but a whole write surface that
+# was built and never wired. Worth one decision, like the navigation redesign.
+electron/services/brain/bind-task-write-native.ts
+electron/services/brain/cascade-creators-native.ts
+electron/services/brain/create-project-write-native.ts
+electron/services/brain/future-act-native.ts
+electron/services/brain/make-decision-write-native.ts
+
+# ── Transitively dead cluster: rank is imported ONLY by loop, and loop is dead ──
+# Exactly the shape a per-file review misses, since foresight-rank looks used.
+electron/services/brain/foresight-loop.ts
+electron/services/brain/foresight-rank.ts
+
+# ── Parked deliberately (keep, do not delete) ──
+# divergence-nudge: its own header says "parked, GATED OFF by design (pull-only v1)".
+# webhook-server: behind DUIN_WEBHOOK_INGRESS, imported only by its own test.
+electron/services/brain/divergence-nudge.ts
+electron/services/channels/webhook-server.ts
+
+# ── Governance constants that nothing consumes ──
+# Worth a look rather than a delete: a denylist nobody reads is a silent hole, not
+# dead weight.
+electron/services/governance/operator-leak-denylist.ts
+# Test-and-eval-only by design: the aggregation eval's grader, split out of the operator-corpus
+# probe fixture so the blocking suite can pin the grading rules without the probes. Imported by
+# aggregation-grading.test.ts and the *.eval.ts suites, never by the app.
+electron/services/brain/aggregation-grading.ts
+electron/services/governance/sandbox-config.ts
+
+# ── Assorted, no importer ──
+electron/services/brain/entanglement-harness.ts
+electron/services/brain/vault-nature.ts
+electron/services/pipeline-orphans.ts
+electron/services/rag/embedder-meta.ts
+electron/services/task-lifecycle-schema.ts
+electron/services/transcript-model.ts
+electron/shared/skill-contract.ts
+
+# Operator removed Settings → Connections on 2026-08-26. Settings was the panel's ONLY
+# route, so the component and its IPC are now unreachable by construction, not by
+# oversight. Listed here rather than deleted because taking a surface off the menu and
+# deleting a working feature are different decisions and only the first was made. This
+# is the shortest-lived entry in the file if the second one follows.
+src/components/tools/panels/ConnectionsPanel.tsx

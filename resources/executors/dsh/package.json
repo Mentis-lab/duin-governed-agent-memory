@@ -1,0 +1,32 @@
+{
+  "name": "duin-dsh-runtime",
+  "private": true,
+  "license": "MIT",
+  "version": "0.0.0",
+  "description": "The DeepSeek Harness headless runtime DUIN spawns as its external executor. Pinned as a set: every @deepseek-ai/dsh-* package here is one workspace release and must move together. Staged into node_modules by scripts/stage-dsh-runtime.mjs (never committed); runs under DUIN's own Node (ELECTRON_RUN_AS_NODE).",
+  "dependencies": {
+    "@deepseek-ai/dsh-agent-spine-demo": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-bash-local": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-bash-sandbox": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-fs-observation-policy": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-fs-sandbox": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-llm-deepseek": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-mcp-client": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-pwsh-local": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-pwsh-sandbox": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-sandbox-local": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-sandbox-policy": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-sdk-jsonrpc-demo": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-sdk-jsonrpc-server": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-sdk-protocol": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-session-checkpoint-policy": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-session-persistence-jsonl": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-shell-env": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-subprocess-local": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-tool-bash": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-tool-fs": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-tool-pwsh": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-user-approval": "0.1.1-rc.2",
+    "duin-gate": "file:./duin-gate"
+  }
+}

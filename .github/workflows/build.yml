@@ -1,0 +1,296 @@
+name: Build DUIN
+
+# Installer builds run ONLY on a version tag or by hand. Every push would otherwise
+# run three ~25-minute packaging jobs and upload ~650 MB per platform.
+#
+# Release attach: a tag with a prerelease component (`v0.1.0-rc.1`) publishes a
+# prerelease; a plain `v0.1.0` publishes a full release, which is the only kind
+# electron-updater offers to installed builds (it reads /releases/latest).
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check (main)
+        run: npx tsc --noEmit -p tsconfig.node.json
+
+      - name: Type check (renderer)
+        run: npx tsc --noEmit -p tsconfig.web.json
+
+      # Bundled encoder models (~412 MB: multilingual-e5-small + bge-reranker-base, q8).
+      # They are gitignored; `build:prepare` fetches them into DUIN_MODEL_CACHE and stages
+      # them into resources/models. Cached by content of the fetch script, so a model
+      # list change re-downloads and an unchanged one does not.
+      - name: Cache bundled encoder models
+        uses: actions/cache@v4
+        with:
+          path: .model-cache
+          key: duin-models-${{ hashFiles('scripts/fetch-bundled-models.mjs') }}
+
+      - name: Fetch bundled encoder models
+        run: node scripts/fetch-bundled-models.mjs
+        env:
+          DUIN_MODEL_CACHE: ${{ github.workspace }}/.model-cache
+
+      - name: Build NSIS installer
+        # Cert-ready: when the WIN_CSC_LINK secret is configured, electron-builder
+        # reads CSC_LINK/CSC_KEY_PASSWORD from the env and signs, and we flip
+        # signAndEditExecutable back on so the sign pass actually runs. When the
+        # secret is absent both env vars are empty, the `if` is false, and the
+        # build stays unsigned (no error). Drop a code-signing cert in as the
+        # WIN_CSC_LINK / WIN_CSC_KEY_PASSWORD secrets to activate signing.
+        shell: pwsh
+        run: |
+          if ($env:CSC_LINK) {
+            npm run build:win -- -c.win.signAndEditExecutable=true
+          } else {
+            npm run build:win
+          }
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          DUIN_MODEL_CACHE: ${{ github.workspace }}/.model-cache
+          DUIN_REQUIRE_BUNDLED_MODELS: '1'
+
+      - name: Headless smoke of main bundle
+        # Loads out/main/index.js under a stub-electron Node process. Catches
+        # bundler-specific failures (TDZ from hoisted side-effect imports,
+        # missing pack registrations) that vitest cannot observe.
+        run: npm run smoke:bundle
+
+      - name: Integrity smoke of renderer bundle
+        # Verifies out/renderer/index.html + every referenced asset was emitted
+        # and non-empty, and the entry chunk mounts a React root.
+        run: npm run smoke:renderer
+
+      - name: Upload installer artifact
+        # MANUAL RUNS ONLY. On a tag the same installer is attached to the release;
+        # storing a second ~650 MB copy as an artifact filled the 10 GB quota and, because
+        # a failed upload aborts the job, took the release attach down with it.
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: duin-windows
+          path: dist/*.exe
+          if-no-files-found: error
+          retention-days: 5
+
+      - name: Attach to release (tag pushes only)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v3
+        with:
+          name: DUIN ${{ github.ref_name }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          draft: false
+          # Installer + the auto-updater feed. latest.yml and the .blockmap are
+          # what electron-updater fetches to detect/deliver updates; without them
+          # attached to the release the shipped updater finds no manifest.
+          files: |
+            dist/*.exe
+            dist/latest.yml
+            dist/*.blockmap
+
+  build-linux:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install OS deps for AppImage + deb + safeStorage
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsecret-1-dev libxss1 libnss3 libasound2t64 fakeroot
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check (main)
+        run: npx tsc --noEmit -p tsconfig.node.json
+
+      - name: Type check (renderer)
+        run: npx tsc --noEmit -p tsconfig.web.json
+
+      - name: Cache bundled encoder models
+        uses: actions/cache@v4
+        with:
+          path: .model-cache
+          key: duin-models-${{ hashFiles('scripts/fetch-bundled-models.mjs') }}
+
+      - name: Fetch bundled encoder models
+        run: node scripts/fetch-bundled-models.mjs
+        env:
+          DUIN_MODEL_CACHE: ${{ github.workspace }}/.model-cache
+
+      - name: Package the sample vault
+        run: |
+          mkdir -p dist
+          (cd examples && zip -qr ../dist/DUIN-sample-vault.zip sample-vault)
+          ls -la dist/DUIN-sample-vault.zip
+      - name: Build AppImage + deb
+        run: npm run build:linux
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DUIN_MODEL_CACHE: ${{ github.workspace }}/.model-cache
+          DUIN_REQUIRE_BUNDLED_MODELS: '1'
+
+      - name: Headless smoke of main bundle
+        run: npm run smoke:bundle
+
+      - name: Integrity smoke of renderer bundle
+        run: npm run smoke:renderer
+
+      - name: Upload Linux artifacts
+        # MANUAL RUNS ONLY (see build-windows).
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: duin-linux
+          path: |
+            dist/*.AppImage
+            dist/*.deb
+          if-no-files-found: error
+          retention-days: 5
+
+      - name: Attach to release (tag pushes only)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v3
+        with:
+          name: DUIN ${{ github.ref_name }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          draft: false
+          # Installers + the auto-updater feed. latest-linux.yml + .blockmap are
+          # what electron-updater fetches to detect/deliver AppImage updates.
+          files: |
+            dist/*.AppImage
+            dist/*.deb
+            dist/DUIN-sample-vault.zip
+            dist/latest-linux.yml
+            dist/*.blockmap
+
+  build-macos:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    env:
+      # No Apple Developer signing identity in CI: build ad-hoc signed.
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check (main)
+        run: npx tsc --noEmit -p tsconfig.node.json
+
+      - name: Type check (renderer)
+        run: npx tsc --noEmit -p tsconfig.web.json
+
+      - name: Cache bundled encoder models
+        uses: actions/cache@v4
+        with:
+          path: .model-cache
+          key: duin-models-${{ hashFiles('scripts/fetch-bundled-models.mjs') }}
+
+      - name: Fetch bundled encoder models
+        run: node scripts/fetch-bundled-models.mjs
+        env:
+          DUIN_MODEL_CACHE: ${{ github.workspace }}/.model-cache
+
+      - name: Build DMG
+        run: |
+          # Raise the descriptor limit BEFORE signing. macOS defaults the soft limit to
+          # 256, and asarUnpack ships ALL of node_modules as loose files, which
+          # `codesign --deep` then walks one by one. Ad-hoc signing died with EMFILE on
+          # lucide-react's icon files. ulimit alone is not enough: macOS enforces a second,
+          # kernel-level cap (kern.maxfilesperproc) and the effective limit is the minimum
+          # of the two. Raise both.
+          sudo sysctl -w kern.maxfiles=524288 kern.maxfilesperproc=524288 || true
+          ulimit -n 65536 || ulimit -n 10240 || true
+          echo "soft limit: $(ulimit -n)  kern.maxfilesperproc: $(sysctl -n kern.maxfilesperproc)"
+          npm run build:mac
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DUIN_MODEL_CACHE: ${{ github.workspace }}/.model-cache
+          DUIN_REQUIRE_BUNDLED_MODELS: '1'
+
+      # Apple Silicon refuses to launch an unsigned binary and reports it as
+      # "damaged", indistinguishable from a corrupt download. Assert the signature
+      # exists on the packed .app BEFORE the dmg is published.
+      - name: Verify the .app is signed (ad-hoc is sufficient, unsigned is not)
+        run: |
+          APP=$(find dist -maxdepth 2 -name '*.app' -print -quit)
+          if [ -z "$APP" ]; then echo "no .app found under dist/"; exit 1; fi
+          echo "verifying $APP"
+          codesign -dv "$APP" 2>&1 | tee /tmp/cs.txt
+          # --verify catches a broken/absent signature; ad-hoc passes, unsigned does not.
+          codesign --verify --deep --strict "$APP" || {
+            echo "::error::the packed .app is NOT validly signed; Apple Silicon will report it as damaged"
+            exit 1
+          }
+          echo "signature OK"
+
+      - name: Headless smoke of main bundle
+        run: npm run smoke:bundle
+
+      - name: Integrity smoke of renderer bundle
+        run: npm run smoke:renderer
+
+      - name: Upload DMG artifact
+        # MANUAL RUNS ONLY (see build-windows).
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: duin-macos
+          path: dist/*.dmg
+          if-no-files-found: error
+          retention-days: 5
+
+      - name: Attach to release (tag pushes only)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v3
+        with:
+          name: DUIN ${{ github.ref_name }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          draft: false
+          # dmg + zip + the auto-updater feed. electron-updater consumes the .zip
+          # (not the .dmg) plus latest-mac.yml + .blockmap for macOS updates.
+          files: |
+            dist/*.dmg
+            dist/*.zip
+            dist/latest-mac.yml
+            dist/*.blockmap

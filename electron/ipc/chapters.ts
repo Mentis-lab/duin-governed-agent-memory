@@ -1,0 +1,100 @@
+import { ipcMain } from 'electron'
+import {
+  createChapter,
+  deleteChapter,
+  listChapters,
+  listChaptersByAnchor
+} from '../services/chapters-store'
+import { emitChatEvent } from '../services/chat-events'
+import { recordEvent } from '../services/event-log'
+import { friendly, messageOf } from '../services/guarded'
+
+// Track 2 / E1 — chapter IPC. The model writes via the `mark_chapter`
+// tool descriptor (handled inline in chat.ts so it can emit the chat
+// event); the renderer hits these handlers for hydration + manual user
+// flips. Every write fires `chat.chapter.marked` so any open chat view
+// updates without polling.
+
+export function registerChaptersHandlers(): void {
+  ipcMain.handle('session:markChapter', async (
+    _event,
+    payload: {
+      conversationId: string
+      title: string
+      summary?: string | null
+      anchorMessageId: string
+    }
+  ) => {
+    try {
+      if (!payload?.conversationId) {
+        return { success: false, error: 'conversationId required' }
+      }
+      if (!payload.title || typeof payload.title !== 'string') {
+        return { success: false, error: 'title required' }
+      }
+      if (!payload.anchorMessageId || typeof payload.anchorMessageId !== 'string') {
+        return { success: false, error: 'anchorMessageId required' }
+      }
+      const chapter = createChapter({
+        conversationId: payload.conversationId,
+        title: payload.title,
+        summary: payload.summary ?? null,
+        anchorMessageId: payload.anchorMessageId
+      })
+      emitChatEvent('chat:chapter-marked', {
+        conversationId: payload.conversationId,
+        chapter
+      })
+      try {
+        recordEvent({
+          type: 'chat.chapter.marked',
+          actorKind: 'user',
+          conversationId: payload.conversationId,
+          entityKind: 'chapter',
+          entityId: chapter.id,
+          payload: {
+            title: chapter.title,
+            summary: chapter.summary,
+            anchorMessageId: chapter.anchorMessageId
+          }
+        })
+      } catch (err) {
+        console.error('[chapters] chat.chapter.marked spine event failed:', err)
+      }
+      return { success: true, data: chapter }
+    } catch (err) {
+      return { success: false, error: friendly(err, 'session:markChapter failed') }
+    }
+  })
+
+  ipcMain.handle('session:listChapters', async (_e, conversationId: string) => {
+    try {
+      if (!conversationId) return { success: false, error: 'conversationId required' }
+      return { success: true, data: listChapters(conversationId) }
+    } catch (err) {
+      return { success: false, error: friendly(err, 'session:listChapters failed') }
+    }
+  })
+
+  ipcMain.handle('session:chaptersForAnchor', async (
+    _e,
+    anchorMessageId: string
+  ) => {
+    try {
+      if (!anchorMessageId) return { success: false, error: 'anchorMessageId required' }
+      return { success: true, data: listChaptersByAnchor(anchorMessageId) }
+    } catch (err) {
+      return { success: false, error: friendly(err, 'session:chaptersForAnchor failed') }
+    }
+  })
+
+  ipcMain.handle('session:deleteChapter', async (_e, id: string) => {
+    try {
+      if (!id) return { success: false, error: 'id required' }
+      const ok = deleteChapter(id)
+      return { success: true, data: ok }
+    } catch (err) {
+      return { success: false, error: friendly(err, 'session:deleteChapter failed') }
+    }
+  })
+}

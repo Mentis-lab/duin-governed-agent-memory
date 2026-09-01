@@ -1,0 +1,25 @@
+# preload-surface-allowlist — exposed API groups with no renderer consumer, and WHY.
+#
+# Format: <group> <reason on one line>
+#
+# This exists so preload-surface-lint could land as a hard gate on NEW dead cross-boundary
+# surface without first requiring a cleanup of everything already there. Every line is a debt,
+# not an exemption: the reason has to say what is actually true, and a line whose group has
+# since gained a consumer (or stopped being exposed) is itself a lint failure.
+#
+# Swept 2026-08-17. All five verified by hand: the only occurrences of these names anywhere in
+# src/ are prose inside comments and one unrelated regex string.
+#
+# THE PATTERN WORTH SEEING. Three of the five (browser, shellBg, monitor) are capabilities the
+# MODEL reaches through main-process tool descriptors — browser-tool-pack.ts, electron/ipc/
+# monitor.ts — so the capability is alive and only the RENDERER binding is dead. They were
+# exposed on the bridge for operator UI that was never built. That is the same shape as the
+# bug this lint was written for: window.api.executive sat fully wired for three days with no
+# screen on the end of it. Exposing a binding is cheap and invisible; it is the moment a
+# capability starts claiming an operator surface exists.
+
+browser Agent-facing. The model drives tabs through browser-tool-pack.ts / browser-tools.ts in main; this binding is for an operator browser UI that was never built. The coherence map already carries the wider gap (a tester-grade preview capability built, tested, and unreachable, with frontend_qa reimplementing a thin subset).
+shellBg Agent-facing. Background shells are spawned through the tool layer; electron/ipc/monitor.ts owns the handler. No renderer surface shows or manages background processes.
+monitor Agent-facing, and the pair to shellBg — start/read/stop/destroy/list over a spawned process's output. Handled in electron/ipc/monitor.ts for the tool layer; no operator-facing process monitor exists.
+contracts Change contracts are produced and consumed inside main (change-contract-store.ts, plan-goal-store.ts, after-action-report.ts). The renderer binding anticipated a contract-review surface; AfterActionPanel mentions contracts only in prose explaining what it excises.
+feedbackBridge drain/status for the feedback bridge, whose live path is main-side (electron/ipc/feedback-bridge.ts, wired from main.ts). No renderer ever drains it.

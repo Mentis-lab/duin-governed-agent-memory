@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/Mentis-lab/DUIN/security/advisories/new
+    about: Private vulnerability reporting. Do not open a public issue for an unpatched vulnerability.
+  - name: Getting started and FAQ
+    url: https://github.com/Mentis-lab/DUIN/blob/main/docs/getting-started.md
+    about: First-run walkthrough, where data lives, and answers to common setup questions.
+  - name: Ask a question
+    url: https://github.com/Mentis-lab/DUIN/discussions/categories/q-a
+    about: Setup, first run, models, cost. Answered threads become documentation.
+  - name: Propose a feature
+    url: https://github.com/Mentis-lab/DUIN/discussions/categories/ideas
+    about: Discuss the problem before a feature request is filed.

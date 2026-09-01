@@ -1,0 +1,22 @@
+#!/bin/sh
+set -eu
+
+# Lane guard FIRST, before the expensive steps.
+#
+# It bounds WHAT is in this commit (staged count + lane scope) rather than whether the
+# tree compiles, and it is the only check here that addresses the failure this repo has
+# actually suffered: 6545f48 swept seven of a parallel session's uncommitted files into
+# an unrelated docs commit. Running it ahead of lint/tsc means a mis-scoped commit is
+# rejected in ~50ms instead of after a two-minute typecheck.
+#
+# It only makes sense where there is a lane board to resolve against. A public checkout
+# has no SESSION-LANES.md, so there the hook is lint + tsc and nothing else.
+#
+# Escape (documented, single): LANE_OVERRIDE=1 git commit ...
+if [ -f SESSION-LANES.md ] && [ -f scripts/hooks/lane-guard.mjs ]; then
+  node scripts/hooks/lane-guard.mjs
+fi
+
+npm run lint
+npx tsc --noEmit -p tsconfig.node.json
+npx tsc --noEmit -p tsconfig.web.json

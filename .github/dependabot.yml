@@ -1,0 +1,19 @@
+version: 2
+updates:
+  # Root npm tree. Minor and patch bumps are grouped into one PR per week; majors stay
+  # separate so a breaking bump is reviewed on its own.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    # main is a snapshot mirror of the private trunk: version-bump PRs cannot be merged here, so
+    # only security updates open PRs. Dependency bumps land on trunk and arrive with the next snapshot.
+    open-pull-requests-limit: 0
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+    # The bundled executor runtime under resources/executors/dsh is pinned on purpose and
+    # staged from its own lockfile; it is not a root dependency and is not updated here.
+

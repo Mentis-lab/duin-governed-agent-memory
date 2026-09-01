@@ -1,0 +1,359 @@
+appId: com.duin.app
+productName: DUIN
+copyright: Copyright © 2026 Mentis-lab. Portions © 2026 Basho Parks (Lamprey-Harness, USS-Parks/Lamprey-Harness, MIT).
+
+afterPack: scripts/embed-win-icon.js
+
+directories:
+  output: dist
+  buildResources: resources
+
+files:
+  - out/**/*
+  - package.json
+  # Production deps (openai, @modelcontextprotocol/sdk, better-sqlite3, chokidar,
+  # gray-matter, pdf-parse, @babel/standalone) are externalized by
+  # electron-vite's externalizeDepsPlugin and require()d at runtime, so
+  # node_modules must NOT be excluded. electron-builder smart-includes
+  # only the production dependencies declared in package.json.
+  #
+  # ...but NOT transformers.js's runtime download cache. @huggingface/transformers
+  # writes models it fetches at runtime into its OWN package dir
+  # (node_modules/@huggingface/transformers/.cache/). Anything that exercises an
+  # embedder in this worktree — a retrieval A/B, the LoCoMo bench, a dev session —
+  # leaves them there, and because asarUnpack ships all of node_modules (see below,
+  # correctly: the embed worker's native+ESM closure must resolve from real fs),
+  # they ride into the installer.
+  #
+  # Measured 2026-07-25: 593 MB of cache (multilingual-e5-small fp32 448.5 MB +
+  # bge-small-en-v1.5 126.9 MB) took the installer from 316 MB to 880 MB. It is
+  # pure duplication — the DEFAULT encoders are already bundled deliberately and
+  # in pruned quantized form via extraResources -> resources/models/transformers,
+  # which is what the app actually loads. The cache copies are the unquantized
+  # originals that nothing reads.
+  - "!**/node_modules/@huggingface/transformers/.cache/**"
+
+asarUnpack:
+  - "**/*.node"
+  # sqlite-vec ships a native .dll (NOT a .node), loaded via db.loadExtension at
+  # runtime. The main JS package must be unpacked too so its require.resolve of
+  # the platform dll returns a REAL-fs path — a path inside the asar makes
+  # LoadLibrary fail with Windows error 126, silently disabling vector search.
+  - "**/node_modules/sqlite-vec/**"
+  - "**/node_modules/sqlite-vec-*/**"
+  # The embeddings/rerank worker (rag/embeddings/worker.ts → out/main/worker.js)
+  # is spawned via `new Worker(...)` (path rewritten to app.asar.unpacked in
+  # service.ts). It dynamic-import()s @huggingface/transformers, whose FULL
+  # transitive closure (onnxruntime-node/-web/-common, jinja, sharp → detect-libc,
+  # color, semver, @img/*) must resolve from REAL fs — packed in asar the worker
+  # wedges (embed never returns → docs stick in 'embedding' → no chunks → every
+  # RAG query returns 0). npm hoists that closure to scattered/nested locations
+  # that per-package globs can't reliably catch, so unpack ALL of node_modules.
+  # Cost: node_modules ship as loose files instead of archived in asar (same
+  # bytes, slightly slower cold start); worth it for a worker whose native+ESM
+  # deps simply don't load from asar. (This supersedes the *.node / sqlite-vec
+  # entries above, kept for documentation.)
+  - "out/main/worker.js"
+  # The OCR Tier-2 PaddleOCR worker (rag/ocr/paddle-worker.ts → out/main/paddle-worker.js)
+  # is a utilityProcess that dynamic-import()s @huggingface/transformers (RawImage/
+  # sharp) and require()s onnxruntime-node — the SAME native+ESM closure the embed
+  # worker needs from REAL fs, already covered by the `**/node_modules/**` unpack
+  # below. Unpacking the worker entry itself keeps it next to that closure.
+  - "out/main/paddle-worker.js"
+  # Pins the unpacked worker to CommonJS. worker_threads loads worker.js by real
+  # path from app.asar.unpacked/out/main/; Node then resolves its module type by
+  # walking UP for the nearest package.json. With none here it can reach a stray
+  # parent package.json (e.g. a `type:module` one in the user's HOME dir) and
+  # treat the CJS worker as ESM → "require is not defined in ES module scope" →
+  # the embed worker wedges and every doc sticks in 'embedding'. This sibling
+  # `{"type":"commonjs"}` (emitted at build by electron.vite.config.ts) stops the
+  # walk here, making the app immune to any ancestor package.json.
+  - "out/main/package.json"
+  - "**/node_modules/**"
+
+extraResources:
+  # License compliance: the MIT notice must travel with every copy (LICENSE), the
+  # attribution + bundled-model + dual-license-election notice (NOTICE), the generated
+  # per-package third-party list (THIRD-PARTY-NOTICES.txt, written by
+  # scripts/gen-third-party-notices.mjs — build:* runs it after stage-dsh-runtime so the
+  # dsh tree is included), and licenses/ (LGPL-3.0 + GPL-3.0 texts and the sharp/libvips
+  # library table for the dynamically linked libvips sharp bundles). They land in
+  # <install>/resources/ where a user can read them without unpacking the asar.
+  - from: LICENSE
+    to: LICENSE
+  - from: NOTICE
+    to: NOTICE
+  - from: THIRD-PARTY-NOTICES.txt
+    to: THIRD-PARTY-NOTICES.txt
+  - from: licenses
+    to: licenses
+  - from: resources/vendor
+    to: vendor
+  - from: resources/skills
+    to: skills
+  # Track 2 / C4 — bundled slash commands. The slash-command loader
+  # bootstraps `userData/slash-commands/` from process.resourcesPath/slash-commands
+  # on first run, then hot-reloads from the userData dir.
+  - from: resources/slash-commands
+    to: slash-commands
+  # B4 — bundled workflow programs. workflow-library.ts resolves
+  # process.resourcesPath/workflows in production and its scanDir returns []
+  # WITHOUT WARNING when the dir is absent — which is exactly what happened:
+  # this entry was missing from the day the library shipped, so every packaged
+  # install carried ZERO built-in workflows (2026-08-14 estate audit, finding
+  # A1). Pinned by packaged-resources.test.ts and deploy.cmd's GUARD A4.
+  - from: resources/workflows
+    to: workflows
+  - from: resources/icon.png
+    to: icon.png
+  - from: resources/icon.ico
+    to: icon.ico
+  - from: resources/splash.png
+    to: splash.png
+  # Bundled MCP servers (Node REPL + Feishu today). mcp-defaults.ts resolves the
+  # server.js at runtime in production. The directory ships TWICE, deliberately:
+  #
+  #  - resources/mcp — the legacy/simple location. Fine for servers with zero
+  #    external imports (feishu/server.js is CJS using only Node built-ins).
+  #  - resources/app.asar.unpacked/mcp — the location node-repl actually RUNS
+  #    from. Its server.js is ESM and imports @modelcontextprotocol/sdk; ESM
+  #    resolves bare specifiers by walking parent node_modules from the FILE
+  #    (NODE_PATH is ignored), and only under app.asar.unpacked is the app's
+  #    unpacked node_modules an ancestor. Shipped only under resources/mcp it
+  #    can NEVER import — estate finding ⑤ (2026-08-14): the bundled REPL had
+  #    never connected in any packaged install, while dev worked because the
+  #    repo's node_modules sits above resources/. Pinned by
+  #    packaged-resources.test.ts and enforced on the artifact by deploy.cmd
+  #    GUARD A5 (an actual require-resolution probe from the shipped path).
+  - from: resources/mcp
+    to: mcp
+  - from: resources/mcp
+    to: app.asar.unpacked/mcp
+  # S6 — the Windows WRITE_RESTRICTED sandbox launcher. sandbox/win32.ts
+  # resolves process.resourcesPath/sandbox-win32/restrict-run.ps1 in
+  # production; without this entry the backend degrades to tier 'none'
+  # pass-through on every install (the A1 class). Pinned by
+  # packaged-resources.test.ts.
+  - from: resources/sandbox-win32
+    to: sandbox-win32
+  # Snip Phase K3+K10: bundled YAML filters. filter-loader.ts bootstraps
+  # userData/snip/filters/built-in/ from process.resourcesPath/snip-filters
+  # on first launch; subsequent launches hot-reload from userData.
+  - from: resources/snip-filters
+    to: snip-filters
+  # Customize C6: starter connector catalog. Mirrors the typed
+  # `src/data/connectors-catalog.ts` shipped to the renderer so the
+  # main-process / installers ship the same data.
+  - from: resources/connectors
+    to: connectors
+  # Customize C7: bundled plugins. plugin-loader.ts copies missing
+  # entries from process.resourcesPath/plugins into userData/plugins/
+  # on first launch; subsequent launches read userData only.
+  - from: resources/plugins
+    to: plugins
+  # The external executor's dsh runtime (PLANNING/DUIN_EXTERNAL_EXECUTOR_PLAN.md §6):
+  # a pinned npm package set (~63 MB incl. node_modules) staged by
+  # scripts/stage-dsh-runtime.mjs — every build:* script runs it before the build — and
+  # run by DUIN's own Node (ELECTRON_RUN_AS_NODE). Outside the asar, like resources/mcp,
+  # because it carries prebuilt natives and its own module tree. executor-runtime.ts
+  # resolves process.resourcesPath/executors/dsh and probes the artifacts before spawning.
+  - from: resources/executors
+    to: executors
+  # OCR Tier 1 (flag-gated, DUIN_OCR default OFF): bundled tesseract.js language
+  # data. ocr.ts points tesseract.js at process.resourcesPath/ocr/tessdata as its
+  # langPath so recognition is fully OFFLINE (no jsdelivr CDN fetch at runtime).
+  # The `.traineddata` model files (eng/chi_sim/jpn) are NOT committed to the repo
+  # (large binaries) — they must be dropped into resources/ocr/tessdata/ before a
+  # release build; see resources/ocr/README.md. If the dir is absent/empty the
+  # feature degrades to empty text (best-effort), so this entry is safe to ship
+  # even before the model files are present.
+  - from: resources/ocr/tessdata
+    to: ocr/tessdata
+    filter:
+      - "**/*.traineddata"
+  # OCR Tier 2 (flag-gated, DUIN_OCR_ENGINE=paddle): bundled PP-OCRv5 mobile ONNX
+  # models (det + rec + optional cls ≈ 21 MB) and the ppocrv5_dict.txt character
+  # dictionary. paddle-catalog.ts resolves process.resourcesPath/ocr/models so the
+  # engine is fully OFFLINE (no runtime download). The .onnx / dict files are NOT
+  # committed to the repo (large binaries) — drop them into resources/ocr/models/
+  # before a release build; see resources/ocr/models/README.md. If the dir is
+  # absent/empty the paddle engine falls back to tesseract (best-effort), so this
+  # entry is safe to ship even before the model files are present.
+  - from: resources/ocr/models
+    to: ocr/models
+    filter:
+      - "**/*.onnx"
+      - "**/*.txt"
+  # Bundled DEFAULT encoder models: embedder multilingual-e5-small (≈135 MB) + reranker
+  # bge-reranker-base (≈280 MB), both q8 ONNX + tokenizer. worker.ts points transformers.js at
+  # process.resourcesPath/models/transformers (localModelPath) so they load OFFLINE on first run — the
+  # difference between semantic search + reranking working out-of-the-box vs. a mandatory HuggingFace
+  # round-trip. Other models (NLI / bge-m3) still fetch-and-cache online (allowRemoteModels stays on),
+  # degrading gracefully. The model files are NOT committed (large binaries) — run
+  # `npm run prepare:models` (copies from the HF cache) before a release build; see
+  # resources/models/README.md. If the dir is absent/empty the models fall back to the online HF fetch
+  # (best-effort), so this entry is safe to ship even before the files are present.
+  - from: resources/models/transformers
+    to: models/transformers
+    filter:
+      - "**/*"
+
+mac:
+  category: public.app-category.developer-tools
+  # macOS gets its OWN icon. resources/icon.png is the cream mark on a TRANSPARENT
+  # background: fine on Windows, which draws it inside its own chrome, but macOS paints
+  # the icon straight onto the Dock, Finder and Launchpad, where a near-white mark on
+  # nothing has no contrast against any light backdrop and effectively disappears.
+  # icon-mac.png puts it on the same charcoal plate the splash uses, in Apple's rounded
+  # -square grid — electron-builder converts to .icns but does NOT apply the mask itself,
+  # so the rounding is baked in. Regenerate with `npm run icons:mac`.
+  icon: resources/icon-mac.png
+  target:
+    - dmg
+    - zip
+  artifactName: ${productName}-${arch}.${ext}
+  # AD-HOC SIGNED, and it must be. Apple Silicon requires EVERY executable to carry a
+  # valid code signature — an unsigned arm64 bundle is refused by the kernel, and the
+  # message macOS shows for that is "DUIN is damaged and can't be opened", which reads
+  # like a corrupt download and sends people to re-download it forever. That is exactly
+  # what v0.8.0-tester.2 shipped: the build log said "skipped macOS application code
+  # signing" and the dmg was unopenable on the only Mac architecture we build for.
+  #
+  # `identity: "-"` is electron-builder's explicit opt-in to ad-hoc signing. It is NOT
+  # the default: with identity unset the builder searches the keychain and, finding
+  # nothing, skips signing entirely — there is no automatic ad-hoc fallback. Setting it
+  # here is what closes that gap, and it works even with CSC_IDENTITY_AUTO_DISCOVERY
+  # false, because a non-null qualifier takes the ad-hoc branch before the skip path.
+  #
+  # Ad-hoc is NOT notarization. It makes the app launchable; Gatekeeper still warns on
+  # first open (right-click -> Open, once) because there is no Developer ID. A real cert
+  # + notarization removes that too — drop it in via CSC_LINK and this line stays valid.
+  identity: "-"
+  # Info.plist keys. macOS shows the string to the USER in the permission prompt, and a
+  # missing key is not a silent default — for several TCC classes the request is denied
+  # outright rather than prompted, which is indistinguishable from "the app never asked".
+  #
+  # NSSystemAdministrationUsageDescription is the Full Disk Access one. There is no API
+  # to REQUEST full disk access; the app can only explain itself and open the pane.
+  extendInfo:
+    NSSystemAdministrationUsageDescription: >-
+      DUIN reads and indexes the folders you point it at so it can search and reason over
+      your own notes. Everything stays on this Mac.
+    NSDocumentsFolderUsageDescription: >-
+      DUIN indexes notes you keep in Documents so you can search them.
+    NSDesktopFolderUsageDescription: >-
+      DUIN indexes notes you keep on the Desktop so you can search them.
+    NSDownloadsFolderUsageDescription: >-
+      DUIN reads files you hand it from Downloads.
+    NSAppleEventsUsageDescription: >-
+      DUIN uses automation to open files and links you ask it to.
+    # Removable/network volumes: a vault on an external disk is a normal setup and is
+    # otherwise blocked with no prompt at all.
+    NSRemovableVolumesUsageDescription: >-
+      DUIN indexes a vault you keep on an external drive.
+    NSNetworkVolumesUsageDescription: >-
+      DUIN indexes a vault you keep on a network drive.
+  # Must stay false while ad-hoc: hardenedRuntime + ad-hoc requires the
+  # com.apple.security.cs.disable-library-validation entitlement or the app fails to
+  # launch on library validation. Off is the simpler correct pairing here.
+  hardenedRuntime: false
+  gatekeeperAssess: false
+
+win:
+  icon: resources/icon.ico
+  target:
+    - nsis
+    - zip
+  # Generic, version-less artifact names so download URLs stay stable across
+  # releases. The version lives in the release tag + notes; the binary filename
+  # does not carry it.
+  artifactName: ${productName}-${arch}.${ext}
+  # Cert-ready but unsigned by default. electron-builder reads CSC_LINK +
+  # CSC_KEY_PASSWORD from the environment automatically: drop those in as CI
+  # secrets (see .github/workflows/build.yml) and Windows builds sign with no
+  # further config change. When they're absent the build stays unsigned and does
+  # NOT error (no forceCodeSigning).
+  #
+  # signAndEditExecutable is FALSE here as the unsigned default: without a cert
+  # we skip the sign-and-edit pass, which also avoids downloading the winCodeSign
+  # archive whose macOS symlinks Windows can't extract without Developer Mode /
+  # admin ("A required privilege is not held by the client"). When a cert IS
+  # provided, CI flips this to true via `-c.win.signAndEditExecutable=true` so the
+  # sign step runs.
+  signAndEditExecutable: false
+
+nsis:
+  # One-click, per-user install — frictionless, no admin prompt (UAC), no wizard
+  # pages. perMachine:false keeps it in the user's LOCALAPPDATA so no elevation is
+  # required. (allowToChangeInstallationDirectory is intentionally omitted: it is
+  # only honored by the assisted/non-oneClick installer and conflicts with
+  # oneClick:true.)
+  oneClick: true
+  perMachine: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: DUIN
+  installerIcon: resources/icon.ico
+  uninstallerIcon: resources/icon.ico
+  # No custom sidebar/header — NSIS expects 164x314 BMP for sidebar and
+  # 150x57 for header. Until we ship pixel-correct bitmaps the default
+  # NSIS modern UI renders sharper than a downscaled wide-aspect image.
+
+linux:
+  icon: resources/icon.png
+  # The deb target needs a maintainer with an e-mail; without it electron-builder aborts
+  # ("Please specify author 'email' in the application package.json") — the only reason
+  # every tag build's linux job failed while win + mac succeeded.
+  maintainer: "Mentis-lab <323411082+Mentis-lab@users.noreply.github.com>"
+  category: Development
+  target:
+    - AppImage
+    # deb for apt-based distros. Needs `fakeroot` + `dpkg` on the build host —
+    # both present on the ubuntu CI runner (fakeroot is installed in build.yml).
+    - deb
+  artifactName: ${productName}-${arch}.${ext}
+
+# GitHub Releases feed for the in-app auto-updater (electron/services/updater.ts).
+# electron-builder bakes this into app-update.yml at pack time, so the shipped
+# updater checks THIS repo's Releases for latest.yml / latest-linux.yml /
+# latest-mac.yml + .blockmap.
+#
+# owner/repo MUST match the repo whose GitHub Actions publish the release assets
+# (CI attaches them with the automatic GITHUB_TOKEN — see build.yml — so releases
+# land in whatever repo runs the workflow).
+#
+# P0 (2026-07-25): this pointed at USS-Parks/lamprey — the repo DUIN's branch
+# lives in, not the repo DUIN releases from. The old TODO here assumed the worst
+# case was "the updater silently finds no manifest." It was much worse: that feed
+# publishes a DIFFERENT product (Lamprey) on its own version line, and 0.27.1 >
+# DUIN's 0.8.0, so every packaged install treated Lamprey as an upgrade and — with
+# autoDownload + autoInstallOnAppQuit both on, and updater errors deliberately
+# suppressed from the UI — would silently replace DUIN with it on next quit.
+# Verified end-to-end against the live feed before the change.
+#
+# The rule this encodes: the updater feed must be the repo DUIN's releases are
+# published TO, never merely the repo its source lives IN. A shared repo means a
+# shared version line, and a version line is what electron-updater trusts.
+# Defence in depth lives in electron/services/updater.ts, which now refuses any
+# update whose artifact is not DUIN's own.
+#
+# Local `build:*` scripts use `--publish never`, so nothing uploads during a
+# normal source build.
+#
+# 2026-08-19: pointed at duin-releases, the PUBLIC downloads repo, not the private
+# source repo. The updater fetches this feed UNAUTHENTICATED, so aiming it at a private
+# repo meant it could never read a manifest — auto-update was dead for every tester on
+# every platform, and updater.ts suppresses those errors from the UI, so it failed
+# invisibly. Seen in a tester's log as `[updater] initialization failed`.
+#
+# The rule above still holds and now holds properly: the feed must be the repo releases
+# are published TO. CI publishes the same artifacts to both — the private repo for
+# provenance, duin-releases for distribution and for this feed.
+#
+# 2026-09-01 (open-source release): the public repo Mentis-lab/DUIN is now both where the
+# source lives AND where releases are published (build.yml attaches assets with the
+# workflow's own GITHUB_TOKEN), so the two rules above agree on one owner/repo.
+publish:
+  provider: github
+  owner: Mentis-lab
+  repo: DUIN

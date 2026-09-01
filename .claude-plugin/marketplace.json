@@ -1,0 +1,15 @@
+{
+  "name": "duin",
+  "description": "DUIN Brain — mount a running DUIN as your agent's executive function: operator-calibrated context and beliefs, plus a shared fleet goal state with write leases and operator-gated completion.",
+  "owner": { "name": "Gao Research" },
+  "plugins": [
+    {
+      "name": "duin-brain",
+      "source": "./plugins/duin-brain",
+      "displayName": "DUIN Brain",
+      "version": "0.1.0",
+      "description": "Mount DUIN Brain as your agent's executive function over MCP.",
+      "author": { "name": "Gao Research" }
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "duin-brain": {
+      "type": "http",
+      "url": "${DUIN_BRAIN_URL:-http://127.0.0.1:8799/exec/mcp}",
+      "headers": {
+        "Authorization": "Bearer ${DUIN_BRAIN_TOKEN}"
+      }
+    }
+  }
+}

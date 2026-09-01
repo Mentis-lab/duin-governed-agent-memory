@@ -1,0 +1,22 @@
+#!/bin/sh
+set -eu
+
+# Board guard FIRST, before the expensive step.
+#
+# A merge can close a lane while SESSION-LANES.md still says it is building. That is not
+# hypothetical: the board's live table carried the whole 2026-08-03 roster marked MERGED
+# while calling `frontend` UNCLAIMED -- yet duin/lane-frontend had merged at 9c98416, and
+# duin/lane-ipc has never had a row at all. Wrong in both directions. `npm run lane:close`
+# already closes a row correctly; nothing connected LANDING a lane to CLOSING it, so the
+# board drifts by default and the next session learns to ignore it.
+#
+# Fail-safe: only a positive detection aborts. No board, no merge commit, or anything it
+# cannot reason about -> print a notice and exit 0. ~50ms. In a public checkout (no
+# SESSION-LANES.md) it is not run at all; only the proof policy step below runs.
+#
+# Escape (documented, single, shared with lane-guard): LANE_OVERRIDE=1 git push ...
+if [ -f SESSION-LANES.md ] && [ -f scripts/hooks/merge-board-guard.mjs ]; then
+  node scripts/hooks/merge-board-guard.mjs
+fi
+
+npm run verify:proof
