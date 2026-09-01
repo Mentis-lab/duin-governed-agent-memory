@@ -77,6 +77,33 @@ Two places, deliberately. The user-data directory is the app's own; the vault is
 The invariant: the **Vault** and **Memory** planes are never derived away; the **Brain** plane
 (graph, claims, indexes) is derived and may be rebuilt at any time.
 
+## Memory: provenance and supersession
+
+What DUIN learns is kept as text you can read, and it is never allowed to forget who said what.
+
+- **Provenance.** Every memory carries a source label: `user-explicit` (you stated it),
+  `session`, `inferred` (a model concluded it), `reflection`, `imported` or `unknown` (the
+  `source` column of the memory table, `electron/services/schema-init.ts`). A fact DUIN inferred
+  may never be relabelled as something you stated ([constitution](constitution.md)).
+- **Claims have a lifetime.** Extracted claims record `validFrom`, `validTo`, `observedAt` and
+  `supersededBy`, and each one holds a verdict: `current`, `stale`, `contradicted` or
+  `orphaned`, with the reason (`temporal`, `supersession`, `jtms` or `model`). You can ask the
+  brain what was believed as of any date (`electron/services/brain/claim-metabolism.ts`).
+- **Operator facts outrank inferences.** A claim you authored is evergreen: the metabolism never
+  ages it out on its own. A model-proposed supersession is held as a proposal behind a confidence
+  guard until it is confirmed, and a human reversal survives every later tick.
+- **Retire, never delete.** Entities and claims are retired by setting `valid_to`, so the graph
+  keeps its history (`electron/services/brain/brain-schema.ts`).
+- **Files you can diff.** Promoted concepts materialize as typed Markdown under
+  `.brain/memory/` with `supersedes:` and `supersededBy:` in their frontmatter; retired concepts
+  move to `.brain/_retired/` (`electron/services/brain/concept-materialize.ts`). The per-fact
+  memory files live in the user-data `lamprey-memory/` directory and are the canonical copy;
+  SQLite mirrors them.
+- **Corrections are input.** The Learn loop captures a correction at the turn boundary and feeds
+  it into the promotion lifecycle (`candidate → provisional → promoted | vetoed`), which you can
+  promote or veto from the Learning panel. Confirming or reverting a retirement is available on
+  the local API (`POST /state/claim-metabolism/resolve`); a panel for it is planned.
+
 ## Providers
 
 `electron/services/providers/registry.ts` is the source of truth: the `ProviderId` union, the

@@ -13,7 +13,7 @@ nothing that lands on disk is a surprise.
   been tested by the maintainers yet. Storing keys needs a Secret Service (GNOME Keyring or
   KWallet); without one DUIN asks before storing a key in plaintext.
 
-Downloads and checksums: [README → Download](../README.md#download).
+Downloads: [README → Download](../README.md#download). Verifying a download: [section 9](#9-verify-a-download).
 
 ## 2. First launch
 

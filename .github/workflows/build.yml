@@ -148,11 +148,6 @@ jobs:
         env:
           DUIN_MODEL_CACHE: ${{ github.workspace }}/.model-cache
 
-      - name: Package the sample vault
-        run: |
-          mkdir -p dist
-          (cd examples && zip -qr ../dist/DUIN-sample-vault.zip sample-vault)
-          ls -la dist/DUIN-sample-vault.zip
       - name: Build AppImage + deb
         run: npm run build:linux
         env:
@@ -190,7 +185,6 @@ jobs:
           files: |
             dist/*.AppImage
             dist/*.deb
-            dist/DUIN-sample-vault.zip
             dist/latest-linux.yml
             dist/*.blockmap
 
