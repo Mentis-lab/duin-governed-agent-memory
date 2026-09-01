@@ -16,8 +16,9 @@ choose which model, if any, it talks to.
 **Status: 0.9 — first public release, expect rough edges.**
 
 <p align="center">
-  <img src="docs/assets/screenshot-graph.png" alt="The sample vault as a knowledge graph in the Brain view" width="90%" />
+  <img src="docs/assets/screenshot-graph.png" alt="A real vault of roughly 1,200 notes in the Brain view: clusters, hubs and the threads between them" width="90%" />
 </p>
+<p align="center"><sub>A real vault of roughly 1,200 notes as DUIN sees it. The two captures below are from the fictional sample vault.</sub></p>
 <p align="center">
   <img src="docs/assets/screenshot-chat.png" alt="A grounded answer citing the notes it stood on (local model)" width="45%" />
   <img src="docs/assets/screenshot-onboarding.png" alt="First run: choose a folder of notes" width="45%" />
