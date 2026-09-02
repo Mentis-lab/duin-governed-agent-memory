@@ -1,4 +1,4 @@
-// The SEAM — materialize a promoted operator fact into a portable OKF concept file.
+// The SEAM — materialize a promoted (or, since W3, provisional) operator fact into a portable OKF concept file.
 //
 // When the govern loop promotes a fact (confirmFact), it has always only flipped a
 // status field on operator-model.json — nothing reached portable memory. This module
@@ -9,7 +9,8 @@
 // Design constraints (see PLANNING/DUIN_SEAM_BUILD_SPEC.md):
 //  - PURE + decoupled: functions take `memoryDir` explicitly; only a type-import from
 //    operator-model (no runtime cycle). The govern core calls an injected hook.
-//  - FLAG-GATED: `DUIN_SEAM_MATERIALIZE` default-OFF → byte-identical when unset.
+//  - FLAG-GATED: `DUIN_SEAM_MATERIALIZE` default-ON (DUIN_SEAM_MATERIALIZE) since W3 2026-09-02;
+//    `=0` is the kill switch (no writes, no reconcile).
 //  - VAULT-SAFE: never clobber a hand-authored file (only files carrying our marker).
 //  - NEVER THROW into the govern loop: the hook swallows all errors.
 //  - IDEMPOTENT: slug derived from fact.id → re-promotion overwrites, never duplicates.
@@ -21,17 +22,23 @@ import { FOUNDATION_BASENAMES, IDENTITY_FOUNDATION_ORDER } from './foundation-fi
 import { generateConceptIndex } from './concept-index'
 import { normName, slugifyLabel } from './entity-resolver'
 import type { OperatorFact } from './operator-model'
+import { loadSeamLedger, saveSeamLedger, contentHash, type SeamLedger } from './seam-ledger'
 
 /** Exported so the grounding body-dump collector can identify (and skip) seam concepts. */
-export const SEAM_GEN_MARKER = '<!-- generated: duin-seam · machine-owned · do not hand-edit -->'
+export const SEAM_GEN_MARKER = '<!-- generated: duin-seam · rewrite the claim line to restate this fact; delete the file to retract it -->'
 const GEN_MARKER = SEAM_GEN_MARKER
+/** Every marker the seam has ever written starts with this. Files written before W4 carry the old
+ *  "machine-owned · do not hand-edit" text; they are still ours and are regenerated once. */
+const GEN_MARKER_PREFIX = '<!-- generated: duin-seam'
+const hasMarker = (md: string): boolean => md.includes(GEN_MARKER_PREFIX)
 /** Retired concepts live OUTSIDE `memory/` (at `.brain/_retired/`) so neither the grounding
  *  collector nor the retrieval carve-out — both of which walk `memory/` — ever re-read them. */
 const RETIRED_DIRNAME = '_retired'
 
-/** Flag gate — default OFF. */
+/** Flag gate — ON by default since 2026-09-02 (W3): a public install gets its learned facts as vault
+ *  files without setting anything. `DUIN_SEAM_MATERIALIZE=0` is the kill switch. */
 export function seamEnabled(): boolean {
-  return process.env.DUIN_SEAM_MATERIALIZE === '1'
+  return process.env.DUIN_SEAM_MATERIALIZE !== '0'
 }
 
 /** Flag gate for T2 entity projection — default OFF, independent of the seam flag. The entity
@@ -268,23 +275,38 @@ function pillarFor(kind: string): string {
   }
 }
 
-/** PURE: fact → concept markdown (frontmatter + body). */
+/** PURE: fact → concept markdown (frontmatter + body).
+ *  Dates come from the FACT, never from the clock (W3): a re-projection on a later day is byte-identical.
+ *  `capturedAt` is stamped at creation (legacy rows fall back to `ts`), `promotedAt` when the govern loop
+ *  confirms or a human ratifies, `provisionalAt` when the fact entered probation. `today` is accepted for
+ *  callers that still pass it but no longer reaches the output. */
 export function conceptForFact(
   fact: OperatorFact,
   today?: string,
   ctx?: ConceptCtx
 ): { slug: string; md: string } {
+  void today
   const slug = slugFor(fact)
-  const created = today || new Date().toISOString().slice(0, 10)
   const claim = String(fact.fact || '').trim()
   const kind = String(fact.kind || 'context')
+  const status = String(fact.status || 'promoted')
   const e = fact.efficacy
   const effLine = e
     ? `\n**Efficacy:** trials ${e.trials} · verdict ${e.verdict} · flipRate ${e.flipRate}${e.regressions ? ` · regressions ${e.regressions}` : ''}\n`
     : ''
-  const capturedISO = (() => {
-    try { return new Date(fact.ts || 0).toISOString() } catch { return String(fact.ts ?? 0) }
-  })()
+  const capturedMs = typeof fact.capturedAt === 'number' ? fact.capturedAt : (fact.ts ?? 0)
+  const iso = (ms: number): string => {
+    try { return new Date(ms).toISOString() } catch { return String(ms) }
+  }
+  const capturedISO = iso(capturedMs)
+  const statusMs = status === 'promoted' ? (fact.promotedAt ?? fact.ts ?? capturedMs) : (fact.provisionalAt ?? fact.ts ?? capturedMs)
+  const statusDate = iso(statusMs).slice(0, 10)
+  const statusDateLine = status === 'promoted'
+    ? `  promotedAt: ${yamlStr(statusDate)}\n`
+    : `  provisionalAt: ${yamlStr(statusDate)}\n`
+  // Provenance is recorded, never inferred (constitution §3): an untagged legacy row is written as
+  // `unknown`, even though the store protects it as operator-stated (the safe direction under doubt).
+  const src = String(fact.source ?? 'unknown')
   // Supersession lineage lives in FRONTMATTER ONLY: the targets are retired out of memory/,
   // so a body [[wikilink]] would dangle in every viewer. Ids are audit pointers, not edges.
   const supersedes = (ctx?.supersedes ?? []).filter(Boolean)
@@ -292,6 +314,12 @@ export function conceptForFact(
     ? `  supersedes: [${supersedes.map((s) => yamlStr(String(s))).join(', ')}]\n`
     : ''
   const supersededByLine = ctx?.supersededBy ? `  supersededBy: ${yamlStr(String(ctx.supersededBy))}\n` : ''
+  const standing =
+    status === 'promoted'
+      ? 'A promoted operator fact — earned through the govern loop (dual-verifier gate).'
+      : status === 'provisional'
+        ? 'A provisional operator fact — on probation. DUIN grounds it softly until the govern loop confirms it or you ratify it.'
+        : `An operator fact with status ${status}.`
   const md =
     `---\n` +
     `id: ${yamlStr(slug.replace(/\.md$/, ''))}\n` +
@@ -301,18 +329,19 @@ export function conceptForFact(
     `metadata:\n` +
     `  kind: ${yamlStr(kind)}\n` +
     `  factId: ${yamlStr(String(fact.id))}\n` +
-    `  source: ${yamlStr(String(fact.source ?? 'operator'))}\n` +
+    `  status: ${yamlStr(status)}\n` +
+    `  source: ${yamlStr(src)}\n` +
     `  adjudicatedBy: ${yamlStr(String(fact.adjudicatedBy ?? 'auto'))}\n` +
-    `  capturedAt: ${fact.ts ?? 0}\n` +
-    `  promotedAt: ${yamlStr(created)}\n` +
+    `  capturedAt: ${capturedMs}\n` +
+    statusDateLine +
     supersedesLine +
     supersededByLine +
-    `tags: [${kind}, promoted, learned]\n` +
+    `tags: [${kind}, ${status}, learned]\n` +
     `---\n\n` +
     `${GEN_MARKER}\n\n` +
     `${claim}\n\n` +
-    `A promoted operator fact — earned through the govern loop (dual-verifier gate).${effLine}\n` +
-    `Provenance: captured ${capturedISO}, promoted ${created}, source ${fact.source ?? 'operator'}.\n` +
+    `${standing}${effLine}\n` +
+    `Provenance: captured ${capturedISO}, ${status === 'promoted' ? 'promoted' : 'provisional since'} ${statusDate}, source ${src}.\n` +
     `\n## Relations\n\n` +
     `- [[${pillarFor(kind)}]] — pillar\n` +
     (ctx?.entities ?? [])
@@ -327,19 +356,68 @@ export function conceptForFact(
  *  A read error FAILS CLOSED (not ours) — never clobber a file we couldn't inspect. */
 function isOurs(full: string): boolean {
   if (!existsSync(full)) return true
-  try { return readFileSync(full, 'utf-8').includes(GEN_MARKER) } catch { return false }
+  try { return hasMarker(readFileSync(full, 'utf-8')) } catch { return false }
 }
 
-/** Materialize (write/overwrite) a promoted fact's concept file. Idempotent by slug.
- *  Skips (returns null) if a hand-authored file already owns the slug. */
-export function materializeConcept(fact: OperatorFact, memoryDir: string, ctx?: ConceptCtx): string | null {
-  if (!memoryDir) return null
+/** Project a fact's concept file (W3). Idempotent by slug AND by bytes: when the file already holds
+ *  exactly what we would write, nothing is written and `changed` is false, so a reconcile pass over an
+ *  unchanged store touches no mtime. Every projection is recorded in the seam ledger (slug, content
+ *  hash, status, claim, lineage) — the record W4 reads to tell a human deletion or edit from our own.
+ *  Skips (path null) when a hand-authored file owns the slug. `ledger` lets a reconcile thread one
+ *  loaded ledger through many projections; without it the ledger is loaded and saved per call. */
+export function projectConcept(
+  fact: OperatorFact,
+  memoryDir: string,
+  ctx?: ConceptCtx,
+  ledger?: SeamLedger
+): { path: string | null; changed: boolean } {
+  if (!memoryDir) return { path: null, changed: false }
   const { slug, md } = conceptForFact(fact, undefined, ctx)
   const full = join(memoryDir, slug)
-  if (!isOurs(full)) return null
-  mkdirSync(memoryDir, { recursive: true })
-  writeFileSync(full, md, 'utf-8')
-  return full
+  if (!isOurs(full)) return { path: null, changed: false }
+  const led = ledger ?? loadSeamLedger(memoryDir)
+  const id = String(fact.id)
+  const rec = led.facts[id]
+  const lineage = (ctx?.supersedes ?? []).map(String).sort().join(',')
+  // W4: the human annotated this file (marker kept, claim intact). Their bytes stand until the fact
+  // itself changes — status, claim or lineage — at which point the file is regenerated.
+  if (
+    rec?.annotated &&
+    rec.status === String(fact.status) &&
+    rec.claim === String(fact.fact ?? '').trim() &&
+    rec.lineage === lineage &&
+    existsSync(full)
+  ) {
+    return { path: full, changed: false }
+  }
+  let existing: string | null
+  try {
+    existing = existsSync(full) ? readFileSync(full, 'utf-8') : null
+  } catch {
+    existing = null
+  }
+  const unchanged = existing !== null && existing === md
+  if (!unchanged) {
+    mkdirSync(memoryDir, { recursive: true })
+    writeFileSync(full, md, 'utf-8')
+  }
+  led.facts[id] = {
+    slug,
+    hash: contentHash(md),
+    writtenAt: unchanged && rec ? rec.writtenAt : Date.now(),
+    status: String(fact.status),
+    claim: String(fact.fact ?? '').trim(),
+    lineage
+  }
+  if (!ledger) saveSeamLedger(memoryDir, led)
+  return { path: full, changed: !unchanged }
+}
+
+/** Materialize (write/overwrite) a fact's concept file. Idempotent by slug; see projectConcept.
+ *  Returns the path (also when the bytes were already current), or null if a hand-authored file
+ *  owns the slug. */
+export function materializeConcept(fact: OperatorFact, memoryDir: string, ctx?: ConceptCtx): string | null {
+  return projectConcept(fact, memoryDir, ctx).path
 }
 
 /** The `.brain/_retired/` dir (sibling of `memory/`) — retired concepts live OUTSIDE the
@@ -350,10 +428,10 @@ function retiredDirFor(memoryDir: string): string {
 
 /** Retire a concept out of `memory/` into `.brain/_retired/` (retire-not-delete = audit-
  *  preserving). No-op if the concept is absent or hand-authored. */
-export function retireConcept(fact: OperatorFact, memoryDir: string): string | null {
+export function retireConcept(fact: OperatorFact, memoryDir: string, ledger?: SeamLedger): string | null {
   if (!memoryDir) return null
   const { slug } = conceptForFact(fact)
-  const dest = retireSlug(slug, memoryDir)
+  const dest = retireSlug(slug, memoryDir, ledger)
   // Tombstone enrichment: a fact retired BY SUPERSESSION records its successor, so the
   // audit trail in `_retired/` is self-describing. String surgery (not regeneration)
   // preserves the original promotedAt/body exactly; best-effort — the retire (the move)
@@ -375,12 +453,17 @@ export function retireConcept(fact: OperatorFact, memoryDir: string): string | n
   return dest
 }
 
-/** Retire by slug (used by the reconciler for orphans whose fact object we don't hold). */
-function retireSlug(slug: string, memoryDir: string): string | null {
+/** Retire by slug (used by the reconciler for orphans whose fact object we don't hold). Drops the
+ *  slug's ledger entry BEFORE the move, so the unlink our own rename produces can never read as a
+ *  human deletion (W4). */
+function retireSlug(slug: string, memoryDir: string, ledger?: SeamLedger): string | null {
   const full = join(memoryDir, slug)
   if (!existsSync(full) || !isOurs(full)) return null
   const retiredDir = retiredDirFor(memoryDir)
   try {
+    const led = ledger ?? loadSeamLedger(memoryDir)
+    for (const [id, rec] of Object.entries(led.facts)) if (rec.slug === slug) delete led.facts[id]
+    if (!ledger) saveSeamLedger(memoryDir, led)
     mkdirSync(retiredDir, { recursive: true })
     const dest = join(retiredDir, slug)
     renameSync(full, dest)
@@ -388,20 +471,121 @@ function retireSlug(slug: string, memoryDir: string): string | null {
   } catch { return null }
 }
 
-/** Backfill: materialize concepts for a set of already-promoted facts. Idempotent.
+/** Backfill: project concepts for a set of facts. Idempotent: `written` counts files whose bytes
+ *  changed; an already-current file (or a hand-authored one) counts as `skipped`.
  *  `ctxFor` optionally supplies per-fact derived relations (see reconcileConcepts). */
 export function backfillConcepts(
   facts: OperatorFact[],
   memoryDir: string,
-  ctxFor?: (f: OperatorFact) => ConceptCtx | undefined
+  ctxFor?: (f: OperatorFact) => ConceptCtx | undefined,
+  ledger?: SeamLedger
 ): { written: number; skipped: number } {
   let written = 0
   let skipped = 0
   for (const f of facts) {
-    if (materializeConcept(f, memoryDir, ctxFor?.(f))) written++
+    if (projectConcept(f, memoryDir, ctxFor?.(f), ledger).changed) written++
     else skipped++
   }
   return { written, skipped }
+}
+
+/** W4 — the human side of the seam. Production wiring lives in seam-reconcile
+ *  (productionHumanEditHooks): a deleted file → vetoFact; a rewritten claim line → supersedeFact +
+ *  promoteFact (+ confirmFact when the old fact was promoted). Tests inject fakes. */
+export interface HumanEditHooks {
+  onDeleted: (fact: OperatorFact) => void
+  onEdited: (fact: OperatorFact, newClaim: string) => void
+}
+
+const normClaim = (s: string): string => s.toLowerCase().replace(/[.?!]+$/, '').replace(/\s+/g, ' ').trim()
+
+/** The claim line: the first non-empty line after the machine marker. */
+function claimLineOf(md: string): string | null {
+  const at = md.indexOf(GEN_MARKER_PREFIX)
+  if (at < 0) return null
+  const end = md.indexOf('-->', at)
+  if (end < 0) return null
+  for (const line of md.slice(end + 3).split(/\r?\n/)) {
+    const t = line.trim()
+    if (t) return t
+  }
+  return null
+}
+
+/** Read the ledger against the lane BEFORE re-projecting (W4): what did the human do to our files?
+ *   - gone from `memory/`, not in `_retired/`, while `memory/` exists → DELETED → hooks.onDeleted
+ *   - marker kept, claim line rewritten → EDITED → hooks.onEdited(fact, newClaim)
+ *   - marker kept, claim intact, other bytes changed → ANNOTATED → left alone until the fact changes
+ *   - marker removed → RELEASED → the file is the human's now; the seam forgets it
+ *  A missing `memory/` directory is a reset (re-project everything), never a mass veto. Returns the
+ *  ids the human acted on so the caller drops them from the projection set — otherwise the backfill
+ *  that follows would re-create what the human just retracted. Hooks never throw into the seam. */
+export function applyHumanEdits(
+  facts: OperatorFact[],
+  memoryDir: string,
+  ledger: SeamLedger,
+  hooks: HumanEditHooks
+): { deleted: number; edited: number; annotated: number; released: number; changedIds: Set<string> } {
+  const out = { deleted: 0, edited: 0, annotated: 0, released: 0, changedIds: new Set<string>() }
+  if (!memoryDir || !existsSync(memoryDir)) return out
+  const byId = new Map(facts.map((f) => [String(f.id), f]))
+  const retiredDir = retiredDirFor(memoryDir)
+  for (const [id, rec] of Object.entries(ledger.facts)) {
+    const fact = byId.get(id)
+    const full = join(memoryDir, rec.slug)
+    if (!existsSync(full)) {
+      if (existsSync(join(retiredDir, rec.slug))) {
+        delete ledger.facts[id] // our own retire; the entry merely outlived the move
+        continue
+      }
+      if (!fact) {
+        delete ledger.facts[id] // no longer projected — nothing to retract
+        continue
+      }
+      delete ledger.facts[id]
+      out.changedIds.add(id)
+      out.deleted++
+      saveSeamLedger(memoryDir, ledger) // the hook may project through the seam; it must see this retraction
+      try {
+        hooks.onDeleted(fact)
+      } catch {
+        /* the seam never breaks the govern loop */
+      }
+      ledger.facts = loadSeamLedger(memoryDir).facts // pick up what the hook projected; never clobber it
+      continue
+    }
+    if (!fact) continue // the orphan sweep retires it
+    let content: string
+    try {
+      content = readFileSync(full, 'utf-8')
+    } catch {
+      continue
+    }
+    if (!hasMarker(content)) {
+      delete ledger.facts[id]
+      out.released++
+      continue
+    }
+    const hash = contentHash(content)
+    if (hash === rec.hash) continue
+    const claim = claimLineOf(content)
+    if (claim && normClaim(claim) !== normClaim(String(fact.fact ?? ''))) {
+      delete ledger.facts[id]
+      out.changedIds.add(id)
+      out.edited++
+      saveSeamLedger(memoryDir, ledger) // the replacement projects through the seam with its own ledger load
+      try {
+        hooks.onEdited(fact, claim)
+      } catch {
+        /* the seam never breaks the govern loop */
+      }
+      ledger.facts = loadSeamLedger(memoryDir).facts // pick up the replacement's entry; never clobber it
+      continue
+    }
+    ledger.facts[id] = { ...rec, hash, annotated: true } // into the CURRENT map (it may have been reloaded)
+    out.annotated++
+  }
+  return out
 }
 
 /** RECONCILE — make the concept lane match the promoted set exactly. Materializes every
@@ -412,8 +596,25 @@ export function reconcileConcepts(
   promoted: OperatorFact[],
   memoryDir: string,
   allFacts?: OperatorFact[],
-  entities?: EntityCatalogEntry[]
+  entities?: EntityCatalogEntry[],
+  hooks?: HumanEditHooks
 ): { written: number; skipped: number; retired: number; entitiesWritten: number; entitiesRetired: number } {
+  const ledger = loadSeamLedger(memoryDir)
+  // W4: the human's edits and deletions are read FIRST, and whatever they retracted leaves the
+  // projection set — otherwise the backfill below would put the file straight back.
+  const hookProjected = new Set<string>()
+  if (hooks) {
+    const before = new Set(Object.keys(ledger.facts))
+    const human = applyHumanEdits(promoted, memoryDir, ledger, hooks)
+    if (human.changedIds.size) promoted = promoted.filter((f) => !human.changedIds.has(String(f.id)))
+    // The hooks project replacements through the seam hook (their own ledger load/save): pick those
+    // entries up, and keep their files out of the orphan sweep below — the projection set we were
+    // handed predates them; the next reconcile folds them in with lineage.
+    ledger.facts = loadSeamLedger(memoryDir).facts
+    for (const [id, rec] of Object.entries(ledger.facts)) {
+      if (!before.has(id) && !human.changedIds.has(id)) hookProjected.add(rec.slug)
+    }
+  }
   // Reverse supersession map: old.supersededBy = new.id is stored on the DEAD fact, so the
   // live concept's "what did I supersede" needs the full (bitemporal) list. Optional — the
   // per-promote hook path doesn't have it, and the next reconcile self-heals the lineage.
@@ -453,8 +654,9 @@ export function reconcileConcepts(
     }
     return ctx.supersedes || ctx.entities ? ctx : undefined
   }
-  const { written, skipped } = backfillConcepts(promoted, memoryDir, ctxFor)
+  const { written, skipped } = backfillConcepts(promoted, memoryDir, ctxFor, ledger)
   const expected = new Set(promoted.map((f) => conceptForFact(f).slug))
+  for (const slug of hookProjected) expected.add(slug)
   let retired = 0
   let existing: string[]
   try {
@@ -465,7 +667,7 @@ export function reconcileConcepts(
   for (const name of existing) {
     if (!name.startsWith('concept-') || !name.endsWith('.md')) continue
     if (expected.has(name)) continue // still promoted — keep
-    if (retireSlug(name, memoryDir)) retired++ // ours + orphaned → retire
+    if (retireSlug(name, memoryDir, ledger)) retired++ // ours + orphaned → retire
   }
   // T2 entity phase — materialize referenced entity files, retire unreferenced ones. Runs
   // ONLY when a catalog was supplied (undefined ⇒ pre-existing entity files are left alone;
@@ -486,6 +688,9 @@ export function reconcileConcepts(
       const { slug, md } = entityConceptFor(rec.entry, rec.refs)
       const full = join(memoryDir, slug)
       if (!isOurs(full)) continue // hand-authored entity note owns the slug — never clobber
+      let prev: string | null
+      try { prev = existsSync(full) ? readFileSync(full, 'utf-8') : null } catch { prev = null }
+      if (prev === md) continue // byte-current already (W3 idempotency)
       mkdirSync(memoryDir, { recursive: true })
       writeFileSync(full, md, 'utf-8')
       entitiesWritten++
@@ -499,7 +704,7 @@ export function reconcileConcepts(
     for (const name of entityFiles) {
       if (!name.startsWith('entity-') || !name.endsWith('.md')) continue
       if (referenced.has(name.replace(/\.md$/, ''))) continue // still referenced — keep
-      if (retireSlug(name, memoryDir)) entitiesRetired++ // ours + unreferenced → retire
+      if (retireSlug(name, memoryDir, ledger)) entitiesRetired++ // ours + unreferenced → retire
     }
   }
   // Keep `_concept-index.md` fresh on the seam path — its only other regeneration is the
@@ -511,6 +716,7 @@ export function reconcileConcepts(
   } catch {
     /* index refresh is best-effort */
   }
+  saveSeamLedger(memoryDir, ledger)
   return { written, skipped, retired, entitiesWritten, entitiesRetired }
 }
 

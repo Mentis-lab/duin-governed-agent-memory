@@ -7,9 +7,10 @@
 //
 //   1. EVENT-DRIVEN: every governed transition (promote / supersede / veto / revert) schedules
 //      a DEBOUNCED full reconcile — a govern pass that flips five facts causes ONE reconcile,
-//      shortly after the burst goes quiet. The trigger is the govern EVENT, deliberately NOT a
-//      file-watcher: the reconcile writes into `.brain/memory/` itself, so watching that
-//      directory would self-trigger forever. (notes-watcher also excludes `.brain` by design.)
+//      shortly after the burst goes quiet. Since W4 (2026-09-02) the vault watcher's events for
+//      `.brain/memory/concept-*.md` — a human edit or deletion — schedule the same reconcile. Our
+//      own writes update the seam ledger first, so the pass they trigger finds nothing to do and
+//      the loop closes after one no-op. (notes-watcher does watch `.brain`; see isMachineStatePath.)
 //   2. BOOT SELF-HEAL: one pass after boot settles, which also repairs the transitions that
 //      never fire the hook (evictToCap, flag-off periods, crashes mid-write).
 //
@@ -27,17 +28,29 @@
 //     catalog builder loads it explicitly on every build — cheap, idempotent, and it also
 //     picks up hand edits to entity-aliases.json.
 
+import { resolve, sep, basename } from 'path'
+import { onVaultFileEvent } from '../local-brain/notes-watcher'
 import {
   reconcileConcepts,
   conceptMemoryDir,
   seamEnabled,
   seamEntityEdgesEnabled,
   assembleEntityCatalog,
-  type EntityCatalogEntry
+  type EntityCatalogEntry,
+  type HumanEditHooks
 } from './concept-materialize'
 import { loadAliasGroups, activeAliasGroups } from './entity-resolver'
 import { liveNodes } from './entity-graph-store'
-import { getOperatorFacts, getAllOperatorFacts, type OperatorFact } from './operator-model'
+import {
+  getOperatorFacts,
+  getAllOperatorFacts,
+  type OperatorFact,
+  isFactLive,
+  vetoFact,
+  supersedeFact,
+  promoteFact,
+  confirmFact
+} from './operator-model'
 
 export interface SeamReconcileDeps {
   getNotesDir: () => string | null
@@ -48,6 +61,8 @@ export interface SeamReconcileDeps {
   /** Semantic-index refresh (scheduleReindex) — injected to keep this module out of the
    *  local-brain layer; already debounced internally by its owner. */
   reindex?: (notesDir: string) => void
+  /** W4: what a human's edit or deletion of a concept file does to the store (see productionHumanEditHooks). */
+  humanEdits?: HumanEditHooks
 }
 
 export interface SeamReconcileResult {
@@ -72,6 +87,7 @@ function envInt(name: string, fallback: number): number {
 
 // ──────────────────────────── module state ────────────────────────────
 let stashedDeps: SeamReconcileDeps | null = null
+let unsubscribeFiles: (() => void) | null = null
 let debounceMs = DEBOUNCE_MS_DEFAULT
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
 let bootTimer: ReturnType<typeof setTimeout> | null = null
@@ -104,6 +120,25 @@ export function buildLiveSeamCatalog(notesDir: string): EntityCatalogEntry[] | u
   )
 }
 
+/** W4 production hooks: what a human does to a concept file is what they would have done in the UI.
+ *  A deleted file is a veto (soft, un-vetoable from the Learning panel). A rewritten claim line is the
+ *  operator's statement: it supersedes the old fact, lands under human authority (promoteFact), and
+ *  keeps a confirmed rule confirmed (confirmFact) so the new text does not have to re-earn its standing. */
+export function productionHumanEditHooks(): HumanEditHooks {
+  return {
+    onDeleted: (f) => {
+      vetoFact(f.id, 'concept file deleted by hand')
+    },
+    onEdited: (f, claim) => {
+      const wasPromoted = f.status === 'promoted'
+      const r = supersedeFact(f.id, claim, f.kind, 'operator')
+      if (!r.newId) return
+      promoteFact(r.newId, 'edited the concept file by hand')
+      if (wasPromoted) confirmFact(r.newId)
+    }
+  }
+}
+
 /** Bundle the production deps once — main.ts wires this with its settings closure. */
 export function makeProductionSeamDeps(
   getNotesDir: () => string | null,
@@ -111,10 +146,13 @@ export function makeProductionSeamDeps(
 ): SeamReconcileDeps {
   return {
     getNotesDir,
-    getPromoted: () => getOperatorFacts().filter((f) => f.status === 'promoted'),
+    // W3: provisional facts project too — a keyless install parks every learned fact at 'ratify' and
+    // would otherwise never get a single file. Retired rows (superseded/cascade) never project.
+    getPromoted: () => getOperatorFacts().filter((f) => (f.status === 'promoted' || f.status === 'provisional') && isFactLive(f)),
     getAllFacts: () => getAllOperatorFacts(),
     buildCatalog: buildLiveSeamCatalog,
-    reindex
+    reindex,
+    humanEdits: productionHumanEditHooks()
   }
 }
 
@@ -146,7 +184,7 @@ export function runSeamReconcileNow(
     } catch {
       catalog = undefined
     }
-    const result = reconcileConcepts(deps.getPromoted(), memoryDir, deps.getAllFacts(), catalog)
+    const result = reconcileConcepts(deps.getPromoted(), memoryDir, deps.getAllFacts(), catalog, deps.humanEdits)
     try {
       deps.reindex?.(notesDir)
     } catch {
@@ -189,6 +227,19 @@ export function startSeamAutoReconcile(
   if (status.started) return
   status.started = true
   stashedDeps = deps
+  // W4: a human's edit or deletion of a concept file reaches us through the vault watcher. Only
+  // `.brain/memory/concept-*.md` change/unlink events count; everything else is the notes tree.
+  unsubscribeFiles?.()
+  unsubscribeFiles = onVaultFileEvent((ev) => {
+    if (ev.type === 'add') return
+    const memoryDir = conceptMemoryDir(stashedDeps?.getNotesDir() ?? null)
+    if (!memoryDir) return
+    const p = resolve(ev.path)
+    if (!p.startsWith(resolve(memoryDir) + sep)) return
+    const base = basename(p)
+    if (!base.startsWith('concept-') || !base.endsWith('.md')) return
+    scheduleSeamReconcile(`file-${ev.type}`)
+  })
   debounceMs = opts?.debounceMs ?? envInt('DUIN_SEAM_RECONCILE_DEBOUNCE_MS', DEBOUNCE_MS_DEFAULT)
   const bootDelay = opts?.bootDelayMs ?? envInt('DUIN_SEAM_BOOT_RECONCILE_MS', BOOT_DELAY_MS_DEFAULT)
   if (bootDelay > 0) {
@@ -211,6 +262,8 @@ export function stopSeamAutoReconcile(): void {
     clearTimeout(debounceTimer)
     debounceTimer = null
   }
+  unsubscribeFiles?.()
+  unsubscribeFiles = null
   stashedDeps = null
   status.started = false
 }

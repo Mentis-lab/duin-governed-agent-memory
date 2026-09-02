@@ -45,17 +45,25 @@ When you pick a folder, DUIN:
 2. Writes four **foundation files** in the folder root: `ME.md` (who you are), `BRAIN.md` (how
    DUIN must operate), `SOUL.md` (DUIN's character) and `GOALS.md`. They are ordinary Markdown;
    edit them.
-3. Creates `.brain/` with `memory/` (typed concept files such as `_about-<pillar>.md` and a
-   `_concept-index.md`) and, over time, `_moat/` (operator model, success traces and
-   capability tables), `_backups/` and `_exports/`.
-4. Creates `.duin/` with `_state/` (the brain's ledgers), `_backups/` (daily snapshots) and
-   `_agui_entities.json`.
+3. Creates `.brain/` with `memory/` (the scaffold: `_about-<pillar>.md` files and a
+   `_concept-index.md`, joined over time by one `concept-<id>.md` per fact DUIN learns about
+   you, each with its status and source) and, over time, `_moat/` (a JSON mirror of the learned
+   facts, success traces and capability tables), `_memory-store/` (a mirror of your memory
+   files), `_retired/` (facts that were replaced or retracted), `_backups/` and `_exports/`.
+4. Creates `.duin/` on first use, with `_state/` (the brain's ledgers) and `_backups/` (daily
+   snapshots).
 5. Later, as you use it: `.trash/` (anything the agent deletes goes here first) and
    `_agui_outputs/` (documents the agent produces).
 
-Everything DUIN keeps about you is in those folders as text you can read, edit, diff and
-delete. Add `.brain/`, `.duin/`, `.trash/` and `_agui_outputs/` to your sync or git ignore
-rules if you do not want them replicated.
+Your memory files and the ledger of what DUIN learns about you live in the app's data folder
+(`%APPDATA%\DUIN` on Windows, `~/Library/Application Support/DUIN` on macOS, `~/.config/DUIN` on
+Linux; the Memory panel shows the path) as text you can read, edit, diff and delete, and are
+mirrored into `.brain/` every few minutes as a backup. Edit the originals; the vault copies are
+overwritten by the next mirror. The exception is `.brain/memory/concept-*.md`: those are the
+learned facts themselves, and DUIN follows what you do to them — rewrite the claim line and it
+records your version, delete the file and the fact is retracted (see the architecture notes).
+Add `.brain/`, `.duin/`, `.trash/` and `_agui_outputs/` to your sync or git ignore rules if you
+do not want them replicated.
 
 ## 4. The ready screen
 

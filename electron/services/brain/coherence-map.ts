@@ -180,15 +180,13 @@ export const COHERENCE_MAP: CoherenceEntry[] = [
     subsystem: 'seam (promotion → OKF concept materialization)',
     designIntent:
       'On promote, materialize a portable OKF concept .md into <vault>/.brain/memory/; retire it out of the lane on revert/veto/supersede — so learned memory becomes portable, exportable, and retrievable',
-    wiringState: 'COLD_BY_DESIGN',
+    wiringState: 'LIVE',
     evidence:
-      'concept-materialize.ts (materializeConcept/retireConcept/reconcileConcepts) ← operator-model.ts fireMaterialize in confirmFact(promote) + revertFact/vetoFact/supersedeFact/revertByBindingId(retire) ← main.ts setMaterializeHook(makeMaterializeHook). Routes: POST /debug/materialize-backfill (reconcile) + /debug/export-brain-bundle. Concepts ground via the retrieval carve-out (index-store.ts collectBrainMemoryFiles), excluded from the always-on body-dump (brain-root.ts type:learned skip). Flag DUIN_SEAM_MATERIALIZE is set ON by deploy.cmd (PLANNING/DUIN_SEAM_BUILD_SPEC.md).',
+      'concept-materialize.ts (materializeConcept/retireConcept/reconcileConcepts) ← operator-model.ts fireMaterialize in confirmFact(promote) + revertFact/vetoFact/supersedeFact/revertByBindingId(retire) ← main.ts setMaterializeHook(makeMaterializeHook). Routes: POST /debug/materialize-backfill (reconcile) + /debug/export-brain-bundle. Concepts ground via the retrieval carve-out (index-store.ts collectBrainMemoryFiles), excluded from the always-on body-dump (brain-root.ts type:learned skip). Flag DUIN_SEAM_MATERIALIZE default-ON (DUIN_SEAM_MATERIALIZE) since 2026-09-02, =0 disables; provisional facts project with status:, and the seam ledger (.duin/_state/seam-ledger.json, seam-ledger.ts) makes re-projection idempotent.',
     detectors: ['concept-materialize.test'],
     axis: 'wiring',
-    byDesign: true,
-    byDesignWhy:
-      'Ships ON: deploy.cmd sets DUIN_SEAM_MATERIALIZE=1, and it is also set as a user-scope env var on the operator machine (measured 2026-08-03). The code default remains off — byte-identical when unset — but no shipped install runs with it unset, so describing it as default-OFF understated what is live.',
-    gap: 'built 2026-07-24; retire moved OUTSIDE memory/ → .brain/_retired (was leaking back into grounding+retrieval); reconcile sweep repairs any missed-retire drift. Remaining: flip the flag + backfill the ~49 promoted facts, then UI/CLI export packaging.',
+    byDesign: false,
+    gap: 'built 2026-07-24; retire moved OUTSIDE memory/ → .brain/_retired; reconcile sweep repairs missed-retire drift; 2026-09-02 (W3) default ON for every install, provisional facts projected, idempotent writes via the seam ledger. Remaining: human edits/deletes flowing back (W4), UI/CLI export packaging.',
     leverage: 'high'
   },
   {

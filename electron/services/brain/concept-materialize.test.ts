@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync, mkdirSync } from 'fs'
+import { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync, mkdirSync, statSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import {
@@ -18,6 +18,9 @@ import {
   type EntityCatalogEntry
 } from './concept-materialize'
 import type { OperatorFact } from './operator-model'
+import { projectConcept, applyHumanEdits, type HumanEditHooks } from './concept-materialize'
+import { loadSeamLedger } from './seam-ledger'
+import { generateConceptIndex } from './concept-index'
 
 function fact(over: Partial<OperatorFact> = {}): OperatorFact {
   return {
@@ -188,7 +191,7 @@ describe('concept-materialize (the seam)', () => {
       hook(fact(), 'retire')
       expect(seen).toEqual(['promote', 'retire'])
 
-      delete process.env.DUIN_SEAM_MATERIALIZE
+      process.env.DUIN_SEAM_MATERIALIZE = '0'
       hook(fact(), 'promote')
       expect(seen.length).toBe(2) // seam off ⇒ no write, no schedule
 
@@ -201,17 +204,17 @@ describe('concept-materialize (the seam)', () => {
     }
   })
 
-  it('the hook is flag-gated (default OFF → no write) and never throws', () => {
+  it('the hook is ON by default (W3), DUIN_SEAM_MATERIALIZE=0 gates it off, and it never throws', () => {
     const prev = process.env.DUIN_SEAM_MATERIALIZE
     try {
-      delete process.env.DUIN_SEAM_MATERIALIZE
+      process.env.DUIN_SEAM_MATERIALIZE = '0'
       expect(seamEnabled()).toBe(false)
       const hook = makeMaterializeHook(() => tmp)
       hook(fact(), 'promote')
       expect(existsSync(join(memoryDir, 'concept-f_test1.md'))).toBe(false) // gated off
 
-      process.env.DUIN_SEAM_MATERIALIZE = '1'
-      expect(seamEnabled()).toBe(true)
+      delete process.env.DUIN_SEAM_MATERIALIZE
+      expect(seamEnabled()).toBe(true) // the public default: learned facts land in the vault
       hook(fact(), 'promote')
       expect(existsSync(join(memoryDir, 'concept-f_test1.md'))).toBe(true)
 
@@ -502,5 +505,243 @@ describe('seam entity projection (T2)', () => {
       if (prev === undefined) delete process.env.DUIN_SEAM_ENTITY_EDGES
       else process.env.DUIN_SEAM_ENTITY_EDGES = prev
     }
+  })
+})
+
+// ─────────────────────────── W3 — learned facts as vault files by default ───────────────────────────
+// The seam is ON unless DUIN_SEAM_MATERIALIZE=0; provisional facts project with a `status:` field (a
+// keyless install never reaches `promoted`); dates come from the fact so a later-day re-projection is
+// byte-identical; an unchanged fact writes nothing; a ledger in the vault records what was projected.
+describe('W3 — files by default, status-aware, stable, idempotent', () => {
+  let tmp: string
+  let memoryDir: string
+  const spin = (ms: number): void => { const t0 = Date.now(); while (Date.now() - t0 < ms) { /* let the clock move */ } }
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), 'seam-w3-'))
+    memoryDir = join(tmp, '.brain', 'memory')
+  })
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 })
+  })
+
+  it('seamEnabled is ON unless DUIN_SEAM_MATERIALIZE=0', () => {
+    const prev = process.env.DUIN_SEAM_MATERIALIZE
+    try {
+      delete process.env.DUIN_SEAM_MATERIALIZE
+      expect(seamEnabled()).toBe(true)
+      process.env.DUIN_SEAM_MATERIALIZE = '0'
+      expect(seamEnabled()).toBe(false)
+      process.env.DUIN_SEAM_MATERIALIZE = '1'
+      expect(seamEnabled()).toBe(true)
+    } finally {
+      if (prev === undefined) delete process.env.DUIN_SEAM_MATERIALIZE
+      else process.env.DUIN_SEAM_MATERIALIZE = prev
+    }
+  })
+
+  it('a provisional fact projects with status: provisional and provisionalAt; a promoted one with promotedAt', () => {
+    const prov = conceptForFact(fact({ status: 'provisional', provisionalAt: 1_700_000_100_000 })).md
+    expect(prov).toContain('  status: provisional\n')
+    expect(prov).toContain('  provisionalAt: 2023-11-14')
+    expect(prov).not.toContain('promotedAt:')
+    expect(prov).toContain('tags: [preference, provisional, learned]')
+    expect(prov).toContain('A provisional operator fact')
+    expect(prov).toContain('type: learned') // still skipped by the always-on grounding dump, still retrievable
+
+    const prom = conceptForFact(fact({ status: 'promoted', promotedAt: 1_700_086_400_000 })).md
+    expect(prom).toContain('  status: promoted\n')
+    expect(prom).toContain('  promotedAt: 2023-11-15')
+    expect(prom).not.toContain('provisionalAt:')
+    expect(prom).toContain('tags: [preference, promoted, learned]')
+  })
+
+  it('dates come from the fact, never the clock; an untagged source is written as unknown', () => {
+    const md = conceptForFact(
+      fact({ capturedAt: 1_600_000_000_000, ts: 1_700_000_000_000, promotedAt: 1_700_086_400_000, source: undefined })
+    ).md
+    expect(md).toContain('  capturedAt: 1600000000000')
+    expect(md).toContain('captured 2020-09-13T12:26:40.000Z')
+    expect(md).toContain('  source: unknown')
+    expect(md).toContain('source unknown.')
+    const a = conceptForFact(fact({ capturedAt: 1_600_000_000_000, promotedAt: 1_700_086_400_000 }), '2030-01-01').md
+    const b = conceptForFact(fact({ capturedAt: 1_600_000_000_000, promotedAt: 1_700_086_400_000 }), '2031-06-06').md
+    expect(a).toBe(b) // `today` no longer reaches the output
+  })
+
+  it('projecting an unchanged fact twice writes no bytes the second time', () => {
+    const first = projectConcept(fact({ promotedAt: 1_700_086_400_000 }), memoryDir)
+    expect(first.changed).toBe(true)
+    expect(first.path).not.toBeNull()
+    const before = statSync(first.path!).mtimeMs
+    spin(30)
+    const second = projectConcept(fact({ promotedAt: 1_700_086_400_000 }), memoryDir)
+    expect(second).toEqual({ path: first.path, changed: false })
+    expect(statSync(first.path!).mtimeMs).toBe(before)
+    expect(backfillConcepts([fact({ promotedAt: 1_700_086_400_000 })], memoryDir)).toEqual({ written: 0, skipped: 1 })
+  })
+
+  it('the seam ledger records what was projected and forgets what was retired', () => {
+    projectConcept(fact({ status: 'promoted', promotedAt: 1_700_086_400_000 }), memoryDir)
+    const led = loadSeamLedger(memoryDir)
+    expect(led.facts.f_test1).toMatchObject({ slug: 'concept-f_test1.md', status: 'promoted', claim: fact().fact })
+    expect(led.facts.f_test1.hash).toMatch(/^[0-9a-f]{12,}$/)
+    expect(existsSync(join(tmp, '.duin', '_state', 'seam-ledger.json'))).toBe(true)
+    retireConcept(fact(), memoryDir)
+    expect(loadSeamLedger(memoryDir).facts.f_test1).toBeUndefined()
+  })
+
+  it('the concept index is not rewritten when only its date stamp would change', () => {
+    projectConcept(fact(), memoryDir)
+    expect(generateConceptIndex(memoryDir, 'memory', '2026-09-01')).not.toBeNull()
+    const idx = join(memoryDir, '_concept-index.md')
+    const before = readFileSync(idx, 'utf-8')
+    const mt = statSync(idx).mtimeMs
+    spin(30)
+    expect(generateConceptIndex(memoryDir, 'memory', '2026-09-02')).not.toBeNull()
+    expect(readFileSync(idx, 'utf-8')).toBe(before)
+    expect(statSync(idx).mtimeMs).toBe(mt)
+  })
+})
+
+// ─────────────────────────── W4 — the projection honors the human ───────────────────────────
+// A concept file the human DELETES retracts the fact (production: veto); a claim line the human
+// REWRITES becomes the operator's statement (production: supersede + promote); an annotation that leaves
+// the claim intact is preserved until the fact changes; a file with the marker removed is released.
+describe('W4 — applyHumanEdits', () => {
+  let tmp: string
+  let memoryDir: string
+  let calls: Array<{ kind: 'deleted' | 'edited'; id: string; claim?: string }>
+  const hooks = (): HumanEditHooks => ({
+    onDeleted: (f: OperatorFact) => { calls.push({ kind: 'deleted', id: f.id }) },
+    onEdited: (f: OperatorFact, claim: string) => { calls.push({ kind: 'edited', id: f.id, claim }) }
+  })
+  const fileOf = (f: OperatorFact): string => join(memoryDir, conceptForFact(f).slug)
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), 'seam-w4-'))
+    memoryDir = join(tmp, '.brain', 'memory')
+    calls = []
+  })
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 })
+  })
+
+  it('a deleted concept file retracts the fact, once, and drops the ledger entry', () => {
+    const f = fact({ promotedAt: 1_700_086_400_000 })
+    projectConcept(f, memoryDir)
+    rmSync(fileOf(f))
+    const led = loadSeamLedger(memoryDir)
+    const r = applyHumanEdits([f], memoryDir, led, hooks())
+    expect(r).toMatchObject({ deleted: 1, edited: 0, annotated: 0, released: 0 })
+    expect(r.changedIds.has('f_test1')).toBe(true)
+    expect(calls).toEqual([{ kind: 'deleted', id: 'f_test1' }])
+    expect(led.facts.f_test1).toBeUndefined()
+    expect(applyHumanEdits([f], memoryDir, led, hooks()).deleted).toBe(0) // already handled
+  })
+
+  it('our own retire is never read as a human deletion, and a missing memory dir vetoes nothing', () => {
+    const f = fact({ promotedAt: 1_700_086_400_000 })
+    projectConcept(f, memoryDir)
+    retireConcept(f, memoryDir) // moves the file to _retired and drops the entry
+    expect(applyHumanEdits([f], memoryDir, loadSeamLedger(memoryDir), hooks()).deleted).toBe(0)
+    expect(calls).toEqual([])
+
+    projectConcept(f, memoryDir)
+    rmSync(memoryDir, { recursive: true, force: true }) // the whole lane is gone — a reset, not a veto
+    const r = applyHumanEdits([f], memoryDir, loadSeamLedger(memoryDir), hooks())
+    expect(r).toMatchObject({ deleted: 0, edited: 0 })
+    expect(calls).toEqual([])
+  })
+
+  it('a rewritten claim line is handed back as the operator\'s statement and the entry is dropped', () => {
+    const f = fact({ promotedAt: 1_700_086_400_000 })
+    const path = projectConcept(f, memoryDir).path!
+    const edited = readFileSync(path, 'utf-8').split('TQ prefers conclusion-first, high-density replies.').join('TQ prefers terse replies.') // every copy: description and the claim line
+    expect(edited).toContain('generated: duin-seam') // marker kept
+    writeFileSync(path, edited, 'utf-8')
+    const led = loadSeamLedger(memoryDir)
+    const r = applyHumanEdits([f], memoryDir, led, hooks())
+    expect(r).toMatchObject({ deleted: 0, edited: 1, annotated: 0 })
+    expect(calls).toEqual([{ kind: 'edited', id: 'f_test1', claim: 'TQ prefers terse replies.' }])
+    expect(led.facts.f_test1).toBeUndefined()
+    expect(r.changedIds.has('f_test1')).toBe(true)
+  })
+
+  it('an annotation that leaves the claim intact is preserved until the fact itself changes', () => {
+    const f = fact({ promotedAt: 1_700_086_400_000 })
+    const path = projectConcept(f, memoryDir).path!
+    writeFileSync(path, readFileSync(path, 'utf-8') + '\nMy own note: keep this one.\n', 'utf-8')
+    const led = loadSeamLedger(memoryDir)
+    expect(applyHumanEdits([f], memoryDir, led, hooks())).toMatchObject({ annotated: 1, edited: 0, deleted: 0 })
+    expect(calls).toEqual([])
+    expect(led.facts.f_test1.annotated).toBe(true)
+    // unchanged fact → the annotated file is left alone
+    expect(projectConcept(f, memoryDir, undefined, led).changed).toBe(false)
+    expect(readFileSync(path, 'utf-8')).toContain('My own note')
+    // the fact changed → regenerated, annotation gone, entry no longer annotated
+    const g = fact({ status: 'provisional', provisionalAt: 1_700_086_400_000 }) // status changed → regenerate
+    expect(projectConcept(g, memoryDir, undefined, led).changed).toBe(true)
+    expect(readFileSync(path, 'utf-8')).not.toContain('My own note')
+    expect(led.facts.f_test1.annotated).toBeUndefined()
+  })
+
+  it('a file whose marker was removed is released to the human and never touched again', () => {
+    const f = fact({ promotedAt: 1_700_086_400_000 })
+    const path = projectConcept(f, memoryDir).path!
+    writeFileSync(path, readFileSync(path, 'utf-8').replace(/<!-- generated: duin-seam[^\n]*-->\n/, ''), 'utf-8')
+    const led = loadSeamLedger(memoryDir)
+    expect(applyHumanEdits([f], memoryDir, led, hooks())).toMatchObject({ released: 1, edited: 0, deleted: 0 })
+    expect(calls).toEqual([])
+    expect(led.facts.f_test1).toBeUndefined()
+    expect(projectConcept(f, memoryDir, undefined, led).path).toBeNull() // not ours any more
+  })
+
+  it('reconcileConcepts runs the human pass first and does not re-project what the human retracted', () => {
+    const a = fact({ id: 'a', promotedAt: 1_700_086_400_000 })
+    const b = fact({ id: 'b', promotedAt: 1_700_086_400_000, fact: 'TQ reviews pull requests before lunch.' })
+    reconcileConcepts([a, b], memoryDir, [a, b], undefined, hooks())
+    rmSync(join(memoryDir, 'concept-a.md'))
+    const r = reconcileConcepts([a, b], memoryDir, [a, b], undefined, hooks())
+    expect(calls).toEqual([{ kind: 'deleted', id: 'a' }])
+    expect(existsSync(join(memoryDir, 'concept-a.md'))).toBe(false) // NOT re-created by the backfill
+    expect(existsSync(join(memoryDir, 'concept-b.md'))).toBe(true)
+    expect(r.written).toBe(0)
+  })
+})
+
+// W4b — the marker no longer says "do not hand-edit" (the claim line IS the edit surface), and files
+// written with the old marker are still recognised as ours: overwritten on re-projection, read by the
+// human pass, never mistaken for a hand-authored note.
+describe('W4b — marker text and backward compatibility', () => {
+  let tmp: string
+  let memoryDir: string
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), 'seam-w4b-'))
+    memoryDir = join(tmp, '.brain', 'memory')
+  })
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 })
+  })
+
+  it('writes the new marker, and a file carrying the old marker is still ours', () => {
+    const f = fact({ promotedAt: 1_700_086_400_000 })
+    const path = projectConcept(f, memoryDir).path!
+    const md = readFileSync(path, 'utf-8')
+    expect(md).toContain('<!-- generated: duin-seam · rewrite the claim line to restate this fact; delete the file to retract it -->')
+    expect(md).not.toContain('do not hand-edit')
+
+    const OLD = '<!-- generated: duin-seam · machine-owned · do not hand-edit -->'
+    const legacy = md.replace(/<!-- generated: duin-seam[^\n]*-->/, OLD).split('TQ prefers conclusion-first, high-density replies.').join('TQ prefers terse replies.')
+    writeFileSync(path, legacy, 'utf-8')
+    const calls: string[] = []
+    const led = loadSeamLedger(memoryDir)
+    const r = applyHumanEdits([f], memoryDir, led, { onDeleted: () => calls.push('deleted'), onEdited: (_f, claim) => calls.push(claim) })
+    expect(r.edited).toBe(1) // the old marker still marks the file as ours, and the claim line is read after it
+    expect(calls).toEqual(['TQ prefers terse replies.'])
+
+    writeFileSync(path, md.replace(/<!-- generated: duin-seam[^\n]*-->/, OLD), 'utf-8')
+    expect(projectConcept(f, memoryDir).changed).toBe(true) // old marker → regenerated once, not refused
+    expect(readFileSync(path, 'utf-8')).not.toContain('do not hand-edit')
   })
 })

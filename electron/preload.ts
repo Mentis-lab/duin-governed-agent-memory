@@ -2116,9 +2116,65 @@ const api = {
           kind: string
           status: string
           ts: number
+          source?: string
+          adjudicatedBy?: string
+          capturedAt?: number
           provisionalAt?: number
+          promotedAt?: number
+          invalidatedAt?: number
+          invalidatedBy?: string
+          supersededBy?: string
           observedSessions?: string[]
           reverts?: number
+          govern?: { verdict: string; crossModel?: boolean; juryProvider?: string | null; ts?: number }
+        }[]
+        error?: string
+      }>,
+    // W5: every row including superseded ones (the "Superseded" list), and the keyless facts
+    // parked at ratify (the "Awaiting your ratification" section and the Needs-you card).
+    listAll: () =>
+      ipcRenderer.invoke('operator:listAll') as Promise<{
+        success: boolean
+        data?: {
+          id: string
+          fact: string
+          kind: string
+          status: string
+          ts: number
+          source?: string
+          adjudicatedBy?: string
+          capturedAt?: number
+          provisionalAt?: number
+          promotedAt?: number
+          invalidatedAt?: number
+          invalidatedBy?: string
+          supersededBy?: string
+          observedSessions?: string[]
+          reverts?: number
+          govern?: { verdict: string; crossModel?: boolean; juryProvider?: string | null; ts?: number }
+        }[]
+        error?: string
+      }>,
+    awaitingRatify: () =>
+      ipcRenderer.invoke('operator:awaitingRatify') as Promise<{
+        success: boolean
+        data?: {
+          id: string
+          fact: string
+          kind: string
+          status: string
+          ts: number
+          source?: string
+          adjudicatedBy?: string
+          capturedAt?: number
+          provisionalAt?: number
+          promotedAt?: number
+          invalidatedAt?: number
+          invalidatedBy?: string
+          supersededBy?: string
+          observedSessions?: string[]
+          reverts?: number
+          govern?: { verdict: string; crossModel?: boolean; juryProvider?: string | null; ts?: number }
         }[]
         error?: string
       }>,
@@ -2134,6 +2190,13 @@ const api = {
       ipcRenderer.invoke('operator:promote', id, reason) as Promise<{ success: boolean; data?: boolean; error?: string }>,
     veto: (id: string, reason?: string) =>
       ipcRenderer.invoke('operator:veto', id, reason) as Promise<{ success: boolean; data?: boolean; error?: string }>,
+    // W5 human verbs — ratify (provisional → rule, the person's word), un-veto, revert a supersession.
+    ratify: (id: string, reason?: string) =>
+      ipcRenderer.invoke('operator:ratify', id, reason) as Promise<{ success: boolean; data?: boolean; error?: string }>,
+    unveto: (id: string, reason?: string) =>
+      ipcRenderer.invoke('operator:unveto', id, reason) as Promise<{ success: boolean; data?: boolean; error?: string }>,
+    revertSupersession: (id: string, reason?: string) =>
+      ipcRenderer.invoke('operator:revertSupersession', id, reason) as Promise<{ success: boolean; data?: boolean; error?: string }>,
     // Live refresh: fires after any fact mutation (human veto AND the automatic
     // capture/govern loop). Returns an unsubscribe. Mirrors memory.onChanged.
     onChanged: (cb: (facts: unknown[]) => void): (() => void) => {

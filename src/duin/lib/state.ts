@@ -1082,3 +1082,37 @@ export function cadence(decisions: Decision[]) {
   }
   return [...m.values()].sort((a, b) => a.month.localeCompare(b.month));
 }
+
+// ── W5: claims a model retired from your notes, and your ruling on them ───────────────────────────
+/** One row of the claim metabolism's corrections, annotated by the supersession guards. */
+export type ClaimCorrection = {
+  claimId: string;
+  verdict: string;
+  reason: string;
+  supersededBy?: string;
+  /** Did the retirement stand after the guards? */
+  applied?: boolean;
+  /** Why a model supersession was NOT applied. */
+  blockedBy?: string;
+  /** A human ruling already on the claim (`confirmed` / `reverted`). */
+  reviewState?: string;
+};
+export type ClaimMetabolismView = {
+  total: number;
+  active: number;
+  byVerdict: Record<string, number>;
+  corrections: ClaimCorrection[];
+};
+/** GET /state/claim-metabolism — a shadow pass over the ledger; reading it persists nothing. */
+export async function fetchClaimMetabolism(signal?: AbortSignal): Promise<ClaimMetabolismView> {
+  const r = requireOk(await fetch(`${BASE()}/state/claim-metabolism`, { signal }), "claim-metabolism");
+  return (await r.json()) as ClaimMetabolismView;
+}
+/** POST /state/claim-metabolism/resolve — the human's ruling on a retired claim: keep it retired
+ *  (`confirm`) or bring it back (`revert`). Either way it is a pin that survives every later tick. */
+export async function resolveClaim(claimId: string, action: "confirm" | "revert"): Promise<{ ok: boolean; error?: string }> {
+  const r = await fetch(`${BASE()}/state/claim-metabolism/resolve`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ claimId, action })
+  });
+  return r.ok ? await r.json() : { ok: false, error: `resolve ${r.status}` };
+}

@@ -24,7 +24,8 @@ import {
   revertFact,
   parseOperatorFacts,
   recordGovernProvenance,
-  type OperatorFact
+  type OperatorFact,
+  getAwaitingRatify
 } from './operator-model'
 
 export interface GovernEvidence {
@@ -326,6 +327,15 @@ export async function runGovernPass(
   return { confirmed, reverted, held, awaitingRatify }
 }
 
+/** W5: settle the keyless-review card NOW — after a human ratify or veto from the UI — instead of
+ *  at the next govern tick, so a drained queue never leaves a stale card for up to 30 minutes.
+ *  Returns the pending count. */
+export function refreshKeylessRatifyCard(): number {
+  const pending = getAwaitingRatify().length
+  settleKeylessRatifyCard(pending)
+  return pending
+}
+
 /** File / refresh / clear the ONE keyless-ratify card. Announce only when the pending count
  *  changed (a steady queue re-bumped every governTick is nagging); resolve on the first pass
  *  that finds the queue empty, so the card can never rot into a guilt pile (posture I4).
@@ -339,9 +349,10 @@ function settleKeylessRatifyCard(pending: number): void {
         severity: 'info',
         needsDecision: true,
         title: pending === 1 ? 'A candidate belief awaits your review' : `${pending} candidate beliefs await your review`,
-        body: 'Met the survival bar with no jury to verify — promote or revert in the Learning panel.',
+        body: 'Met the survival bar with no jury to verify — ratify or veto it in the Learning panel, or right here.',
         actionId: 'govern:keyless-review',
         dedupKey: 'govern:keyless-review',
+        // W5: the Learning panel has Ratify / Veto (and the card itself carries them in Needs-you).
         deepLink: 'duin://tool/learning'
       })
     } else {

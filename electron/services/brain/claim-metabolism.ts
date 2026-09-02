@@ -87,6 +87,35 @@ export interface Correction {
   verdict: Verdict
   reason: string
   supersededBy?: string
+  /** W5: did the retirement stand after the guards? A model supersession may be blocked and reverted. */
+  applied?: boolean
+  /** W5: why a model supersession was NOT applied. */
+  blockedBy?: SupersessionOutcome
+  /** W5: a human ruling on this claim (`confirmed` / `reverted`), if any. */
+  reviewState?: string
+}
+
+/** W5: what the supersession guards decided for one proposal. */
+export type SupersessionOutcome = 'applied' | 'pinned' | 'missing-winner' | 'cross-alias' | 'confidence' | 'tripwire' | 'disabled'
+
+/** W5: stamp each correction with what actually happened after the guards, so a surface can show the
+ *  human which model retirements stood, which were blocked and why, and which they already ruled on. */
+export function annotateCorrections(
+  corrections: Correction[],
+  claims: Claim[],
+  outcomes: Map<string, SupersessionOutcome>
+): Correction[] {
+  const byId = new Map(claims.map((c) => [c.id, c]))
+  return corrections.map((c) => {
+    const cl = byId.get(c.claimId)
+    const o = outcomes.get(c.claimId)
+    return {
+      ...c,
+      ...(cl ? { applied: cl.validTo !== null } : {}),
+      ...(o && o !== 'applied' ? { blockedBy: o } : {}),
+      ...(cl?.reviewState ? { reviewState: String(cl.reviewState) } : {})
+    }
+  })
 }
 
 // Tuned to the simulation (PLANNING/metabolism_sim.py). A retired claim's freshness collapses;
@@ -480,13 +509,24 @@ export function applySupersessionGuards(
   claims: Claim[],
   guards: SupersessionGuards = DEFAULT_SUPERSESSION_GUARDS,
   enabled = true
-): { applied: number; blockedConfidence: number; blockedCrossAliasStructured: number; blockedTripwire: number } {
+): {
+  applied: number
+  blockedConfidence: number
+  blockedCrossAliasStructured: number
+  blockedTripwire: number
+  /** W5: per-proposal outcome, keyed by the retired claim's id. */
+  outcomes: Map<string, SupersessionOutcome>
+} {
+  const outcomes = new Map<string, SupersessionOutcome>()
   const proposals = claims.filter((c) => !isActive(c) && c.verdictBy === 'model' && c.verdict === 'contradicted')
-  if (proposals.length === 0) return { applied: 0, blockedConfidence: 0, blockedCrossAliasStructured: 0, blockedTripwire: 0 }
+  if (proposals.length === 0) return { applied: 0, blockedConfidence: 0, blockedCrossAliasStructured: 0, blockedTripwire: 0, outcomes }
 
   if (!enabled) {
-    for (const c of proposals) revertModelSupersession(c)
-    return { applied: 0, blockedConfidence: proposals.length, blockedCrossAliasStructured: 0, blockedTripwire: 0 }
+    for (const c of proposals) {
+      revertModelSupersession(c)
+      outcomes.set(c.id, 'disabled')
+    }
+    return { applied: 0, blockedConfidence: proposals.length, blockedCrossAliasStructured: 0, blockedTripwire: 0, outcomes }
   }
 
   const byId = new Map(claims.map((c) => [c.id, c]))
@@ -498,6 +538,7 @@ export function applySupersessionGuards(
   for (const c of proposals) {
     if (isPinned(c)) {
       revertModelSupersession(c) // never auto-retire a human-ruled claim
+      outcomes.set(c.id, 'pinned')
       continue
     }
     const winner = c.supersededBy ? byId.get(c.supersededBy) : undefined
@@ -505,6 +546,7 @@ export function applySupersessionGuards(
     if (!winner) {
       revertModelSupersession(c)
       blockedConfidence++
+      outcomes.set(c.id, 'missing-winner')
       continue
     }
     const sameSubject = sameSubjectAs(c, winner)
@@ -514,6 +556,7 @@ export function applySupersessionGuards(
     if (!sameSubject && winner.source !== 'prose') {
       revertModelSupersession(c)
       blockedCrossAliasStructured++
+      outcomes.set(c.id, 'cross-alias')
       continue
     }
     // Guard 4 (DEFECT 1): entity-membership confidence must clear the cross-alias bar. Same-subject ⇒
@@ -522,6 +565,7 @@ export function applySupersessionGuards(
     if (entityConf < guards.minConfidence) {
       revertModelSupersession(c)
       blockedConfidence++
+      outcomes.set(c.id, 'confidence')
       continue
     }
     passedConf.push(c)
@@ -555,12 +599,14 @@ export function applySupersessionGuards(
     if (trippedEntities.has(entityKeyOf(c))) {
       revertModelSupersession(c)
       blockedTripwire++
+      outcomes.set(c.id, 'tripwire')
       continue
     }
     c.verdictBy = 'supersession' // guard-approved → first-class durable supersession
     c.supersedeConfidence = undefined
     c.modelRetired = true // count toward this entity's CUMULATIVE model-retirement budget on later ticks
+    outcomes.set(c.id, 'applied')
     applied++
   }
-  return { applied, blockedConfidence, blockedCrossAliasStructured, blockedTripwire }
+  return { applied, blockedConfidence, blockedCrossAliasStructured, blockedTripwire, outcomes }
 }

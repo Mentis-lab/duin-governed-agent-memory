@@ -181,6 +181,17 @@ export function generateConceptIndex(
   const concepts = scanConcepts(bundleDir)
   const untyped = concepts.filter((c) => c.type === '(untyped)').length
   const indexPath = join(bundleDir, CONCEPT_INDEX_FILE)
-  writeFileSync(indexPath, render(bundleName, concepts, today), 'utf-8')
+  const next = render(bundleName, concepts, today)
+  // Idempotent (W3): the only volatile token is the `generated:` stamp. If nothing else changed, leave
+  // the file — and its mtime — alone, so a daily reconcile does not churn the vault or its watchers.
+  try {
+    if (existsSync(indexPath)) {
+      const strip = (t: string): string => t.replace(/^generated: .*$/m, 'generated: -')
+      if (strip(readFileSync(indexPath, 'utf-8')) === strip(next)) return { concepts: concepts.length, untyped, indexPath }
+    }
+  } catch {
+    /* fall through to the write */
+  }
+  writeFileSync(indexPath, next, 'utf-8')
   return { concepts: concepts.length, untyped, indexPath }
 }

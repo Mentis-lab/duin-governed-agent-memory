@@ -100,6 +100,9 @@ idiom) so 承認 (the sign-off of prepared work) is free for Ratify.
 | Dismiss | 忽略 · 不采纳 · 暂缓 | 消去 · 不採用 · 保留 | THREE mechanics: generic notice dismiss; RSI dismiss (terminal, never re-asked); loop-ratify defer |
 | Revert / rolled-back / Undo | 回退 / 已回滚 / 撤销 | 差し戻し / ロールバック済み / 元に戻す | Govern demotion / RSI automatic rollback / operator undo — keep distinct |
 | Veto(ed) | 否决 / 已否决 | 却下 / 却下済み | Operator strikes a fact down (rendered status; the quiet UI link "remove" = 移除 / 除外) |
+| Un-veto | 撤销否决 | 却下を取り消す | The operator takes a veto back; the fact returns to probation under human authority (Learning panel, W5) |
+| Superseded | 已被取代 | 置き換え済み | A fact retired by a newer statement (bitemporal valid-to). "Revert" reinstates it and vetoes the replacement (W5) |
+| Awaiting your ratification | 等你核准 | あなたの承認待ち | Learning-panel section for keyless facts parked at ratify; the verbs are Ratify / Veto (W5) |
 | Staged (governor) | 待核准 | 承認待ち | Ran-but-held for ratification. NEVER 暂存 / ステージ — those are git's words |
 | Staged (git) | 已暂存 | ステージ済み | Git index staging, industry-locked |
 | Hold / Held (jury-held output) | 暂扣 / 已暂扣 | 差し止め / 差し止め中 | Output withheld pending decision ("Held by the jury" = 由评审团暂扣 / 審査員により差し止め中). ONE word — the earlier 已搁置 variant is retired |

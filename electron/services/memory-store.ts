@@ -11,7 +11,7 @@ import {
 import { basename, join, resolve } from 'path'
 import chokidar, { FSWatcher } from 'chokidar'
 import { getDb } from './database'
-import { tombstoneToTrash, snapshotToTrash, recordCreation, TRASH_DIR_NAME } from './local-brain/vault-trash'
+import { tombstoneToTrash, snapshotToTrash, recordCreation, recordExternalDeletion, TRASH_DIR_NAME } from './local-brain/vault-trash'
 import {
   MemoryType,
   MemorySource,
@@ -262,6 +262,24 @@ function deleteIndexRowByName(name: string): void {
   } catch (err) {
     activateFallback((err as Error)?.message ?? 'unknown')
   }
+}
+
+/** Paths the store itself just moved into `.trash` (softDeleteMemoryFile). chokidar reports that rename as
+ *  an `unlink` too; the entry tells noteExternalUnlink that the journal line already exists. Consumed on the
+ *  matching unlink, so it holds at most the deletes still in flight. */
+const selfDeleted = new Set<string>()
+
+/** The watcher's `unlink` handler (exported on __memoryStoreTest). A file removed OUTSIDE the app — Explorer,
+ *  `rm`, a sync client — used to reach the store only as a dropped index row. The app's own delete journals a
+ *  tombstone that moat-durability's boot rehydrate honors; an external delete journaled nothing, so the vault
+ *  mirror's copy came back on the next launch. Journal it the same way, minus the bytes there are none of. */
+function noteExternalUnlink(filePath: string): void {
+  const resolved = resolve(filePath)
+  if (!selfDeleted.delete(resolved) && !existsSync(resolved)) {
+    recordExternalDeletion(memoryBaseDir(), resolved, 'memory-store', 'external-unlink')
+  }
+  deleteIndexRowByFilePath(resolved)
+  broadcastChange()
 }
 
 function deleteIndexRowByFilePath(filePath: string): void {
@@ -682,8 +700,7 @@ export function initializeMemoryStore(): void {
 
   const onUnlink = (filePath: string) => {
     if (!isMemoryFile(basename(filePath))) return
-    deleteIndexRowByFilePath(filePath)
-    broadcastChange()
+    noteExternalUnlink(filePath)
   }
 
   watcher.on('add', onAddOrChange)
@@ -954,8 +971,10 @@ export function writeMemoryFile(input: MemoryWriteInput & {
  */
 function softDeleteMemoryFile(filePath: string, reason: string): void {
   if (!existsSync(filePath)) return
+  selfDeleted.add(resolve(filePath)) // the watcher's unlink for this rename must not journal a second delete
   const result = tombstoneToTrash(memoryBaseDir(), filePath, 'memory-store', reason)
   if (!result.ok) {
+    selfDeleted.delete(resolve(filePath)) // the file stayed put, so no unlink is coming
     console.error('[memory-store] soft-delete failed, leaving file in place', filePath, result.error)
   }
 }
@@ -1225,6 +1244,7 @@ export const __memoryStoreTest = {
     memoryRowIds.clear()
     nextMemoryRowId = 1
     useFallback = false
+    selfDeleted.clear()
   },
   forceFallback: (): void => {
     useFallback = true
@@ -1232,6 +1252,7 @@ export const __memoryStoreTest = {
   isUsingFallback: (): boolean => useFallback,
   memoryBaseDir,
   memoryTrashDir: (): string => join(memoryBaseDir(), TRASH_DIR_NAME),
+  noteExternalUnlink,
   projectDir,
   scanAndSync,
   DEFAULT_PROJECT_SLUG

@@ -15,6 +15,12 @@ interface PendingRsi {
   targetPath?: string
 }
 
+/** W5: a keyless learned fact parked at ratify — the rows behind the govern:keyless-review card. */
+interface AwaitingFact {
+  id: string
+  fact: string
+}
+
 /** Basename of the RSI write target, for a compact "writes: rsi-tunables.json" hint. */
 function targetName(p: string | undefined): string | null {
   if (!p) return null
@@ -59,6 +65,7 @@ export function NeedsYouPanel({ embedded = false }: { embedded?: boolean } = {})
   // self-tune get Ratify/Dismiss right on the card; staged loop iterations (kind 'loop')
   // get Ratify/Revert/Dismiss through the Governor 4a flow. No navigation, no chore pile.
   const [pendingRsi, setPendingRsi] = useState<Record<string, PendingRsi>>({})
+  const [awaiting, setAwaiting] = useState<AwaitingFact[]>([])
   const [deciding, setDeciding] = useState<string | null>(null)
 
   const loadPendingRsi = useCallback(async () => {
@@ -73,10 +80,39 @@ export function NeedsYouPanel({ embedded = false }: { embedded?: boolean } = {})
     }
   }, [])
 
+  // W5: the facts behind the keyless-review card, so it can be decided here — Ratify (the person's
+  // word for landing a belief) or Veto — without a trip to the Learning panel.
+  const loadAwaiting = useCallback(async () => {
+    try {
+      const r = await window.api?.operator?.awaitingRatify?.()
+      if (r?.success && Array.isArray(r.data)) setAwaiting(r.data.map((f) => ({ id: f.id, fact: f.fact })))
+    } catch {
+      // listing is an affordance; the card still opens the Learning panel
+    }
+  }, [])
+
   useEffect(() => {
     void loadNotices()
     void loadPendingRsi()
-  }, [loadNotices, loadPendingRsi])
+    void loadAwaiting()
+  }, [loadNotices, loadPendingRsi, loadAwaiting])
+
+  const decideFact = async (f: AwaitingFact, verb: 'ratify' | 'veto'): Promise<void> => {
+    if (deciding) return
+    setDeciding(f.id)
+    try {
+      const r = verb === 'ratify' ? await window.api?.operator?.ratify?.(f.id) : await window.api?.operator?.veto?.(f.id)
+      if (r?.success && r.data !== false) {
+        toast.info(verb === 'ratify' ? 'Ratified — DUIN follows it as a rule now' : 'Vetoed — it will not come back on its own')
+      } else {
+        toast.info(r?.error ?? 'Could not decide that belief')
+      }
+    } finally {
+      setDeciding(null)
+      void loadNotices()
+      void loadAwaiting()
+    }
+  }
 
   const decideRsi = async (n: Notice, verb: 'ratify' | 'dismiss'): Promise<void> => {
     if (!n.actionId || deciding) return
@@ -186,9 +222,35 @@ export function NeedsYouPanel({ embedded = false }: { embedded?: boolean } = {})
               {owed.map((n) => {
                 const rsi = n.actionId ? pendingRsi[n.actionId] : undefined
                 const isLoopStage = !rsi && n.kind === 'loop' && !!n.actionId
+                const isKeylessReview = n.actionId === 'govern:keyless-review'
                 return (
                   <div key={n.id}>
                     <NoticeRow notice={n} onOpen={open} focal />
+                    {isKeylessReview && awaiting.length > 0 && (
+                      <div className="mt-1 space-y-1 px-2.5 pb-1">
+                        {awaiting.map((f) => (
+                          <div key={f.id} className="flex items-center gap-2">
+                            <span className="min-w-0 flex-1 truncate text-[12px] text-[var(--text-secondary)]">{f.fact}</span>
+                            <button
+                              type="button"
+                              disabled={deciding !== null}
+                              onClick={() => void decideFact(f, 'ratify')}
+                              className="rounded border border-[var(--accent)]/50 px-2 py-0.5 text-[12px] text-[var(--accent)] transition-colors hover:bg-[var(--accent)]/10 disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
+                            >
+                              {t('Ratify')}
+                            </button>
+                            <button
+                              type="button"
+                              disabled={deciding !== null}
+                              onClick={() => void decideFact(f, 'veto')}
+                              className="rounded border border-[var(--panel-border)] px-2 py-0.5 text-[12px] text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-tertiary)] disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
+                            >
+                              {t('Veto')}
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                     {rsi && (
                       <div className="mt-1 flex items-center gap-2 px-2.5 pb-1">
                         <button

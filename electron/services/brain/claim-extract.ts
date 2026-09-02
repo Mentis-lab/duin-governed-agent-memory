@@ -9,7 +9,14 @@
 // rule fires (resolvedDecisions.has(decId) / passedStreams.has(streamId) ⇒ stale).
 
 import type { Claim, Correction } from './claim-metabolism'
-import { classifyMutability, runVerdicts, isPinned, unretire, applySupersessionGuards } from './claim-metabolism'
+import {
+  classifyMutability,
+  runVerdicts,
+  isPinned,
+  unretire,
+  applySupersessionGuards,
+  annotateCorrections
+} from './claim-metabolism'
 import { parseDateMs, loadLedger, saveLedger, gatherWorldState } from './claim-ledger'
 import { listDecisions } from './decisions-native'
 import { loadFutures } from './causal-substrate'
@@ -399,7 +406,7 @@ async function metabolize(vaultDir: string, now: number, persist: boolean): Prom
   // live tick would persist. Guard-approved retirements become durable verdictBy 'supersession';
   // everything else reverts to 'current' (knowledge preserved). Reversible + confidence + tripwire +
   // pins — see applySupersessionGuards. Kill-switch: DUIN_CLAIM_SUPERSESSION=0 reverts them all.
-  applySupersessionGuards(target, undefined, supersessionApplyEnabled())
+  const guardOutcome = applySupersessionGuards(target, undefined, supersessionApplyEnabled())
   // store.reinforce-arm: markUseful the ACTIVE claims that a prior turn's endorsed+cited recall
   // reinforced (drained from the reinforcement queue). This is the single writer, so applying here is
   // race-safe. Persist pass ONLY (the shadow pass must not consume the queue) + opt-in. Mutates
@@ -431,7 +438,8 @@ async function metabolize(vaultDir: string, now: number, persist: boolean): Prom
     active: target.filter((c) => c.validTo === null).length,
     byVerdict,
     worldState: { resolvedDecisions: world.resolvedDecisions.size, passedStreams: world.passedStreams.size },
-    corrections: corrections.slice(0, 100)
+    // W5: each correction says whether it stood, why it was blocked, and any human ruling on it.
+    corrections: annotateCorrections(corrections, target, guardOutcome.outcomes).slice(0, 100)
   }
 }
 

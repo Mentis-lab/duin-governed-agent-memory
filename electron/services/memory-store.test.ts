@@ -593,3 +593,47 @@ describe('memory provenance', () => {
     expect(all[0].source).toBe('session')
   })
 })
+
+// W7 — a memory file deleted from disk stays deleted across boots.
+//
+// The app's own delete goes through tombstoneToTrash, which journals the removal, and the boot
+// rehydrate (moat-durability) reads that journal to withhold the vault mirror's copy. A file removed
+// in Explorer / `rm` reached the store only through the chokidar `unlink` handler, which dropped the
+// index row and journaled NOTHING — so the next launch restored the file from the vault mirror and the
+// user's deletion silently came back. The watcher must leave the same record the app's delete does.
+describe('W7 — external unlink is journaled so the boot rehydrate honors it', () => {
+  const rel = (name: string): string => `${memStore.__memoryStoreTest.DEFAULT_PROJECT_SLUG}/${name}.md`
+  const journalLines = (): Array<Record<string, unknown>> => {
+    const journal = join(memStore.__memoryStoreTest.memoryTrashDir(), '_tombstones.jsonl')
+    if (!existsSync(journal)) return []
+    return readFileSync(journal, 'utf-8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>)
+  }
+  const deleteLinesFor = (name: string) =>
+    journalLines().filter((l) => l.from === rel(name) && (l.op ?? 'delete') === 'delete')
+
+  it('an external unlink drops the row and journals a delete line (no bytes to keep, so no `to`)', () => {
+    memStore.initializeMemoryStore()
+    const file = memStore.writeMemoryFile({ name: 'ext gone', type: 'reference', body: 'bye' })
+    rmSync(file.filePath) // the user removed it in Explorer / rm
+
+    memStore.__memoryStoreTest.noteExternalUnlink(file.filePath)
+
+    expect(memStore.readMemoryFile('ext_gone')).toBeNull()
+    const lines = deleteLinesFor('ext_gone')
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toMatchObject({ actor: 'memory-store', from: rel('ext_gone'), op: 'delete', external: true })
+    expect(lines[0].to).toBeUndefined()
+  })
+
+  it("the app's own delete journals exactly once even when the watcher then reports the unlink", () => {
+    memStore.initializeMemoryStore()
+    const file = memStore.writeMemoryFile({ name: 'app gone', type: 'reference', body: 'bye' })
+    expect(memStore.deleteMemoryFile('app_gone')).toBe(true)
+
+    memStore.__memoryStoreTest.noteExternalUnlink(file.filePath) // chokidar's unlink for the rename into .trash
+
+    const lines = deleteLinesFor('app_gone')
+    expect(lines).toHaveLength(1)
+    expect(String(lines[0].to)).toMatch(/^\.trash\//) // the app's delete keeps the bytes
+  })
+})

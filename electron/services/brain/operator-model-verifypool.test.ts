@@ -22,6 +22,9 @@ import { setOperatorModelPath, recordFacts, listByStatus, verifyPool, getEvictio
 import { setActiveDenylist } from '../governance/confidential-firewall'
 import { REALISTIC_CANDIDATES, HOSTILE_MODEL_REPLIES } from './__fixtures__/realistic-store'
 
+// Every fixture below is a MACHINE-extracted candidate (`source: 'machine'`): since human authority landed
+// (operator-model isOperatorStated), verifyPool never prunes a fact the operator stated, so a candidate that
+// must be prunable has to say a model wrote it. recordFacts' default source is 'operator'.
 const CANDS = [
   'Operator uses VSCode as editor',
   'Operator ships releases on Fridays',
@@ -35,7 +38,7 @@ describe('verifyPool — abstain-on-total-drop (data-loss guard)', () => {
     setOperatorModelPath(join(mkdtempSync(join(tmpdir(), 'duin-vp-')), 'operator-model.json'))
     __resetOperatorModel()
     chatOnce.mockReset()
-    recordFacts(CANDS.map((fact) => ({ fact, kind: 'context' })))
+    recordFacts(CANDS.map((fact) => ({ fact, kind: 'context', source: 'machine' as const })))
     expect(listByStatus('candidate')).toHaveLength(3) // fixture guard
   })
 
@@ -96,7 +99,7 @@ describe('verifyPool — realistic pool shape (lengths derived from the live sto
     setOperatorModelPath(join(mkdtempSync(join(tmpdir(), 'duin-vp2-')), 'operator-model.json'))
     __resetOperatorModel()
     chatOnce.mockReset()
-    recordFacts(REALISTIC_CANDIDATES.map((fact) => ({ fact, kind: 'context' })))
+    recordFacts(REALISTIC_CANDIDATES.map((fact) => ({ fact, kind: 'context', source: 'machine' as const })))
     expect(listByStatus('candidate').length).toBe(REALISTIC_CANDIDATES.length)
   })
 
@@ -139,7 +142,7 @@ describe('verifyPool — pool larger than the parser default cap (partial-trunca
     setOperatorModelPath(join(mkdtempSync(join(tmpdir(), 'duin-vp3-')), 'operator-model.json'))
     __resetOperatorModel()
     chatOnce.mockReset()
-    recordFacts(POOL_14.map((fact) => ({ fact, kind: 'context' })))
+    recordFacts(POOL_14.map((fact) => ({ fact, kind: 'context', source: 'machine' as const })))
     expect(listByStatus('candidate')).toHaveLength(14) // fixture guard: above the max=8 boundary
   })
 
@@ -194,7 +197,7 @@ describe('verifyPool — a human verdict landing DURING the model await is not c
     setOperatorModelPath(join(mkdtempSync(join(tmpdir(), 'duin-vp4-')), 'operator-model.json'))
     __resetOperatorModel()
     chatOnce.mockReset()
-    recordFacts(CANDS.map((fact) => ({ fact, kind: 'context' })))
+    recordFacts(CANDS.map((fact) => ({ fact, kind: 'context', source: 'machine' as const })))
     expect(listByStatus('candidate')).toHaveLength(3) // fixture guard
   })
 
@@ -277,7 +280,7 @@ describe('verifyPool — confidential-lane firewall (autonomous egress)', () => 
     (chatOnce.mock.calls[0]?.[0] as { content: string }[]).map((m) => m.content).join('\n')
 
   const promotedRule = (fact: string): void => {
-    recordFacts([{ fact, kind: 'value' }])
+    recordFacts([{ fact, kind: 'value', source: 'machine' }])
     const id = listByStatus('candidate').find((f) => f.fact === fact)!.id
     promoteFact(id) // → provisional
     confirmFact(id) // → promoted (the govern loop's CONFIRM)
@@ -296,7 +299,7 @@ describe('verifyPool — confidential-lane firewall (autonomous egress)', () => 
   it('never puts a confidential rule or candidate on the wire', async () => {
     promotedRule(CLEAR_RULE)
     promotedRule(SECRET_RULE)
-    recordFacts([...CLEAR, SECRET_CAND].map((fact) => ({ fact, kind: 'context' })))
+    recordFacts([...CLEAR, SECRET_CAND].map((fact) => ({ fact, kind: 'context', source: 'machine' as const })))
     chatOnce.mockResolvedValue(reply(CLEAR))
 
     await verifyPool()
@@ -308,7 +311,7 @@ describe('verifyPool — confidential-lane firewall (autonomous egress)', () => 
   })
 
   it('a withheld candidate ABSTAINS — absent from the keep-list is not a verdict against it', async () => {
-    recordFacts([...CLEAR, SECRET_CAND].map((fact) => ({ fact, kind: 'context' })))
+    recordFacts([...CLEAR, SECRET_CAND].map((fact) => ({ fact, kind: 'context', source: 'machine' as const })))
     chatOnce.mockResolvedValue(reply(CLEAR)) // the verifier can only echo what it was shown
 
     const r = await verifyPool()
@@ -318,7 +321,7 @@ describe('verifyPool — confidential-lane firewall (autonomous egress)', () => 
   })
 
   it('still prunes a genuinely rejected CLEAR candidate (the firewall is not a kill-switch)', async () => {
-    recordFacts([...CLEAR, SECRET_CAND].map((fact) => ({ fact, kind: 'context' })))
+    recordFacts([...CLEAR, SECRET_CAND].map((fact) => ({ fact, kind: 'context', source: 'machine' as const })))
     chatOnce.mockResolvedValue(reply([CLEAR[0]]))
 
     const r = await verifyPool()
@@ -332,7 +335,7 @@ describe('verifyPool — confidential-lane firewall (autonomous egress)', () => 
 
   it('an entirely confidential pool opens no external call at all', async () => {
     promotedRule(SECRET_RULE)
-    recordFacts([{ fact: SECRET_CAND, kind: 'context' }])
+    recordFacts([{ fact: SECRET_CAND, kind: 'context', source: 'machine' }])
 
     const r = await verifyPool()
     expect(chatOnce).not.toHaveBeenCalled() // not even the rules go out alone
@@ -360,7 +363,7 @@ describe('verifyPool — bitemporally-retired rows are not part of the corpus', 
     (chatOnce.mock.calls[0]?.[0] as { content: string }[]).map((m) => m.content).join('\n')
 
   const promotedRule = (fact: string): string => {
-    recordFacts([{ fact, kind: 'value' }])
+    recordFacts([{ fact, kind: 'value', source: 'machine' }])
     const id = listByStatus('candidate').find((f) => f.fact === fact)!.id
     promoteFact(id) // → provisional
     confirmFact(id) // → promoted (the govern loop's CONFIRM)
@@ -388,7 +391,7 @@ describe('verifyPool — bitemporally-retired rows are not part of the corpus', 
 
   it('a superseded PROMOTED rule is not shipped as a confirmed rule', async () => {
     const oldId = promotedRule(OLD_EDITOR)
-    recordFacts([{ fact: BYSTANDER, kind: 'context' }])
+    recordFacts([{ fact: BYSTANDER, kind: 'context', source: 'machine' }])
     expect(supersedeFact(oldId, NEW_EDITOR).superseded).toBe(true)
     chatOnce.mockResolvedValue(reply([NEW_EDITOR, BYSTANDER]))
 
@@ -404,7 +407,7 @@ describe('verifyPool — bitemporally-retired rows are not part of the corpus', 
 
   it('the operator CORRECTION that retired the rule is not deleted by the rule it retired', async () => {
     const oldId = promotedRule(OLD_EDITOR)
-    recordFacts([{ fact: BYSTANDER, kind: 'context' }])
+    recordFacts([{ fact: BYSTANDER, kind: 'context', source: 'machine' }])
     expect(supersedeFact(oldId, NEW_EDITOR).superseded).toBe(true)
     obedientVerifier()
 
@@ -421,7 +424,7 @@ describe('verifyPool — bitemporally-retired rows are not part of the corpus', 
     // reflect() retires the subsumed row the same soft way: invalidatedAt set, status still 'candidate'.
     const MERGED = 'Operator reviews PRs'
     const RICHER = 'Operator reviews PRs from Ana only'
-    recordFacts([MERGED, RICHER, BYSTANDER].map((fact) => ({ fact, kind: 'context' })))
+    recordFacts([MERGED, RICHER, BYSTANDER].map((fact) => ({ fact, kind: 'context', source: 'machine' as const })))
     expect(reflect()).toBe(1)
     const merged = getAllOperatorFacts().find((f) => f.fact === MERGED)!
     expect(merged.status).toBe('candidate') // soft-deleted: status untouched, which is the whole trap

@@ -220,7 +220,7 @@ describe('runGovernPass — a bitemporally-retired fact is never re-confirmed', 
     // The trap this test guards: retired, yet still status 'provisional'.
     expect(listByStatus('provisional').some((f) => f.id === id)).toBe(true)
     expect(getAllOperatorFacts().find((f) => f.id === id)!.invalidatedAt).toEqual(expect.any(Number))
-    expect(seam).toEqual([{ fact: OLD, action: 'retire' }])
+    expect(seam).toEqual([{ fact: OLD, action: 'promote' }, { fact: OLD, action: 'retire' }]) // W3: the human promote projects; nothing fires after the retire
     return id
   }
 
@@ -233,7 +233,7 @@ describe('runGovernPass — a bitemporally-retired fact is never re-confirmed', 
     expect(listByStatus('promoted').map((f) => f.fact)).not.toContain(OLD)
     // The seam is the real blast radius: a second 'promote' would re-write
     // `<vault>/.brain/memory/concept-<id>.md` back into the grounding lane.
-    expect(seam).toEqual([{ fact: OLD, action: 'retire' }])
+    expect(seam).toEqual([{ fact: OLD, action: 'promote' }, { fact: OLD, action: 'retire' }]) // W3: the human promote projects; nothing fires after the retire
   })
 
   it('the retired fact is not even shown to the jury (it cannot vote a dead rule back)', async () => {
@@ -257,6 +257,6 @@ describe('runGovernPass — a bitemporally-retired fact is never re-confirmed', 
     expect(getAllOperatorFacts().find((f) => f.id === id)!.status).toBe('provisional')
     // Pre-fix this array was [retire, promote] on the SAME fact: the concept file was moved to
     // `.brain/_retired/` by the correction, then written straight back into the grounding lane.
-    expect(seam).toEqual([{ fact: OLD, action: 'retire' }])
+    expect(seam).toEqual([{ fact: OLD, action: 'promote' }, { fact: OLD, action: 'retire' }]) // W3: the human promote projects; nothing fires after the retire
   })
 })

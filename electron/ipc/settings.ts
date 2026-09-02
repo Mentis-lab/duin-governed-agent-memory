@@ -542,8 +542,9 @@ export function registerSettingsHandlers(): void {
       return { success: false, error: friendly(err, 'list failed') }
     }
   })
-  // Read-only review queue: candidate facts awaiting the human promote/veto gate.
-  // Powers the daily Home-digest "N facts waiting for your review" nudge. No mutation.
+  // Read-only review queue: candidate facts a human may still promote (Relations) or veto
+  // (Learning); learning itself is automatic. Powers the daily Home-digest "N facts waiting for
+  // your review" nudge. No mutation.
   ipcMain.handle('operator:pendingReview', async () => {
     try {
       const m = await import('../services/brain/operator-model')
@@ -561,13 +562,74 @@ export function registerSettingsHandlers(): void {
       return { success: false, error: friendly(err, 'promote failed') }
     }
   })
+  // W5 — the human verbs. A veto or ratify from the UI settles the keyless-review card at once
+  // (instead of at the next govern tick) and tells the Needs-you panel. The card is an affordance,
+  // never a precondition: settling it can fail without failing the verb.
+  const settleKeylessCard = async (): Promise<void> => {
+    try {
+      const g = await import('../services/brain/operator-govern')
+      g.refreshKeylessRatifyCard()
+      const n = await import('./notices')
+      n.broadcastNoticesChanged()
+    } catch {
+      /* best-effort */
+    }
+  }
   ipcMain.handle('operator:veto', async (_e, id: unknown, reason?: unknown) => {
     try {
       const m = await import('../services/brain/operator-model')
       const why = typeof reason === 'string' ? reason : undefined
-      return { success: true, data: m.vetoFact(String(id), why) }
+      const ok = m.vetoFact(String(id), why)
+      await settleKeylessCard()
+      return { success: true, data: ok }
     } catch (err) {
       return { success: false, error: friendly(err, 'veto failed') }
+    }
+  })
+  // Every row including superseded/retired ones — the Learning panel's "Superseded" list.
+  ipcMain.handle('operator:listAll', async () => {
+    try {
+      const m = await import('../services/brain/operator-model')
+      return { success: true, data: m.getAllOperatorFacts() }
+    } catch (err) {
+      return { success: false, error: friendly(err, 'listAll failed') }
+    }
+  })
+  ipcMain.handle('operator:awaitingRatify', async () => {
+    try {
+      const m = await import('../services/brain/operator-model')
+      return { success: true, data: m.getAwaitingRatify() }
+    } catch (err) {
+      return { success: false, error: friendly(err, 'awaitingRatify failed') }
+    }
+  })
+  ipcMain.handle('operator:ratify', async (_e, id: unknown, reason?: unknown) => {
+    try {
+      const m = await import('../services/brain/operator-model')
+      const why = typeof reason === 'string' ? reason : undefined
+      const ok = m.ratifyFact(String(id), why)
+      await settleKeylessCard()
+      return { success: true, data: ok }
+    } catch (err) {
+      return { success: false, error: friendly(err, 'ratify failed') }
+    }
+  })
+  ipcMain.handle('operator:unveto', async (_e, id: unknown, reason?: unknown) => {
+    try {
+      const m = await import('../services/brain/operator-model')
+      const why = typeof reason === 'string' ? reason : undefined
+      return { success: true, data: m.unvetoFact(String(id), why) }
+    } catch (err) {
+      return { success: false, error: friendly(err, 'unveto failed') }
+    }
+  })
+  ipcMain.handle('operator:revertSupersession', async (_e, id: unknown, reason?: unknown) => {
+    try {
+      const m = await import('../services/brain/operator-model')
+      const why = typeof reason === 'string' ? reason : undefined
+      return { success: true, data: m.revertSupersession(String(id), why) }
+    } catch (err) {
+      return { success: false, error: friendly(err, 'revertSupersession failed') }
     }
   })
 

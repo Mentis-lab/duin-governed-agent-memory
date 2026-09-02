@@ -317,11 +317,11 @@ export function buildHomeDigest(input: HomeDigestInput): HomeDigest {
   }
 
   // ── Operator-learning review queue (Needs You) ────────────────────────────
-  // CANDIDATE facts DUIN has captured about the operator sit here until a human
-  // clicks promote/veto — the ONLY path candidate→rule. So a non-empty queue is a
-  // genuine obligation (the promotion valve is idle precisely because nothing
-  // surfaces it). Emit it as a need; NEVER at 0 (no nag). No auto-promote — this
-  // only makes the queue visible + one-tap actionable.
+  // CANDIDATE facts DUIN has captured about the operator. They auto-promote to
+  // probation and the govern loop confirms survivors; the human verbs are veto
+  // (Learning panel) and promote/veto per entity (Relations panel). A non-empty
+  // queue is worth surfacing so the operator can rule early. Emit it as a need;
+  // NEVER at 0 (no nag). No auto-promote here — this only makes the queue visible.
   const pendingCount = input.pendingReview?.count ?? 0
   if (pendingCount > 0) {
     const w = WEIGHTS.need
@@ -334,7 +334,7 @@ export function buildHomeDigest(input: HomeDigestInput): HomeDigest {
       kind: 'need',
       subtype: 'operator-review',
       title: pendingCount === 1 ? '1 fact waiting for your review' : `${pendingCount} facts waiting for your review`,
-      why: 'DUIN learned these about you. Promote one to a rule it follows, or veto it.',
+      why: 'DUIN learned these about you. Veto a wrong one in Learning, or promote or veto per entity in Relations.',
       score,
       reason: 'Review',
       tone: 'accent'

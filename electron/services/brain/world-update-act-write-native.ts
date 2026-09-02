@@ -168,7 +168,7 @@ export async function promoteBelief(vaultDir: string, delta: Delta, deps: { gene
   // the govern gate (slow tier) as a provisional operator-fact, making taste→instinct→gated one
   // ladder. Default off = today's behavior exactly. Best-effort.
   if (process.env.DUIN_LADDER === '1' && summary.trim()) {
-    try { seedFacts([{ fact: summary.trim(), kind: 'principle', status: 'provisional' }]) } catch { /* best-effort */ }
+    try { seedFacts([{ fact: summary.trim(), kind: 'principle', status: 'provisional', source: 'machine' }]) } catch { /* best-effort */ }
   }
   return { ok: true, id: cid, path: relative(vaultDir, path).replace(/\\/g, '/') }
 }

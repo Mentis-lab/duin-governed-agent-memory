@@ -16,6 +16,41 @@ All notable changes to **DUIN** are documented here. The project follows
 
 ## [Unreleased]
 
+### Added
+- **Learned facts live in your vault by default.** Every fact DUIN learns about you — on
+  probation or confirmed — materializes as `.brain/memory/concept-<id>.md` with its status,
+  source, dates and supersession lineage; retired facts move to `.brain/_retired/`. Re-projection
+  writes nothing when the bytes would not change. `DUIN_SEAM_MATERIALIZE=0` turns it off.
+- **Edit or delete a concept file and DUIN follows.** Rewriting the claim line records your
+  version as a statement superseding the old fact (a confirmed rule stays confirmed); deleting
+  the file vetoes the fact; annotations are preserved until the fact changes; removing the
+  machine marker releases the file to you. A seam ledger in `.duin/_state/` tells your edits from
+  DUIN's own writes.
+- **Human verbs in the Learning panel:** provenance on every row (declared / inferred / from a
+  channel, and whether you ruled), Ratify for facts on probation (the keyless card in Needs-you
+  carries Ratify / Veto too), Un-veto, Revert on a superseded fact, and Keep retired / Revert on
+  the claims a model retired from your notes, which now show whether the retirement stood or
+  was blocked and why.
+
+### Fixed
+- **Memory: a fact you stated is never retired, pruned, evicted or relabelled by a model on its
+  own.** The auto-supersession judge now offers model-extracted triggers only model-inferred facts,
+  and the replacements it mints are tagged `machine` instead of inheriting the retired fact's
+  `operator` label; the verification pass never prunes an operator-stated candidate; cap eviction
+  drops model churn first; consolidation no longer absorbs an operator statement into a model
+  superset (`isOperatorStated`, `electron/services/brain/operator-model.ts`).
+- **Memory files deleted outside the app stay deleted.** The watcher journals an external deletion,
+  so the boot rehydrate no longer restores it from the vault mirror.
+
+### Changed
+- Concept files under `.brain/memory/` now say how to use them ("rewrite the claim line to restate this fact; delete the file to retract it") instead of "do not hand-edit"; files written with the old marker are still recognised and regenerated once.
+- The page leads with the harness: memory, judgment and autonomy, each earned and governed; tagline "Agents that earn your trust."
+- README and docs describe memory as it ships: memory files (Markdown, user data, mirrored into
+  `.brain/`), the learned-fact ledger (JSON), and claims; concept materialization documented as
+  opt-in (`DUIN_SEAM_MATERIALIZE=1`); the human verbs named per panel; memory upkeep named as
+  running by default. The keyless "candidate awaits your review" card now opens the Relations
+  panel, where promote and veto live.
+
 ## [0.1.0] - 2026-09-01
 
 The first public release. Since the last Brainframe entry the product was renamed, the brain

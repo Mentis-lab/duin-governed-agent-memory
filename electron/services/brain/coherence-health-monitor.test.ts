@@ -148,7 +148,9 @@ describe('COHERENCE_MAP live re-score (current corrected map)', () => {
     // 5 → 4 on 2026-08-21 (W2): the RSI row is LIVE now (engage-time staging + ratify UI),
     // no longer a by-design cold-hold; liveOrByDesign is unchanged because the row was
     // already counted there under its old state.
-    expect(report.axes.wiring.metrics.byDesignCold).toBe(4)
+    // 4 → 3 on 2026-09-02 (W3): the seam projection row is LIVE now (default ON for every install,
+    // provisional facts projected); liveOrByDesign is unchanged for the same reason as above.
+    expect(report.axes.wiring.metrics.byDesignCold).toBe(3)
   })
 
   it('GUARDEDNESS is 70 (withMonitor 15; unguarded 2 — the Agents pane arrived with tests)', () => {

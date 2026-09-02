@@ -140,8 +140,10 @@ export function shouldIgnore(p: string, stats?: { isDirectory(): boolean }): boo
   // indexer would index reindexes immediately instead of waiting for the next full pass.
   // (isIngestable omits .html/.htm — those route through a separate html loader in loadDocument —
   // so they stay explicit here.) A non-ingestable extension (.png, .exe, binaries) is ignored. The
-  // app's own state dirs (.duin/.brain) are excluded by the dir guard above, so ledger writes there
-  // never churn — but a .json in the notes tree itself IS content the indexer ingests, so it's watched.
+  // app's own state dirs (.duin/.brain) are NOT excluded by the dir guard above (isMachineStatePath
+  // only suppresses the LLM arming for them): their events reach scheduleReindex and, since W4, the
+  // seam's listener for hand edits under .brain/memory/. A .json in the notes tree IS content the
+  // indexer ingests, so it's watched.
   return hasExt && !(isIngestable(p) || /\.(md|markdown|txt|html|htm)$/i.test(p))
 }
 
@@ -384,14 +386,40 @@ export function isMachineStatePath(p: string): boolean {
   return /(^|[\\/])\.(brain|duin)([\\/]|$)/.test(p)
 }
 
+export type VaultFileEvent = { type: 'add' | 'change' | 'unlink'; path: string; dir: string }
+const fileListeners = new Set<(ev: VaultFileEvent) => void>()
+
+/** W4: subscribe to raw vault file events. The seam listens for hand edits and deletions under
+ *  `.brain/memory/`; a listener never breaks the watcher. Returns the unsubscribe. */
+export function onVaultFileEvent(cb: (ev: VaultFileEvent) => void): () => void {
+  fileListeners.add(cb)
+  return () => {
+    fileListeners.delete(cb)
+  }
+}
+
+/** Fan one event out to the listeners. Exported so callers that bypass chokidar (and tests) can notify. */
+export function notifyVaultFileEvent(ev: VaultFileEvent): void {
+  for (const cb of fileListeners) {
+    try {
+      cb(ev)
+    } catch {
+      /* a listener never breaks the watcher */
+    }
+  }
+}
+
 /** (Re)start the watcher on `dir`. Pass null/empty to just stop. Idempotent. */
 export function restartNotesWatcher(dir: string | null | undefined): void {
   stopNotesWatcher()
   if (!dir) return
   try {
     watcher = chokidar.watch(dir, { ignoreInitial: true, depth: 12, ignored: shouldIgnore })
-    const onChange = (changed: string): void => scheduleReindex(dir, changed)
-    watcher.on('add', onChange).on('change', onChange).on('unlink', onChange)
+    const onEvent = (type: VaultFileEvent['type']) => (changed: string): void => {
+      notifyVaultFileEvent({ type, path: changed, dir })
+      scheduleReindex(dir, changed)
+    }
+    watcher.on('add', onEvent('add')).on('change', onEvent('change')).on('unlink', onEvent('unlink'))
     console.log('[notes-watcher] watching', dir)
   } catch (err) {
     console.warn('[notes-watcher] failed to watch', dir, (err as Error).message)

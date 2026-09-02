@@ -2,7 +2,13 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { governDecision, runGovernPass, __resetKeylessRatifyAnnounce, type GovernJury } from './operator-govern'
+import {
+  governDecision,
+  runGovernPass,
+  __resetKeylessRatifyAnnounce,
+  type GovernJury,
+  refreshKeylessRatifyCard
+} from './operator-govern'
 import {
   recordFacts,
   promoteFact,
@@ -10,7 +16,8 @@ import {
   confirmFact,
   getOperatorFacts,
   listByStatus,
-  __resetOperatorModel
+  __resetOperatorModel,
+  ratifyFact
 } from './operator-model'
 import { setNoticesPath, listNotices, __resetNotices } from '../proactive/notices-store'
 
@@ -72,7 +79,7 @@ describe('runGovernPass — keyless candidates park as a ratify question', () =>
     const owed = listNotices().filter((n) => n.needsDecision && n.resolvedAt === null)
     expect(owed).toHaveLength(1)
     expect(owed[0].actionId).toBe('govern:keyless-review')
-    expect(owed[0].deepLink).toBe('duin://tool/learning')
+    expect(owed[0].deepLink).toBe('duin://tool/learning') // W5: Learning has Ratify/Veto now
     // a second pass over the SAME pending set does not stack or re-bump a second card
     const r2 = await runGovernPass(keylessJury, P)
     expect(r2.awaitingRatify).toBe(1)
@@ -97,5 +104,18 @@ describe('runGovernPass — keyless candidates park as a ratify question', () =>
     expect(r.awaitingRatify).toBe(0)
     expect(listByStatus('promoted').map((f) => f.fact)).toContain('legacy survivor')
     expect(listNotices()).toHaveLength(0)
+  })
+})
+
+// W5 — a ratify or veto from the UI must settle the card AT ONCE, not at the next 30-minute tick.
+describe('W5 — refreshKeylessRatifyCard settles the card as soon as the queue drains', () => {
+  it('resolves the card right after the operator ratifies the last awaiting fact', async () => {
+    const id = provisionalFact('keyless survivor', ['s1', 's2', 's3', 's4'])
+    await runGovernPass(keylessJury, P)
+    expect(listNotices().find((n) => n.actionId === 'govern:keyless-review')?.resolvedAt).toBeNull()
+    expect(ratifyFact(id)).toBe(true)
+    expect(refreshKeylessRatifyCard()).toBe(0)
+    expect(listNotices().find((n) => n.actionId === 'govern:keyless-review')?.resolvedAt).not.toBeNull()
+    expect(listByStatus('promoted').map((f) => f.fact)).toContain('keyless survivor')
   })
 })

@@ -78,8 +78,13 @@ export interface OperatorFact {
   status: FactStatus
   /** Provenance (store-ownership). Absent on legacy rows → treated as 'operator' via factSource(). */
   source?: FactSource
-  /** Valid-FROM (bitemporal). When the fact was captured. */
+  /** Valid-FROM (bitemporal). When the fact was captured. NOTE: setFact bumps it on every mutation. */
   ts: number
+  /** Creation stamp, never mutated (unlike `ts`). The seam's `capturedAt` (W3). Absent on legacy rows. */
+  capturedAt?: number
+  /** When the fact became a confirmed rule (govern confirm or a human ratify). The seam's stable
+   *  `promotedAt` (W3). Absent on rows promoted before the field existed. */
+  promotedAt?: number
   /** Valid-TO (bitemporal). Set when this fact is SUPERSEDED by a newer, contradicting
    *  fact — the operator's state changed (e.g. "editor is VSCode" → later "…Neovim"). An
    *  invalidated fact is retained for audit/history but no longer GROUNDS (excluded from
@@ -255,16 +260,19 @@ let idCounter = 0
 /** THE single cap-eviction path. Status-aware: only churn (candidate/reverted) is evictable
  *  before human-touched rows — promoted/provisional are confirmed and `vetoed` is veto-memory
  *  (losing it re-opens a human-rejected fact to re-adding + re-grounding via the dedup set in
- *  recordFacts). Newest-first within a tier. Every dropped row is TOMBSTONED (see EvictionRecord)
+ *  recordFacts). Within churn, operator-STATED rows evict last (HUMAN AUTHORITY, isOperatorStated):
+ *  the cap drops the model's noise before the operator's own words. Newest-first within a tier. Every dropped row is TOMBSTONED (see EvictionRecord)
  *  rather than silently deleted. All three call sites (record / seed / derive) plus the load path
  *  route through here so a fourth site cannot drift back to a status-blind slice().
  *  `protectIds` are never evicted (e.g. the fact we just derived — its edge would dangle). */
 function evictToCap(at: string, protectIds?: Iterable<string>): OperatorFact[] {
   if (store.length <= MAX_FACTS) return []
   const evictLast = (s: FactStatus): number => (s === 'candidate' || s === 'reverted' ? 1 : 0)
+  // 0 = human-touched status, 1 = operator-stated churn, 2 = machine churn.
+  const tier = (f: OperatorFact): number => (evictLast(f.status) === 0 ? 0 : isOperatorStated(f) ? 1 : 2)
   const keep = new Set(
     [...store]
-      .sort((a, b) => evictLast(a.status) - evictLast(b.status) || b.ts - a.ts)
+      .sort((a, b) => tier(a) - tier(b) || b.ts - a.ts)
       .slice(0, MAX_FACTS)
       .map((f) => f.id)
   )
@@ -384,6 +392,8 @@ export function setOperatorModelPath(userDataDir: string): void {
           ...(typeof f.supersededBy === 'string' ? { supersededBy: f.supersededBy } : {}),
           ...(typeof f.invalidatedBy === 'string' ? { invalidatedBy: f.invalidatedBy } : {}),
           ...(typeof f.provisionalAt === 'number' ? { provisionalAt: f.provisionalAt } : {}),
+          ...(typeof f.capturedAt === 'number' ? { capturedAt: f.capturedAt } : {}),
+          ...(typeof f.promotedAt === 'number' ? { promotedAt: f.promotedAt } : {}),
           // Must survive reload like `source` does: an adjudication that evaporated on restart would
           // silently re-open the same miscount it exists to close (and an 'auto' row that reverted to
           // undefined could be re-promoted by the automation as if never seen).
@@ -468,6 +478,17 @@ export function factSource(f: OperatorFact): FactSource {
   return f.source ?? 'operator'
 }
 
+/** HUMAN AUTHORITY. A fact the operator STATED (keyless capture, source 'operator' — legacy untagged rows
+ *  included, see factSource) or a fact a human ADJUDICATED (promote/veto, adjudicatedBy 'human'). Every
+ *  model-driven retirement path in this module — the auto-supersession judge (runAutoSupersede +
+ *  supersedeFact), verifyPool's prune, reflect's absorption, and the cap's eviction order — consults this
+ *  predicate, so that "a fact you stated is never aged out by a model on its own" (README, architecture.md,
+ *  constitution §3) is code rather than copy. Only the operator's own later statement (a keyless trigger,
+ *  source 'operator') may supersede such a fact. Vetoed rows are excluded from grounding by status already. */
+export function isOperatorStated(f: OperatorFact): boolean {
+  return factSource(f) === 'operator' || f.adjudicatedBy === 'human'
+}
+
 /** Ingestion-trust tiering (SSGM/DRIFT): an un-promoted 'external' fact (captured from a de-privileged
  *  turn) is QUARANTINED — it must not reach grounding by ANY path (the whole-dump buildOperatorBlock,
  *  the default-on recall assembly, or laundering through consolidation into an operator-sourced rule)
@@ -493,7 +514,7 @@ export function recordFacts(facts: { fact: string; kind?: string; source?: FactS
     const key = norm(text)
     if (seen.has(key)) continue
     seen.add(key)
-    store.unshift({ id: mkId(), fact: text, kind: f.kind || 'context', status: 'candidate', ts: Date.now(), source: f.source ?? 'operator' })
+    store.unshift({ id: mkId(), fact: text, kind: f.kind || 'context', status: 'candidate', ts: Date.now(), capturedAt: Date.now(), source: f.source ?? 'operator' })
     added++
   }
   if (added) {
@@ -510,10 +531,21 @@ export function recordFacts(facts: { fact: string; kind?: string; source?: FactS
  *  invalidated (valid-TO = now, supersededBy = new id) so it stops grounding but is kept for
  *  audit. Callable by the govern/correction path or key-gated extraction when it detects that
  *  the operator's stated X changed. No-op if `oldId` is unknown or already invalidated.
- *  Returns the new fact's id (or null if the new text failed the capture guards). */
+ *  Returns the new fact's id (or null if the new text failed the capture guards).
+ *  HUMAN AUTHORITY: a caller retiring on a MODEL's behalf must pass `source: 'machine'` — such a
+ *  replacement is refused when `old` is operator-stated (isOperatorStated). An omitted `source` is the
+ *  human-driven correction contract and inherits the old row's provenance. */
 export function supersedeFact(oldId: string, newText: string, kind?: string, source?: FactSource): { newId: string | null; superseded: boolean } {
   const old = store.find((f) => f.id === oldId)
   if (!old || isInvalidated(old)) return { newId: null, superseded: false }
+  // HUMAN AUTHORITY (isOperatorStated): a replacement authored by a model ('machine') or by a de-privileged
+  // sender ('external') may not retire a fact the operator stated or a human adjudicated. Only the operator's
+  // own statement supersedes it. Refusing here, at the mutator, means no future caller can launder a model
+  // conclusion into the operator's provenance (constitution §3); the refusal mints no orphan replacement.
+  if (isOperatorStated(old) && (source === 'machine' || source === 'external')) {
+    console.debug(`[operator-model] supersede refused: a ${source} replacement cannot retire operator-stated fact ${oldId}`)
+    return { newId: null, superseded: false }
+  }
   const text = (newText || '').trim()
   if (!text || text.length < 3 || text.length > 300 || !verifyCandidate(text).ok) {
     return { newId: null, superseded: false }
@@ -525,7 +557,7 @@ export function supersedeFact(oldId: string, newText: string, kind?: string, sou
     // Provenance: the new fact updates the superseded one, so it inherits that fact's
     // source lineage unless the caller (e.g. key-gated machine extraction) overrides it.
     // Never leave it untagged — an untagged fact silently reads as operator-authored.
-    target = { id: mkId(), fact: text, kind: kind || old.kind || 'correction', status: 'candidate', ts: Date.now(), source: source ?? factSource(old) }
+    target = { id: mkId(), fact: text, kind: kind || old.kind || 'correction', status: 'candidate', ts: Date.now(), capturedAt: Date.now(), source: source ?? factSource(old) }
     store.unshift(target)
   } else if (isQuarantinedExternal(target)) {
     // The reused row is a pre-planted, still-quarantined 'external' candidate with the same
@@ -553,7 +585,7 @@ export function supersedeFact(oldId: string, newText: string, kind?: string, sou
  *  bounds). A `provisional` seed gets a probation clock so the govern loop can start verifying it
  *  — the legitimate way to seed HUMAN-VALIDATED vault principles as endorsed-but-still-proving.
  *  Idempotent (re-running adds nothing new). Never seeds `promoted` — that stays earned. */
-export function seedFacts(items: { fact: string; kind?: string; status?: 'candidate' | 'provisional' }[]): { added: number; provisional: number } {
+export function seedFacts(items: { fact: string; kind?: string; status?: 'candidate' | 'provisional'; source?: FactSource }[]): { added: number; provisional: number } {
   const seen = new Set(store.map((f) => norm(f.fact)))
   let added = 0
   let provisional = 0
@@ -565,8 +597,9 @@ export function seedFacts(items: { fact: string; kind?: string; status?: 'candid
     if (seen.has(key)) continue
     seen.add(key)
     const status: FactStatus = it.status === 'provisional' ? 'provisional' : 'candidate'
-    // Seeds are human-validated vault principles → operator-authored provenance.
-    const f: OperatorFact = { id: mkId(), fact: text, kind: it.kind || 'principle', status, ts: Date.now(), source: 'operator' }
+    // Seeds default to operator-authored provenance (human-validated vault principles). A seed a MODEL
+    // wrote (the DUIN_LADDER instinct summary) must say so, or the human-authority guards protect it.
+    const f: OperatorFact = { id: mkId(), fact: text, kind: it.kind || 'principle', status, ts: Date.now(), capturedAt: Date.now(), source: it.source ?? 'operator' }
     if (status === 'provisional') {
       f.provisionalAt = Date.now()
       provisional++
@@ -668,6 +701,7 @@ export function promoteFact(id: string, reason?: string): boolean {
   // identical candidate->provisional move — never did, so the events ledger could only ever
   // show the unattended promoter turning. `by` disambiguates the two origins in one query.
   if (f) emitFactEvent('operator.fact.promoted', { id: f.id, by: 'human' })
+  if (f) fireMaterialize(f, 'promote') // W3: the seam projects provisional facts too
   return !!f
 }
 /** Human gate: suppress a fact AND remember the veto (never re-surface). Optional
@@ -706,6 +740,7 @@ export function confirmFact(id: string): boolean {
     // status alone the way runGovernPass did.
     if (x.status === 'provisional' && isFactLive(x)) {
       x.status = 'promoted'
+      x.promotedAt = Date.now() // the seam's stable date (W3)
       flipped = true
     }
   })
@@ -732,6 +767,91 @@ export function revertFact(id: string): boolean {
   if (changed) fireMaterialize(f, 'retire') // the seam — reverted facts must not keep grounding
   if (f) emitFactEvent('operator.fact.reverted', { id: f.id, status: f.status })
   return !!f
+}
+
+/** W5 human verb — RATIFY: the person lands a live provisional fact as a confirmed rule. The govern
+ *  loop's confirmFact is the automatic word (glossary: "Confirm … never a human act"); this is the
+ *  operator's. Stamps adjudicatedBy 'human' and promotedAt, forwards the endorsement to the learn
+ *  loop, projects through the seam. Refuses anything that is not a live provisional fact. */
+export function ratifyFact(id: string, reason?: string): boolean {
+  const f = store.find((x) => x.id === id)
+  if (!f || f.status !== 'provisional' || !isFactLive(f)) return false
+  setFact(id, (x) => {
+    x.status = 'promoted'
+    x.promotedAt = Date.now()
+    x.adjudicatedBy = 'human'
+  })
+  if (lifecycleHook) {
+    try {
+      lifecycleHook({ ...f }, 'promote', reason)
+    } catch (e) { console.debug('[operator-model] best-effort — a forwarding failure never blocks the human gate:', messageOf(e)) }
+  }
+  if (measureHook) {
+    try {
+      measureHook(id)
+    } catch (e) { console.debug('[operator-model] never block ratify:', messageOf(e)) }
+  }
+  fireMaterialize(f, 'promote')
+  emitFactEvent('operator.fact.confirmed', { id: f.id, status: f.status, by: 'human' })
+  return true
+}
+
+/** W5 human verb — UN-VETO: the person takes a veto back. The fact returns to probation under human
+ *  authority (provisional, adjudicatedBy 'human'), exactly where promoteFact puts an endorsed
+ *  candidate; it earns 'promoted' through the govern loop or a ratify. Refuses non-vetoed rows. */
+export function unvetoFact(id: string, reason?: string): boolean {
+  const f = store.find((x) => x.id === id)
+  if (!f || f.status !== 'vetoed') return false
+  setFact(id, (x) => {
+    x.status = 'provisional'
+    x.provisionalAt = Date.now()
+    x.adjudicatedBy = 'human'
+    if (!Array.isArray(x.observedSessions)) x.observedSessions = []
+  })
+  if (lifecycleHook) {
+    try {
+      lifecycleHook({ ...f }, 'promote', reason)
+    } catch (e) { console.debug('[operator-model] best-effort:', messageOf(e)) }
+  }
+  fireMaterialize(f, 'promote')
+  emitFactEvent('operator.fact.unvetoed', { id: f.id })
+  return true
+}
+
+/** W5 human verb — REVERT a supersession: the person says the OLD fact still holds. The old row is
+ *  reinstated (valid-to cleared, human authority, standing kept) and the replacement that retired it
+ *  is vetoed. Derived rules the supersession cascaded are not restored. Refuses a row that was not
+ *  superseded. */
+export function revertSupersession(oldId: string, reason?: string): boolean {
+  const old = store.find((x) => x.id === oldId)
+  if (!old || !isInvalidated(old) || !old.supersededBy) return false
+  const replacementId = old.supersededBy
+  delete old.invalidatedAt
+  delete old.supersededBy
+  delete old.invalidatedBy
+  old.adjudicatedBy = 'human'
+  old.ts = Date.now()
+  persist()
+  const rep = store.find((x) => x.id === replacementId)
+  if (rep && !isInvalidated(rep) && rep.status !== 'vetoed') {
+    vetoFact(rep.id, reason ?? 'the operator reinstated the fact it replaced')
+  }
+  if (old.status === 'promoted' || old.status === 'provisional') fireMaterialize(old, 'promote')
+  emitFactEvent('operator.fact.reinstated', { id: old.id, replaced: replacementId })
+  return true
+}
+
+/** Keyless facts parked at 'ratify' (provisional, live, jury abstained and the survival bar met) —
+ *  what the Learning panel's "Awaiting your ratification" section and the Needs-you card list. */
+export function getAwaitingRatify(): OperatorFact[] {
+  return store.filter((f) => f.status === 'provisional' && isFactLive(f) && f.govern?.verdict === 'ratify')
+}
+
+/** Superseded rows (valid-to set by a supersession), newest first — the "Superseded" list. */
+export function getSupersededFacts(): OperatorFact[] {
+  return store
+    .filter((f) => isInvalidated(f) && !!f.supersededBy)
+    .sort((a, b) => (b.invalidatedAt ?? 0) - (a.invalidatedAt ?? 0))
 }
 
 /** Learning automation — the human endorse gate, removed. Advances every candidate that has already
@@ -847,6 +967,7 @@ export function autoPromoteCandidates(): number {
     f.provisionalAt = now
     f.adjudicatedBy = 'auto'
     if (!Array.isArray(f.observedSessions)) f.observedSessions = []
+    fireMaterialize(f, 'promote') // W3: the seam projects provisional facts too
     promoted++
   }
   if (promoted) {
@@ -911,6 +1032,7 @@ export function recordBoundRule(rule: string, bindingId: string, source: FactSou
     // link is still worth it (the audit shows which binding re-asserted a failed rule) and cannot
     // double-count: revertByBindingId only decrements a provisional/promoted row.
     persist()
+    if (existing.status === 'provisional' && isFactLive(existing)) fireMaterialize(existing, 'promote') // W3
     return existing.id
   }
   const f: OperatorFact = {
@@ -919,6 +1041,7 @@ export function recordBoundRule(rule: string, bindingId: string, source: FactSou
     kind: 'correction',
     status: 'provisional',
     ts: Date.now(),
+    capturedAt: Date.now(),
     provisionalAt: Date.now(),
     observedSessions: [],
     source,
@@ -927,6 +1050,7 @@ export function recordBoundRule(rule: string, bindingId: string, source: FactSou
   }
   store.unshift(f)
   persist()
+  fireMaterialize(f, 'promote') // W3: a bound rule lands provisional and projects at once
   return f.id
 }
 
@@ -1145,7 +1269,7 @@ export function recordDerivedFact(
   // operator left it — only the edge underneath it is new, and only a sibling's retirement reveals it.
   if (f && dependsOn.includes(f.id)) return f.id
   if (!f) {
-    f = { id: mkId(), fact: text, kind: kind || 'context', status: 'candidate', ts: Date.now(), source: 'machine' }
+    f = { id: mkId(), fact: text, kind: kind || 'context', status: 'candidate', ts: Date.now(), capturedAt: Date.now(), source: 'machine' }
     store.unshift(f)
     evictToCap('derive', [f.id]) // never evict the fact we just derived (its edge would dangle)
   }
@@ -1391,6 +1515,10 @@ export function reflect(): number {
       // Same-trust pools are untouched (external may still absorb external), so a store with no
       // external rows merges exactly as before.
       if (isQuarantinedExternal(b) && !isQuarantinedExternal(a)) continue
+      // HUMAN AUTHORITY (isOperatorStated): a model-inferred superset may not absorb the operator's own
+      // statement — the absorbed row stops grounding, which is a model retiring what the operator said.
+      // Operator-stated rows still merge among themselves; machine rows merge exactly as before.
+      if (isOperatorStated(a) && !isOperatorStated(b)) continue
       const wa = words.get(a.id)!
       const wb = words.get(b.id)!
       if (wa.size > 0 && wa.size < wb.size && isSubset(wa, wb)) merged.set(a.id, b.id)
@@ -1755,8 +1883,9 @@ export async function verifyPool(): Promise<{ kept: number; dropped: number }> {
     // every single-threaded test passes, and both the abstain-on-total-drop guard and the tombstone
     // ledger above look like they cover data loss — they cover a bad VERIFIER, not a stale snapshot.
     //
-    // Only remove rows still in the state that was actually verified: an untouched candidate.
-    const doomed = store.filter((f) => dropIds.has(f.id) && f.status === 'candidate' && !isInvalidated(f))
+    // Only remove rows still in the state that was actually verified: an untouched candidate — and never
+    // one the operator stated: a model's keep-list is not the operator's veto (HUMAN AUTHORITY, isOperatorStated).
+    const doomed = store.filter((f) => dropIds.has(f.id) && f.status === 'candidate' && !isInvalidated(f) && !isOperatorStated(f))
     if (doomed.length) {
       // TRACEABLE PRUNE. A model deciding a fact is not durable is not the operator vetoing it, so the
       // row does not just vanish: tombstone it into the same bounded ledger cap eviction writes to
@@ -1899,25 +2028,39 @@ async function realSupersedeJudge(newText: string, candidates: ActiveFactRef[]):
 /** Gated auto-supersession pass: retire active facts that a change-signal-bearing
  *  new fact explicitly replaces (three gates: change-signal → referent-overlap →
  *  LLM confirm). Reversible (supersedeFact keeps the old fact for audit). No-op
- *  unless a new fact carries a change signal. Best-effort. */
-async function runAutoSupersede(newTexts: string[]): Promise<number> {
-  if (newTexts.length === 0) return 0
-  const active: ActiveFactRef[] = getOperatorFacts().map((f) => ({ id: f.id, fact: f.fact }))
-  if (active.length === 0) return 0
-  try {
-    const { superseded } = await autoSupersede({
-      newFacts: newTexts,
-      activeFacts: active,
-      judge: realSupersedeJudge,
-      // No lexical change-marker requirement: silently-stated contradictions must
-      // auto-invalidate too. The deterministic overlap floor + LLM judge remain
-      // the gates; maxJudgeCalls bounds cost, change-marker facts judged first.
-      apply: (oldId, newText) => supersedeFact(oldId, newText).superseded
-    })
-    return superseded
-  } catch {
-    return 0
+ *  unless a new fact carries a change signal. Best-effort.
+ *
+ *  Two pools, by who authored the trigger (HUMAN AUTHORITY, isOperatorStated):
+ *    - the operator's OWN keyless teaching may retire ANY active fact, and the
+ *      replacement is tagged 'operator' (the operator changed their mind);
+ *    - a MODEL-extracted fact may retire only machine facts, and its replacement is
+ *      tagged 'machine' — it never inherits the retired row's 'operator' provenance
+ *      (constitution §3). Before this split the judge saw every active fact with the
+ *      model's inferences as triggers, and the replacement wore the operator's tag.
+ *  Each pool keeps autoSupersede's default judge budget; an empty pool makes no call. */
+async function runAutoSupersede(keylessTexts: string[], llmTexts: string[]): Promise<number> {
+  let superseded = 0
+  const pass = async (newFacts: string[], pool: OperatorFact[], source: FactSource): Promise<void> => {
+    if (newFacts.length === 0 || pool.length === 0) return
+    const active: ActiveFactRef[] = pool.map((f) => ({ id: f.id, fact: f.fact }))
+    try {
+      const r = await autoSupersede({
+        newFacts,
+        activeFacts: active,
+        judge: realSupersedeJudge,
+        // No lexical change-marker requirement: silently-stated contradictions must
+        // auto-invalidate too. The deterministic overlap floor + LLM judge remain
+        // the gates; maxJudgeCalls bounds cost, change-marker facts judged first.
+        apply: (oldId, newText) => supersedeFact(oldId, newText, undefined, source).superseded
+      })
+      superseded += r.superseded
+    } catch {
+      /* best-effort: a judge/apply failure retires nothing */
+    }
   }
+  await pass(keylessTexts, getOperatorFacts(), 'operator')
+  await pass(llmTexts, getOperatorFacts().filter((f) => !isOperatorStated(f)), 'machine')
+  return superseded
 }
 
 /** Capture-surprise gate (Nemori prediction-error): given machine-inferred candidate facts, return
@@ -1977,7 +2120,7 @@ export async function learnFromTurn(query: string, answer: string, trusted = tru
   // rule is still true). Gated + reversible; see operator-supersede.ts. SKIPPED for an untrusted
   // turn — a de-privileged sender must never be able to RETIRE a governed operator fact (poisoning
   // by supersession); only the operator's own turns can invalidate operator state.
-  if (trusted) await runAutoSupersede([...keyless.map((k) => k.fact), ...llm])
+  if (trusted) await runAutoSupersede(keyless.map((k) => k.fact), llm)
   if (total) {
     reflect() // auto-merge near-duplicates
     // dual-verifier: key-gated prune to durable, non-contradictory (no-op keyless). Awaited (not

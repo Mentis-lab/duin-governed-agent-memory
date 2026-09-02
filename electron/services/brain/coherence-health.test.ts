@@ -300,7 +300,8 @@ describe('COHERENCE_MAP — seed integrity', () => {
     // justification was "enactment held cold pending a human-ratify seam", and W2 BUILT that
     // seam (stage-below-earned-tier + Needs-you ratify UI + engage-time tick) — a stance that
     // has been fulfilled is not still a hold, it is the shipped shape.
-    expect(COHERENCE_MAP.filter((e) => e.byDesign === true).length).toBe(6)
+    // 2026-09-02 (W3): the seam projection is no longer a by-design hold — it ships ON for every install.
+    expect(COHERENCE_MAP.filter((e) => e.byDesign === true).length).toBe(5)
   })
 
   it('every wiringState the map names in prose is one the map actually uses', () => {
@@ -328,7 +329,8 @@ describe('COHERENCE_MAP — seed integrity', () => {
     // advance fires only in the keyless branch, so the loop does not self-advance from a normal
     // chat turn on a model-connected (live) install. Census unchanged; the fix is honesty in the
     // evidence, not a state flip (PARTIAL is not a scored state here).
-    expect(byState).toEqual({ LIVE: 33, COLD_BY_DESIGN: 6, COLD: 6, DEAD: 3 })
+    // 2026-09-02 (W3): seam projection COLD_BY_DESIGN → LIVE (default ON, provisional facts projected).
+    expect(byState).toEqual({ LIVE: 34, COLD_BY_DESIGN: 5, COLD: 6, DEAD: 3 })
   })
 
   it('the seeded map computes a finite report over all 4 axes', () => {

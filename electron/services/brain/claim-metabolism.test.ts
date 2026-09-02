@@ -1,10 +1,27 @@
 import { describe, it, expect } from 'vitest'
 import {
-  supersedeKey, canonicalRelation, claimsAsOf, classifyMutability, halfLifeFor, freshness, retrievalScore,
-  runVerdicts, unretire, markUseful, isPinned, HARD_PENALTY, FRESH_FLOOR,
-  applySupersessionGuards, DEFAULT_SUPERSESSION_GUARDS, PROSE_SUPERSEDE_CONF, SUPERSEDE_MIN_CONFIDENCE,
-  inferMultiValuedKeys, relationCardinalityEnabled,
-  type Claim, type WorldState
+  supersedeKey,
+  canonicalRelation,
+  claimsAsOf,
+  classifyMutability,
+  halfLifeFor,
+  freshness,
+  retrievalScore,
+  runVerdicts,
+  unretire,
+  markUseful,
+  isPinned,
+  HARD_PENALTY,
+  FRESH_FLOOR,
+  applySupersessionGuards,
+  DEFAULT_SUPERSESSION_GUARDS,
+  PROSE_SUPERSEDE_CONF,
+  SUPERSEDE_MIN_CONFIDENCE,
+  inferMultiValuedKeys,
+  relationCardinalityEnabled,
+  type Claim,
+  type WorldState,
+  annotateCorrections
 } from './claim-metabolism'
 import { ENTITY_CLUSTER_THRESHOLD, blockKeyOf } from './claim-entities'
 
@@ -532,5 +549,28 @@ describe('claim-metabolism — relation cardinality (DEFECT 4)', () => {
       if (prev === undefined) delete process.env.DUIN_CLAIM_RELATION_CARDINALITY
       else process.env.DUIN_CLAIM_RELATION_CARDINALITY = prev
     }
+  })
+})
+
+// W5 — a surface must be able to show the human which model retirements STOOD, which were blocked and
+// why, and which they already ruled on. The guards now report an outcome per claim, and the
+// corrections a metabolism pass returns carry it.
+describe('W5 — supersession outcomes are reported per claim', () => {
+  it('applySupersessionGuards returns an outcomes map; annotateCorrections stamps applied / blockedBy', () => {
+    const older = claim({ id: 'o', subject: '北澜', relation: 'deadline', object: 'June', observedAt: NOW - 10 * DAY })
+    const prose = claim({ id: 'p', subject: '北澜', relation: 'deadline', object: 'August', observedAt: NOW - 1 * DAY, source: 'prose' })
+    const weakOld = claim({ id: 'w', subject: '北澜', relation: 'owner', object: 'Ana', observedAt: NOW - 10 * DAY, entityKey: 'moon', entityKeyConfidence: 0.5 })
+    const weakNew = claim({ id: 'x', subject: '《北澜》', relation: 'owner', object: 'Bo', observedAt: NOW - 1 * DAY, source: 'prose', entityKey: 'moon', entityKeyConfidence: 0.5 })
+    const all = [older, prose, weakOld, weakNew]
+    const { corrections } = runVerdicts(all, emptyWorld(), NOW)
+    const res = applySupersessionGuards(all)
+    expect(res.applied).toBe(1)
+    expect(res.outcomes.get('o')).toBe('applied')
+    expect(res.outcomes.get('w')).toBe('confidence')
+
+    const ann = annotateCorrections(corrections, all, res.outcomes)
+    expect(ann.find((c) => c.claimId === 'o')).toMatchObject({ applied: true, supersededBy: 'p' })
+    expect(ann.find((c) => c.claimId === 'o')!.blockedBy).toBeUndefined()
+    expect(ann.find((c) => c.claimId === 'w')).toMatchObject({ applied: false, blockedBy: 'confidence' })
   })
 })

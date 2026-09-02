@@ -1274,7 +1274,8 @@ app.whenReady().then(() => {
     })
   }
   // The SEAM — on promote, materialize a portable OKF concept into the vault's .brain/memory
-  // (flag-gated DUIN_SEAM_MATERIALIZE, fire-and-forget). Resolves the vault dir at call time.
+  // (ON by default since W3 2026-09-02; DUIN_SEAM_MATERIALIZE=0 disables; fire-and-forget). Provisional
+  // facts project too, with status:. Resolves the vault dir at call time.
   // Every governed transition ALSO schedules the debounced FULL projection (lineage + entity
   // edges + index) via seam-reconcile, and a one-shot boot pass self-heals the transitions
   // that never fire this hook (evictToCap, flag-off periods) — see seam-reconcile.ts.

@@ -112,6 +112,35 @@ export function snapshotToTrash(
   return stageToTrash(vaultDir, absFile, actor, 'overwrite', reason)
 }
 
+/** Journal a deletion that happened OUTSIDE the app — Explorer, `rm`, a sync client — after the bytes are
+ *  already gone. There is nothing to move into `.trash`, so the line carries `from` (the live path) and no
+ *  `to`: listTombstones skips it (nothing to restore), while moat-durability's boot rehydrate reads it as the
+ *  user's instruction to withhold the vault mirror's copy. Without this line an external delete came back on
+ *  the next launch, because the mirror is additive and rehydrate restores "in the vault, not in userData".
+ *  Never throws; returns false when nothing could be recorded. */
+export function recordExternalDeletion(vaultDir: string, absFile: string, actor: string, reason?: string): boolean {
+  try {
+    if (!vaultDir) return false
+    const trashDir = join(vaultDir, TRASH_DIR_NAME)
+    mkdirSync(trashDir, { recursive: true })
+    appendFileSync(
+      join(trashDir, TOMBSTONE_JOURNAL),
+      JSON.stringify({
+        at: new Date().toISOString(),
+        actor,
+        from: originRel(vaultDir, absFile),
+        op: 'delete',
+        external: true,
+        ...(reason ? { reason } : {})
+      }) + '\n',
+      'utf-8'
+    )
+    return true
+  } catch {
+    return false
+  }
+}
+
 /** Store-relative, forward-slashed form of `absFile` for the journal's `from`/`to` fields, so the
  *  record reads identically on every platform. Falls back to the absolute path when the file is not
  *  under `vaultDir` — the journal must still say honestly where the bytes came from. */

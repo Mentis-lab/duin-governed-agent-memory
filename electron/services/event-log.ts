@@ -177,6 +177,8 @@ export const EVENT_TYPES = [
   'operator.fact.confirmed',
   'operator.fact.reverted',
   'operator.fact.vetoed',
+  'operator.fact.unvetoed',
+  'operator.fact.reinstated',
   'operator.promotion.held',
 ] as const
 

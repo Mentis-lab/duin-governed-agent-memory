@@ -81,28 +81,55 @@ The invariant: the **Vault** and **Memory** planes are never derived away; the *
 
 What DUIN learns is kept as text you can read, and it is never allowed to forget who said what.
 
-- **Provenance.** Every memory carries a source label: `user-explicit` (you stated it),
-  `session`, `inferred` (a model concluded it), `reflection`, `imported` or `unknown` (the
-  `source` column of the memory table, `electron/services/schema-init.ts`). A fact DUIN inferred
-  may never be relabelled as something you stated ([constitution](constitution.md)).
+- **Three stores.** Your *memory files* (the `#` shortcut, the Memory panel, or a provider model's
+  `memory_add`) are Markdown in the user-data `lamprey-memory/` directory; they are the canonical
+  copy and SQLite mirrors them (`electron/services/memory-store.ts`). What DUIN *learns about you*
+  from your turns is the operator model, a JSON ledger in user data
+  (`electron/services/brain/operator-model.ts`), projected into your vault as one concept file
+  per fact under `.brain/memory/`. *Claims* extracted from your notes live in
+  `.duin/_state/claim-ledger.jsonl` (`electron/services/brain/claim-metabolism.ts`). The first two
+  are mirrored into `.brain/` every few minutes; the mirrors are backups, not the place to edit.
+- **Provenance.** Every memory file carries a source label: `user-explicit` (you typed it), `session`
+  (a model saved it from a conversation), `imported` or `unknown` (`electron/shared/memory-source.ts`).
+  Every learned fact carries `operator` (you stated it in chat), `machine` (a model inferred it) or
+  `external` (an inbound channel message, quarantined until you promote it). A fact a model inferred
+  is never relabelled as something you stated: a model-authored replacement keeps the `machine`
+  label ([constitution](constitution.md)).
+- **A fact you stated is never aged out by a model on its own.** A model-extracted fact can supersede
+  only model-inferred facts; only your own later statement supersedes a fact you stated. The model's
+  verification pass never prunes it, the cap evicts model noise before it, and consolidation never
+  absorbs it into a model summary (`isOperatorStated` in `electron/services/brain/operator-model.ts`).
 - **Claims have a lifetime.** Extracted claims record `validFrom`, `validTo`, `observedAt` and
-  `supersededBy`, and each one holds a verdict: `current`, `stale`, `contradicted` or
-  `orphaned`, with the reason (`temporal`, `supersession`, `jtms` or `model`). You can ask the
-  brain what was believed as of any date (`electron/services/brain/claim-metabolism.ts`).
-- **Operator facts outrank inferences.** A claim you authored is evergreen: the metabolism never
-  ages it out on its own. A model-proposed supersession is held as a proposal behind a confidence
-  guard until it is confirmed, and a human reversal survives every later tick.
-- **Retire, never delete.** Entities and claims are retired by setting `valid_to`, so the graph
-  keeps its history (`electron/services/brain/brain-schema.ts`).
-- **Files you can diff.** Promoted concepts materialize as typed Markdown under
-  `.brain/memory/` with `supersedes:` and `supersededBy:` in their frontmatter; retired concepts
-  move to `.brain/_retired/` (`electron/services/brain/concept-materialize.ts`). The per-fact
-  memory files live in the user-data `lamprey-memory/` directory and are the canonical copy;
-  SQLite mirrors them.
-- **Corrections are input.** The Learn loop captures a correction at the turn boundary and feeds
-  it into the promotion lifecycle (`candidate → provisional → promoted | vetoed`), which you can
-  promote or veto from the Learning panel. Confirming or reverting a retirement is available on
-  the local API (`POST /state/claim-metabolism/resolve`); a panel for it is planned.
+  `supersededBy`, and each one holds a verdict: `current`, `stale`, `contradicted` or `orphaned`,
+  with the reason (`temporal`, `supersession`, `jtms` or `model`). You can ask the brain what was
+  believed as of any date on the local API (`GET /state/claim-metabolism?asOf=`).
+- **Model supersessions are recorded; human rulings are pinned.** A model-proposed supersession of a
+  claim is applied only above a confidence guard and is stamped `verdictBy`; below the guard nothing
+  changes. A human confirm or revert (`POST /state/claim-metabolism/resolve`) is a pin that survives
+  every later tick, available on the local API and from the Learning panel's "Claims the model
+  retired" section, which also shows whether each retirement stood or was blocked and why.
+- **Retire, never delete.** Entities and claims are retired by setting `valid_to`, so the graph keeps
+  its history (`electron/services/brain/brain-schema.ts`). A superseded learned fact keeps its row
+  with `invalidatedAt` and `supersededBy`; a pruned or cap-evicted model candidate is tombstoned in
+  the eviction log.
+- **Files you can diff and overrule.** Memory files and the `.brain/` mirrors are plain text
+  under your own version control. Learned facts — promoted and provisional — materialize as typed
+  Markdown under `.brain/memory/` (`concept-<id>.md` with `status:`, `source:`, `capturedAt`,
+  `promotedAt` or `provisionalAt`, and `supersedes:` / `supersededBy:`), retired ones moving to
+  `.brain/_retired/` (`electron/services/brain/concept-materialize.ts`). This is on by default;
+  `DUIN_SEAM_MATERIALIZE=0` turns it off. The files are yours to change: rewrite the claim line
+  and DUIN records it as your statement superseding the old fact (a confirmed rule stays
+  confirmed); delete a file and the fact is vetoed; anything else you add to a file is left alone
+  until the fact itself changes; remove the machine marker and the file is yours for good. A
+  seam ledger in `.duin/_state/seam-ledger.json` tells your edits from DUIN's own writes, and
+  re-projection never rewrites a file whose bytes would not change.
+- **Corrections are input, and the verbs are yours.** The Learn loop captures a correction at the
+  turn boundary and feeds it into the promotion lifecycle (`candidate → provisional → promoted |
+  vetoed`). From the Learning panel you can ratify a fact on probation (a keyless install parks
+  facts there until you do), veto it, take a veto back, or reinstate a fact a newer statement
+  replaced; the Needs-you card for parked facts carries Ratify and Veto too. "Confirm" stays the
+  govern loop's automatic word; "ratify" is yours. Every row shows its provenance and whether you
+  already ruled on it.
 
 ## Providers
 

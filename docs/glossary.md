@@ -112,7 +112,7 @@ migration that touches only SQL reverts on the next sync.
 
 | Term | Means | Lives in |
 | --- | --- | --- |
-| **Concept** | A typed Markdown file in the OKF substrate: the portable, human-readable brain. | `.brain/memory/*.md` |
+| **Concept** | A typed Markdown file in the OKF substrate: the portable, human-readable brain. The onboarding scaffold writes the `_about-*` ones; every learned fact (promoted or provisional) materializes as `concept-<id>.md` by default (`DUIN_SEAM_MATERIALIZE=0` turns it off), and editing or deleting one flows back into the fact. | `.brain/memory/*.md` |
 | **Node** | One entity in the graph: a person, project, org, decision, topic… | `entity_nodes` |
 | **Node kind** | The node's type: `person`, `org`, `decision`, `goal`, `topic`, `risk`, `stream`, `driver`, `context`, `deadline`, `cascade`, `entity`. | `entity_nodes.kind` |
 | **Edge** | A typed, directed relation between two Nodes. | `entity_edges` |

@@ -1,5 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'fs'
+import { makeMaterializeHook } from './concept-materialize'
+import { notifyVaultFileEvent } from '../local-brain/notes-watcher'
+import {
+  confirmFact,
+  getAllOperatorFacts as allFacts,
+  setMaterializeHook
+} from './operator-model'
+import { setOperatorModelPath, recordFacts, promoteFact, supersedeFact, getAllOperatorFacts, __resetOperatorModel } from './operator-model'
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import {
@@ -9,7 +17,8 @@ import {
   runSeamReconcileNow,
   seamReconcileStatus,
   __resetSeamReconcileForTests,
-  type SeamReconcileDeps
+  type SeamReconcileDeps,
+  makeProductionSeamDeps
 } from './seam-reconcile'
 import type { OperatorFact } from './operator-model'
 
@@ -64,8 +73,8 @@ describe('seam-reconcile (auto-fire hardening)', () => {
     expect(deps.reindex).toHaveBeenCalledWith(tmp)
   })
 
-  it('is gated on DUIN_SEAM_MATERIALIZE unless the caller overrides (manual backfill route)', () => {
-    delete process.env.DUIN_SEAM_MATERIALIZE
+  it('is gated off by DUIN_SEAM_MATERIALIZE=0 unless the caller overrides (manual backfill route)', () => {
+    process.env.DUIN_SEAM_MATERIALIZE = '0'
     const r = runSeamReconcileNow('test', deps)
     expect(r.ok).toBe(false)
     expect(r.skipped).toBe('seam-disabled')
@@ -157,5 +166,114 @@ describe('seam-reconcile (auto-fire hardening)', () => {
     expect(r.ok).toBe(true)
     expect(r.result?.entitiesWritten).toBe(1)
     expect(readFileSync(join(tmp, '.brain', 'memory', 'entity-beilan.md'), 'utf-8')).toContain('— believed')
+  })
+})
+
+// W3 — the production deps project PROVISIONAL facts too (a keyless install never reaches `promoted`,
+// so without this its learned facts would never become files) and never a retired one.
+describe('seam-reconcile — production deps (W3)', () => {
+  it('include live provisional facts, exclude candidates and superseded rows', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'seam-deps-'))
+    try {
+      setOperatorModelPath(join(tmp, 'operator-model.json'))
+      __resetOperatorModel()
+      recordFacts([
+        { fact: 'Operator prefers tea in the afternoon', kind: 'context', source: 'operator' },
+        { fact: 'Operator ships releases on Fridays', kind: 'context', source: 'operator' }
+      ])
+      const tea = getAllOperatorFacts().find((f) => f.fact.includes('tea'))!
+      expect(promoteFact(tea.id)).toBe(true) // → provisional (human)
+      const prod = makeProductionSeamDeps(() => tmp)
+      expect(prod.getPromoted().map((f) => f.fact)).toEqual(['Operator prefers tea in the afternoon'])
+      expect(supersedeFact(tea.id, 'Operator prefers coffee in the afternoon', 'context', 'operator').superseded).toBe(true)
+      expect(prod.getPromoted()).toEqual([]) // the retired row is out; its replacement is only a candidate
+    } finally {
+      __resetOperatorModel()
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 })
+    }
+  })
+})
+
+// W4 — production hooks: a hand edit becomes the operator's statement, a hand delete becomes a veto.
+describe('seam-reconcile — human edits flow back (W4)', () => {
+  it('edit → supersede + promote (+ confirm when the old fact was promoted); delete → veto', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'seam-w4p-'))
+    const prev = process.env.DUIN_SEAM_MATERIALIZE
+    try {
+      process.env.DUIN_SEAM_MATERIALIZE = '1'
+      setOperatorModelPath(join(tmp, 'operator-model.json'))
+      __resetOperatorModel()
+      setMaterializeHook(makeMaterializeHook(() => tmp)) // as main.ts wires it: promote/retire project at once
+      recordFacts([
+        { fact: 'Operator prefers tea in the afternoon', kind: 'context', source: 'operator' },
+        { fact: 'Operator ships releases on Fridays', kind: 'context', source: 'operator' }
+      ])
+      const tea = allFacts().find((f) => f.fact.includes('tea'))!
+      const ships = allFacts().find((f) => f.fact.includes('Fridays'))!
+      promoteFact(tea.id)
+      confirmFact(tea.id) // → promoted
+      promoteFact(ships.id) // → provisional
+      const prod = makeProductionSeamDeps(() => tmp)
+      expect(runSeamReconcileNow('t', prod).ok).toBe(true)
+      const memoryDir = join(tmp, '.brain', 'memory')
+      const teaFile = join(memoryDir, `concept-${tea.id}.md`)
+      const shipsFile = join(memoryDir, `concept-${ships.id}.md`)
+      expect(existsSync(teaFile)).toBe(true)
+      expect(existsSync(shipsFile)).toBe(true)
+
+      // The human rewrites the claim line of the PROMOTED fact and deletes the provisional one.
+      writeFileSync(teaFile, readFileSync(teaFile, 'utf-8').split('Operator prefers tea in the afternoon').join('Operator prefers coffee in the afternoon'), 'utf-8')
+      rmSync(shipsFile)
+      expect(runSeamReconcileNow('t2', prod).ok).toBe(true)
+
+      const oldTea = allFacts().find((f) => f.id === tea.id)!
+      expect(oldTea.invalidatedAt).toEqual(expect.any(Number))
+      const newTea = allFacts().find((f) => f.id === oldTea.supersededBy)!
+      expect(newTea.fact).toBe('Operator prefers coffee in the afternoon')
+      expect(newTea.status).toBe('promoted') // a confirmed rule stays confirmed with the new text
+      expect(newTea.adjudicatedBy).toBe('human')
+      expect(newTea.source).toBe('operator')
+      expect(existsSync(join(memoryDir, `concept-${newTea.id}.md`))).toBe(true)
+      expect(existsSync(teaFile)).toBe(false)
+      expect(existsSync(join(tmp, '.brain', '_retired', `concept-${tea.id}.md`))).toBe(true) // the edited bytes are kept
+
+      expect(allFacts().find((f) => f.id === ships.id)!.status).toBe('vetoed')
+      expect(existsSync(shipsFile)).toBe(false) // not re-created
+    } finally {
+      setMaterializeHook(null)
+      __resetOperatorModel()
+      if (prev === undefined) delete process.env.DUIN_SEAM_MATERIALIZE
+      else process.env.DUIN_SEAM_MATERIALIZE = prev
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 })
+    }
+  })
+
+  it('a concept-file change in the vault schedules a reconcile; a note change does not', () => {
+    vi.useFakeTimers()
+    const tmp = mkdtempSync(join(tmpdir(), 'seam-w4w-'))
+    const prev = process.env.DUIN_SEAM_MATERIALIZE
+    try {
+      process.env.DUIN_SEAM_MATERIALIZE = '1'
+      __resetSeamReconcileForTests()
+      const deps: SeamReconcileDeps = { getNotesDir: () => tmp, getPromoted: () => [], getAllFacts: () => [], buildCatalog: () => undefined }
+      startSeamAutoReconcile(deps, { bootDelayMs: 0, debounceMs: 50 })
+      notifyVaultFileEvent({ type: 'change', path: join(tmp, 'notes', 'todo.md'), dir: tmp })
+      vi.advanceTimersByTime(100)
+      expect(seamReconcileStatus().runs).toBe(0)
+      notifyVaultFileEvent({ type: 'unlink', path: join(tmp, '.brain', 'memory', 'concept-x.md'), dir: tmp })
+      vi.advanceTimersByTime(100)
+      expect(seamReconcileStatus().runs).toBe(1)
+      expect(seamReconcileStatus().lastTrigger).toBe('file-unlink')
+      stopSeamAutoReconcile()
+      notifyVaultFileEvent({ type: 'change', path: join(tmp, '.brain', 'memory', 'concept-x.md'), dir: tmp })
+      vi.advanceTimersByTime(100)
+      expect(seamReconcileStatus().runs).toBe(1) // unsubscribed on stop
+    } finally {
+      stopSeamAutoReconcile()
+      vi.useRealTimers()
+      if (prev === undefined) delete process.env.DUIN_SEAM_MATERIALIZE
+      else process.env.DUIN_SEAM_MATERIALIZE = prev
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 })
+    }
   })
 })
