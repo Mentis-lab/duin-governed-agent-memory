@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Quick checks first: the [FAQ](https://github.com/Mentis-lab/DUIN/blob/main/docs/faq.md) covers the SmartScreen and Gatekeeper prompts, offline use and the model download. Questions rather than problems fit better in [Discussions](https://github.com/Mentis-lab/DUIN/discussions).
+        Quick checks first: the [FAQ](https://github.com/Mentis-lab/duin-governed-agent-memory/blob/main/docs/faq.md) covers the SmartScreen and Gatekeeper prompts, offline use and the model download. Questions rather than problems fit better in [Discussions](https://github.com/Mentis-lab/duin-governed-agent-memory/discussions).
   - type: dropdown
     id: install-method
     attributes:

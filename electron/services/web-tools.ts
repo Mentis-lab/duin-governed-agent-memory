@@ -143,7 +143,7 @@ async function fetchPageBytes(url: string): Promise<{ html: string }> {
     // propagate to executeWebOpen's catch as a clean error string.
     const res = await safeFetch(url, {
       headers: {
-        'User-Agent': `DUIN/${buildInfo().version} (+https://github.com/Mentis-lab/DUIN; web_open)`,
+        'User-Agent': `DUIN/${buildInfo().version} (+https://github.com/Mentis-lab/duin-governed-agent-memory; web_open)`,
         Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
       },
       signal: controller.signal

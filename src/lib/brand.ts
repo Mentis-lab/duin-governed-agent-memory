@@ -10,4 +10,4 @@ export const FRAMEWORK_CREDIT = 'Built on Lamprey-Harness'
 // Public product repository. The Help menu's "View on GitHub" / "Report an issue" items
 // render only when this is set (ARCHITECTURE/BRANDING.md #4); leave it empty in a private
 // fork so no repo surfaces to the user.
-export const PRODUCT_REPO_URL: string = 'https://github.com/Mentis-lab/DUIN'
+export const PRODUCT_REPO_URL: string = 'https://github.com/Mentis-lab/duin-governed-agent-memory'

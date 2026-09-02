@@ -567,7 +567,7 @@ class WikipediaAdapter implements WebSearchAdapter {
         // Wikipedia asks API consumers to identify themselves. Generic UA
         // is fine; the policy is about contact info, not browser-spoofing.
         'User-Agent':
-          `DUIN/${buildInfo().version} (+https://github.com/Mentis-lab/DUIN; research-cascade)`
+          `DUIN/${buildInfo().version} (+https://github.com/Mentis-lab/duin-governed-agent-memory; research-cascade)`
       }
     })
     if (!res.ok) {

@@ -5,7 +5,7 @@ executive function: operator-calibrated context and beliefs, plus a shared
 fleet goal state with write leases and operator-gated completion.
 
 ```
-/plugin marketplace add https://github.com/Mentis-lab/DUIN
+/plugin marketplace add https://github.com/Mentis-lab/duin-governed-agent-memory
 /plugin install duin-brain@duin
 ```
 

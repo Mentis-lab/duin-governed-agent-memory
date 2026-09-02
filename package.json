@@ -14,11 +14,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Mentis-lab/DUIN.git"
+    "url": "https://github.com/Mentis-lab/duin-governed-agent-memory.git"
   },
-  "homepage": "https://github.com/Mentis-lab/DUIN",
+  "homepage": "https://github.com/Mentis-lab/duin-governed-agent-memory",
   "bugs": {
-    "url": "https://github.com/Mentis-lab/DUIN/issues"
+    "url": "https://github.com/Mentis-lab/duin-governed-agent-memory/issues"
   },
   "engines": {
     "node": ">=22.12.0"

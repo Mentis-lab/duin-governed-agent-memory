@@ -1,15 +1,17 @@
 # DUIN
 
+**English** · [简体中文](README.zh-CN.md) · [日本語](README.ja.md)
+
 ### Agents that earn your trust.
 
 **Every agent you run writes its own memory, grades its own judgment and asks for its own permissions. DUIN is a harness that makes it earn all three, in files you own.**
 
 DUIN is an open harness for personal agents: long-term memory, a working model of your world, and the rules for what an agent may do, kept as Markdown in a folder you own and governed at every step. Memory is earned: every fact is labelled as something you said or something a model inferred, proven over sessions before it becomes a rule, superseded with its history kept, and never revised by a model once you stated it. Autonomy is earned too: the agent asks before it acts outside your notes, background loops stay off until you turn them on, and any other agent, Claude Code included, mounts the same memory over MCP with exactly the grants you approve. Local, MIT, no account.
 
-[Download](https://github.com/Mentis-lab/DUIN/releases/latest) · [The harness](#the-harness) · [With Claude Code](#with-the-agents-you-already-run) · [Getting started](docs/getting-started.md) · [Architecture](docs/architecture.md) · [FAQ](docs/faq.md) · [Discussions](https://github.com/Mentis-lab/DUIN/discussions) · [Security](SECURITY.md)
+[Download](https://github.com/Mentis-lab/duin-governed-agent-memory/releases/latest) · [The harness](#the-harness) · [With Claude Code](#with-the-agents-you-already-run) · [Getting started](docs/getting-started.md) · [Architecture](docs/architecture.md) · [FAQ](docs/faq.md) · [Discussions](https://github.com/Mentis-lab/duin-governed-agent-memory/discussions) · [Security](SECURITY.md)
 
-[![CI](https://github.com/Mentis-lab/DUIN/actions/workflows/ci.yml/badge.svg)](https://github.com/Mentis-lab/DUIN/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/Mentis-lab/DUIN)](https://github.com/Mentis-lab/DUIN/releases/latest)
+[![CI](https://github.com/Mentis-lab/duin-governed-agent-memory/actions/workflows/ci.yml/badge.svg)](https://github.com/Mentis-lab/duin-governed-agent-memory/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/Mentis-lab/duin-governed-agent-memory)](https://github.com/Mentis-lab/duin-governed-agent-memory/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 <p align="center">
@@ -17,7 +19,7 @@ DUIN is an open harness for personal agents: long-term memory, a working model o
 </p>
 <p align="center"><sub>The author's own vault, about 1,200 notes: open a note from the Explorer, ask in its context, read the answer with the note it cites. Answered by DeepSeek V4 Flash; the citation comes from local search.</sub></p>
 
-**0.1, first public release.** The rough edges and the plan for each: [#10](https://github.com/Mentis-lab/DUIN/issues/10). Next: signed installers with automatic updates, a custom Ollama endpoint, a per-turn spend ceiling.
+**0.1, first public release.** The rough edges and the plan for each: [#10](https://github.com/Mentis-lab/duin-governed-agent-memory/issues/10). Next: signed installers with automatic updates, a custom Ollama endpoint, a per-turn spend ceiling.
 
 ---
 
@@ -77,9 +79,9 @@ Details, from the code: [architecture](docs/architecture.md).
 
 | Windows | macOS | Linux |
 |---|---|---|
-| [DUIN-x64.exe](https://github.com/Mentis-lab/DUIN/releases/latest/download/DUIN-x64.exe) | [DUIN-arm64.dmg](https://github.com/Mentis-lab/DUIN/releases/latest/download/DUIN-arm64.dmg) | [DUIN-x86_64.AppImage](https://github.com/Mentis-lab/DUIN/releases/latest/download/DUIN-x86_64.AppImage) |
+| [DUIN-x64.exe](https://github.com/Mentis-lab/duin-governed-agent-memory/releases/latest/download/DUIN-x64.exe) | [DUIN-arm64.dmg](https://github.com/Mentis-lab/duin-governed-agent-memory/releases/latest/download/DUIN-arm64.dmg) | [DUIN-x86_64.AppImage](https://github.com/Mentis-lab/duin-governed-agent-memory/releases/latest/download/DUIN-x86_64.AppImage) |
 
-Also [DUIN-amd64.deb](https://github.com/Mentis-lab/DUIN/releases/latest/download/DUIN-amd64.deb) and [DUIN-arm64.zip](https://github.com/Mentis-lab/DUIN/releases/latest/download/DUIN-arm64.zip).
+Also [DUIN-amd64.deb](https://github.com/Mentis-lab/duin-governed-agent-memory/releases/latest/download/DUIN-amd64.deb) and [DUIN-arm64.zip](https://github.com/Mentis-lab/duin-governed-agent-memory/releases/latest/download/DUIN-arm64.zip).
 
 Installers are large because the two on-device encoders (search and reranking, about 412 MB) ship inside them; the rest is Electron and the app. Search and grounded answers work offline from the first launch. Nothing is sent anywhere until you connect a model. No GPU is needed.
 
@@ -118,7 +120,7 @@ What lands on disk at each step: [docs/getting-started.md](docs/getting-started.
 
 Claude Code and Codex are stronger agents, and each keeps a memory file of its own. DUIN is the memory they can share, and the one that is governed.
 
-- **Claude Code.** Run `/plugin marketplace add https://github.com/Mentis-lab/DUIN` and then `/plugin install duin-brain@duin`. With DUIN running, the session can read your context and beliefs (`duin_brief`, `duin_retrieve`, `duin_beliefs`, `duin_context`) and, only if you grant it in Settings → Agents, teach corrections or write memory. Every grant is approved by you in the app. The pairing flow, planes and tools: [plugins/duin-brain/README.md](plugins/duin-brain/README.md). Install verified from this repository on 2026-09-02 with a clean Claude Code configuration.
+- **Claude Code.** Run `/plugin marketplace add https://github.com/Mentis-lab/duin-governed-agent-memory` and then `/plugin install duin-brain@duin`. With DUIN running, the session can read your context and beliefs (`duin_brief`, `duin_retrieve`, `duin_beliefs`, `duin_context`) and, only if you grant it in Settings → Agents, teach corrections or write memory. Every grant is approved by you in the app. The pairing flow, planes and tools: [plugins/duin-brain/README.md](plugins/duin-brain/README.md). Install verified from this repository on 2026-09-02 with a clean Claude Code configuration.
 - **Any other MCP client** that speaks HTTP with a bearer header, Codex included where its client allows it, mounts the same endpoint: `http://127.0.0.1:8799/exec/mcp`. Until an agent is paired, the endpoint offers only the two pairing tools.
 - **The other direction.** DUIN's own chat can be driven by an external brain over AG-UI (`DUIN_BRAIN_URL`), and the agent can hand a task to another harness as a governed child (`delegate_task`), with DUIN deciding every tool call.
 
@@ -148,7 +150,7 @@ Claude Code and Codex are stronger agents, and each keeps a memory file of its o
 - Ollama is fixed to `127.0.0.1:11434`; there is no custom endpoint yet.
 - The conversation database is not encrypted. Use disk encryption.
 
-The full list, with what is planned for each: [#10](https://github.com/Mentis-lab/DUIN/issues/10).
+The full list, with what is planned for each: [#10](https://github.com/Mentis-lab/duin-governed-agent-memory/issues/10).
 
 ## Runs on
 
@@ -168,8 +170,8 @@ Windows x64, macOS on Apple silicon, and Linux x64 (AppImage or deb). No GPU is 
 Node.js 22.12 or newer and git. On Windows, clone into a short path or enable long paths.
 
 ```bash
-git clone https://github.com/Mentis-lab/DUIN
-cd DUIN
+git clone https://github.com/Mentis-lab/duin-governed-agent-memory
+cd duin-governed-agent-memory
 npm run setup        # npm ci --ignore-scripts + the Electron binary; no Python or C++ needed
 npm run dev          # launch the app in development
 npm run typecheck && npm run lint && npm test
@@ -181,7 +183,7 @@ Contributor setup, running a second DUIN beside an installed one, and the checks
 ## Documentation and community
 
 - [Architecture](docs/architecture.md): the memory model first, then the three processes, the brain on `127.0.0.1:8799`, storage, and the AG-UI contract for connecting an external brain (default endpoint `http://127.0.0.1:8799/agui`, `DUIN_BRAIN_URL` points DUIN at another AG-UI server) · [Getting started](docs/getting-started.md) · [Skills](docs/skills.md) · [FAQ](docs/faq.md) · [What DUIN is](docs/constitution.md) · [Glossary](docs/glossary.md) · [Security policy](SECURITY.md) · [Changelog](CHANGELOG.md) · [Releasing](docs/RELEASING.md).
-- Questions: [Discussions → Q&A](https://github.com/Mentis-lab/DUIN/discussions/categories/q-a). Ideas: [Discussions → Ideas](https://github.com/Mentis-lab/DUIN/discussions/categories/ideas). Bugs: [Issues](https://github.com/Mentis-lab/DUIN/issues/new/choose). Security: [private report](https://github.com/Mentis-lab/DUIN/security/advisories/new).
+- Questions: [Discussions → Q&A](https://github.com/Mentis-lab/duin-governed-agent-memory/discussions/categories/q-a). Ideas: [Discussions → Ideas](https://github.com/Mentis-lab/duin-governed-agent-memory/discussions/categories/ideas). Bugs: [Issues](https://github.com/Mentis-lab/duin-governed-agent-memory/issues/new/choose). Security: [private report](https://github.com/Mentis-lab/duin-governed-agent-memory/security/advisories/new).
 - There is no Discord yet: one maintainer, and Discussions stay searchable. If DUIN is useful to you, a star helps others find it.
 
 ## Contributing

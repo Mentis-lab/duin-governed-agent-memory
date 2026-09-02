@@ -31,8 +31,8 @@ to DUIN's brain, graph or governance, consider contributing it upstream too.
 ## Setup
 
 ```bash
-git clone https://github.com/Mentis-lab/DUIN
-cd DUIN
+git clone https://github.com/Mentis-lab/duin-governed-agent-memory
+cd duin-governed-agent-memory
 npm run setup
 npm run dev              # electron-vite dev: launches Electron against the source tree
 ```
@@ -159,7 +159,7 @@ problem, why the existing surfaces (skills, MCP, settings) are not enough, and a
 would accept.
 
 Security issues go through
-[private vulnerability reporting](https://github.com/Mentis-lab/DUIN/security/advisories/new).
+[private vulnerability reporting](https://github.com/Mentis-lab/duin-governed-agent-memory/security/advisories/new).
 See [SECURITY.md](SECURITY.md).
 
 ## Troubleshooting

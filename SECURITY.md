@@ -3,7 +3,7 @@
 ## Reporting a vulnerability
 
 Report security issues privately through GitHub's
-[private vulnerability reporting](https://github.com/Mentis-lab/DUIN/security/advisories/new)
+[private vulnerability reporting](https://github.com/Mentis-lab/duin-governed-agent-memory/security/advisories/new)
 (the **Security** tab of the repository → **Report a vulnerability**). If that is unavailable
 to you, mention `@Mentis-lab` in a minimal public issue that does not contain the details and a
 maintainer will open a private channel. There is no security email address yet.

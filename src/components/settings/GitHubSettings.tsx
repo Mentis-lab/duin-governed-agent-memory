@@ -117,11 +117,11 @@ export function GitHubSettings(): React.ReactElement {
         <div className="flex items-baseline justify-between gap-3">
           <h3 className="font-mono text-[16px] font-semibold text-[var(--text-primary)]">{t('GitHub')}</h3>
           <a
-            href="https://github.com/Mentis-lab/DUIN/blob/main/docs/github-setup.md"
+            href="https://github.com/Mentis-lab/duin-governed-agent-memory/blob/main/docs/github-setup.md"
             onClick={(e) => {
               e.preventDefault()
               void githubClient
-                .openInBrowser('https://github.com/Mentis-lab/DUIN/blob/main/docs/github-setup.md')
+                .openInBrowser('https://github.com/Mentis-lab/duin-governed-agent-memory/blob/main/docs/github-setup.md')
                 .catch(() => {
                   /* gating handles the toast */
                 })

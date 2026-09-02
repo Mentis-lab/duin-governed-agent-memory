@@ -350,10 +350,17 @@ linux:
 # are published TO. CI publishes the same artifacts to both — the private repo for
 # provenance, duin-releases for distribution and for this feed.
 #
-# 2026-09-01 (open-source release): the public repo Mentis-lab/DUIN is now both where the
-# source lives AND where releases are published (build.yml attaches assets with the
-# workflow's own GITHUB_TOKEN), so the two rules above agree on one owner/repo.
+# 2026-09-01 (open-source release): the public repo is now both where the source lives AND
+# where releases are published (build.yml attaches assets with the workflow's own
+# GITHUB_TOKEN), so the two rules above agree on one owner/repo.
+#
+# 2026-09-02: that repo was renamed DUIN -> duin-governed-agent-memory. The v0.1.0 installers
+# already in the wild have the OLD owner/repo compiled in and reach this feed only through
+# GitHub's rename redirect (verified end-to-end against the live feed before the change).
+# That redirect dies the moment a repo named `DUIN` exists under Mentis-lab again, and every
+# shipped install would then resolve a feed that is not DUIN's - the same class of failure as
+# the 2026-07-25 entry above. Never re-use the name `DUIN` in this org.
 publish:
   provider: github
   owner: Mentis-lab
-  repo: DUIN
+  repo: duin-governed-agent-memory

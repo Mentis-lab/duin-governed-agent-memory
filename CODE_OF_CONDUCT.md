@@ -60,7 +60,7 @@ representative at an online or offline event.
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported to the community leaders responsible for enforcement: the maintainers,
-via a [private security advisory](https://github.com/Mentis-lab/DUIN/security/advisories/new)
+via a [private security advisory](https://github.com/Mentis-lab/duin-governed-agent-memory/security/advisories/new)
 on the repository or by contacting GitHub `@Mentis-lab`.
 All complaints will be reviewed and investigated promptly and fairly.
 

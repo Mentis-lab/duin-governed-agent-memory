@@ -106,7 +106,7 @@ moved in-process, and the agent, graph, memory and governance layers were built 
 - **macOS**: adapted interface, Full Disk Access grantable, ad-hoc signed builds.
 - **Diagnostics**: a doctor check that reads brain health, stalls, backend health, capability
   gaps, provider keys and build provenance together and answers pass/warn/fail.
-- **Repository**: public home at `Mentis-lab/DUIN`; downloads and auto-update from GitHub
+- **Repository**: public home at `Mentis-lab/duin-governed-agent-memory`; downloads and auto-update from GitHub
   Releases; CI on Ubuntu and Windows; CODE_OF_CONDUCT, issue and PR templates, Dependabot,
   `.editorconfig`; `docs/` rewritten (getting started, architecture, FAQ, releasing, skills,
   legacy names).
@@ -241,5 +241,5 @@ a standalone product.
 - Rebranded from "Lamprey" to **Brainframe**, with the product name centralized in
   `electron/brand.ts` and `src/lib/brand.ts`.
 
-[Unreleased]: https://github.com/Mentis-lab/DUIN/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/Mentis-lab/DUIN/releases/tag/v0.1.0
+[Unreleased]: https://github.com/Mentis-lab/duin-governed-agent-memory/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/Mentis-lab/duin-governed-agent-memory/releases/tag/v0.1.0

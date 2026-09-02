@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         Thanks for the report. Security issues go through
-        [private vulnerability reporting](https://github.com/Mentis-lab/DUIN/security/advisories/new),
+        [private vulnerability reporting](https://github.com/Mentis-lab/duin-governed-agent-memory/security/advisories/new),
         not this form.
   - type: input
     id: version
