@@ -6,7 +6,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { join } from 'node:path'
+import { join, resolve, isAbsolute } from 'node:path'
 import { parseNightlyArgs, nightlyStamp, nightlyRunDir, buildRunArgs, historyLine, RUN_SCRIPT } from './live-eval-nightly.mjs'
 
 const SCRIPT = fileURLToPath(new URL('./live-eval-nightly.mjs', import.meta.url))
@@ -22,7 +22,13 @@ test('parseNightlyArgs: flags, repeated --probe, and the failure modes', () => {
 test('nightlyStamp / nightlyRunDir: local-time, minute resolution, under <root>/nightly', () => {
   const d = new Date(2026, 8, 3, 2, 15, 59) // local 2026-09-03 02:15:59
   assert.equal(nightlyStamp(d), '2026-09-03T0215')
-  assert.equal(nightlyRunDir('D:\\x\\runs', d), join('D:\\x\\runs', 'nightly', '2026-09-03T0215'))
+  // The root is deliberately RELATIVE. nightlyRunDir resolves it, and a Windows absolute path
+  // is not absolute on Linux — path.resolve there prefixes the CWD — so hard-coding a 'D:\'
+  // root passed on the author's machine and failed on ubuntu CI on every run since this file
+  // landed. Assert the contract instead: absolute, and <root>/nightly/<stamp>.
+  const dir = nightlyRunDir('runs', d)
+  assert.equal(isAbsolute(dir), true)
+  assert.equal(dir, join(resolve('runs'), 'nightly', '2026-09-03T0215'))
 })
 
 test('buildRunArgs: run.mjs with --out, optional --exe and a joined --probe', () => {
