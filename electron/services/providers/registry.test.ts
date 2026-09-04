@@ -514,6 +514,7 @@ describe('reasoning token exhaustion guards (Fix A/B)', () => {
     // deepseek-v4 and kimi-k3 — same finishReason-'length' rationale as the
     // 2026-08-03 GLM-5.2 note this replaces.
     const EXPECTED_CAPPED: Record<string, number> = {
+      'claude-fable-5-1': 16_384,
       'claude-fable-5': 16_384,
       'claude-opus-5': 16_384,
       'claude-sonnet-5': 16_384,
@@ -539,6 +540,7 @@ describe('reasoning token exhaustion guards (Fix A/B)', () => {
       'qwen3-coder-next': 16_384,
       'qwen3-coder-plus': 16_384,
       'gemini-3.1-pro-preview': 16_384,
+      'gemini-3.8-flash': 16_384,
       'gemini-3.7-flash': 16_384,
       'gemini-3.5-flash-lite': 16_384,
       'gemini-2.5-pro': 16_384,

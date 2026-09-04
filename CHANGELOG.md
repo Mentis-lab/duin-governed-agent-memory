@@ -17,6 +17,11 @@ All notable changes to **DUIN** are documented here. The project follows
 ## [Unreleased]
 
 ### Added
+- **Claude Fable 5.1 and Gemini 3.8 Flash are in the model picker.** Fable 5.1 is Anthropic's
+  most capable widely released model (1M context, 128K output); Gemini 3.8 Flash is Google's newest
+  Flash, aimed at long-horizon agent work (1,048,576 in / 65,536 out, tools + vision). Both ids were
+  read off the vendor docs on the day they were added, not recalled. Their predecessors stay in the
+  catalog and are relabelled as the prior generation.
 - **Every derived entity has a card.** Open a person, project, topic or any other extracted node
   in the Explorer and see what the brain knows about it, joined from what it already held: the
   facts lifted from your notes (current first, superseded ones marked), the notes it appears in

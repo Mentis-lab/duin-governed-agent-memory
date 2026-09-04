@@ -526,9 +526,22 @@ export const MODEL_CATALOG: ModelDescriptor[] = [
   // ── Anthropic (Claude) — 2026-08-21 catalog redo ──
   // First-class provider via the official OpenAI-compat layer (see the block comment
   // above the PROVIDERS table). Model ids verified against the claude-api reference
-  // 2026-08-21; ids are complete as-is — NEVER append date suffixes. No effort flags:
+  // 2026-08-21, and claude-fable-5-1 on 2026-09-04; ids are complete as-is — NEVER append date suffixes. No effort flags:
   // the compat layer ignores reasoning_effort (Claude 5 thinks adaptively by default),
   // so offering an effort toggle here would be a control wired to nothing.
+  {
+    id: 'claude-fable-5-1',
+    name: 'Claude Fable 5.1',
+    provider: 'anthropic',
+    apiModelId: 'claude-fable-5-1',
+    contextWindow: 1_000_000,
+    supportsTools: true,
+    supportsVision: true,
+    defaultMaxTokens: 16_384,
+    tier: 'reasoner',
+    description:
+      'Anthropic\'s most capable widely released model — deepest reasoning and long-horizon agentic work. 1M context, 128K max output. Requires an org on 30-day data retention.'
+  },
   {
     id: 'claude-fable-5',
     name: 'Claude Fable 5',
@@ -540,7 +553,7 @@ export const MODEL_CATALOG: ModelDescriptor[] = [
     defaultMaxTokens: 16_384,
     tier: 'reasoner',
     description:
-      'Anthropic\'s most capable generally available model — deepest reasoning and long-horizon agentic work. 1M context, 128K max output. Requires an org on 30-day data retention.'
+      'Prior Fable generation, still served at the same price. 1M context, 128K max output. Requires an org on 30-day data retention.'
   },
   {
     id: 'claude-opus-5',
@@ -954,7 +967,9 @@ export const MODEL_CATALOG: ModelDescriptor[] = [
 
   // ── Google (Gemini + Gemma) — Gemini added 2026-08-21 on operator request ──
   // Same AI Studio OpenAI-compat endpoint and key as the Gemma entries. Lineup
-  // verified against ai.google.dev/gemini-api/docs/models 2026-08-21: the
+  // verified against ai.google.dev/gemini-api/docs/models 2026-08-21, and
+  // gemini-3.8-flash against its own model page on 2026-09-04 (1,048,576 in /
+  // 65,536 out, function calling + image input): the
   // Gemini 3 family is current (1M context, 64K output cap); 3.1 Pro's id
   // still carries the -preview suffix upstream; 2.5 Pro is the proven
   // prior-gen fallback. Every entry thinks by default → same 16_384 output
@@ -973,6 +988,19 @@ export const MODEL_CATALOG: ModelDescriptor[] = [
       'Google flagship — deepest Gemini reasoning, tools + vision, 1M context. The upstream id is still preview-suffixed; swap to the stable id when Google promotes it.'
   },
   {
+    id: 'gemini-3.8-flash',
+    name: 'Gemini 3.8 Flash',
+    provider: 'google',
+    apiModelId: 'gemini-3.8-flash',
+    contextWindow: 1_048_576,
+    supportsTools: true,
+    supportsVision: true,
+    defaultMaxTokens: 16_384,
+    tier: 'flash',
+    description:
+      'Newest Gemini Flash — Google\'s most intelligent Flash, aimed at long-horizon software work and autonomous agents. Tools + vision, 1M context, 64K max output.'
+  },
+  {
     id: 'gemini-3.7-flash',
     name: 'Gemini 3.7 Flash',
     provider: 'google',
@@ -982,7 +1010,7 @@ export const MODEL_CATALOG: ModelDescriptor[] = [
     supportsVision: true,
     defaultMaxTokens: 16_384,
     tier: 'flash',
-    description: 'Newest Gemini Flash (launched 2026-08-13) — fast, balanced, tools + vision, 1M context.'
+    description: 'Prior Gemini Flash (launched 2026-08-13) — fast, balanced, tools + vision, 1M context.'
   },
   {
     id: 'gemini-3.5-flash-lite',

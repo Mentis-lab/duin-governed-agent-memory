@@ -48,7 +48,7 @@ describe('ProviderId union parity (main ↔ renderer)', () => {
     // gpt-4o/o3/gpt-5.1-era, kimi-k2.5/moonshot-v1, glm-5.2, qwen3.5-era and
     // Gemma-4-via-OpenRouter pins were retired into RETIRED_MODEL_MAP.
     expect(Object.keys(PROVIDERS)).toHaveLength(15)
-    expect(MODEL_CATALOG).toHaveLength(40) // +4 Gemini (operator request, same 2026-08-21 verification pass); +1 glm-5.3-flash (2026-08-26 operator order — it replaced the ox-alpha pin, which was this model's stealth preview); +1 qwen3.8-flash (2026-08-27 operator order, released 2026-08-26)
+    expect(MODEL_CATALOG).toHaveLength(42) // +4 Gemini (operator request, same 2026-08-21 verification pass); +1 glm-5.3-flash (2026-08-26 operator order — it replaced the ox-alpha pin, which was this model's stealth preview); +1 qwen3.8-flash (2026-08-27 operator order, released 2026-08-26); +2 on 2026-09-04 (operator order): claude-fable-5-1 and gemini-3.8-flash, each verified against its vendor doc that day
   })
 
   it('ships Claude through the FIRST-CLASS anthropic provider, not OpenRouter', () => {
