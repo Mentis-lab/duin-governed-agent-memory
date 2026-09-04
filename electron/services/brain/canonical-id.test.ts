@@ -65,8 +65,8 @@ describe('normalizeStoreId — canonical DUIN-native id normalization', () => {
   })
 
   it('keeps card ids (globally-unique C-prefix) as identity', () => {
-    expect(normalizeStoreId('C260618-fashion-d2c-is-duin-jp-wedge-into-5th', 'card')).toBe(
-      'C260618-fashion-d2c-is-duin-jp-wedge-into-5th'
+    expect(normalizeStoreId('C260618-a-card-slug', 'card')).toBe(
+      'C260618-a-card-slug'
     )
   })
 

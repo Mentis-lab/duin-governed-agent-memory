@@ -74,15 +74,15 @@ describe('world-update-act — actWorldUpdate', () => {
     mkdirSync(join(vault, '02 Cards', 'instincts'), { recursive: true })
     seedDeltas(sd, [{ id: 'b', status: 'proposed', track: '北澜', type: 'belief', summary: 'TQ thinks TapTap timing is the key lever', confidence: 0.7 }])
     const out = await actWorldUpdate(vault, 'b', 'promote', {
-      generate: async () => '{"slug":"taptap timing lever","trigger":"when scheduling launch","action":"lock TapTap window first"}',
+      generate: async () => '{"slug":"release timing lever","trigger":"when scheduling launch","action":"lock TapTap window first"}',
       today: () => NOW,
       reproject: (): void => {}
     })
     expect(out.promoted?.ok).toBe(true)
-    expect(out.promoted?.id).toBe('I260703-taptap-timing-lever')
+    expect(out.promoted?.id).toBe('I260703-release-timing-lever')
     const rows = readFileSync(join(sd, 'world-state-deltas.jsonl'), 'utf-8').trim().split('\n').map((l) => JSON.parse(l))
-    expect(rows[0].promoted_to).toBe('I260703-taptap-timing-lever')
-    const card = readFileSync(join(vault, '02 Cards', 'instincts', 'I260703-taptap-timing-lever.md'), 'utf-8')
+    expect(rows[0].promoted_to).toBe('I260703-release-timing-lever')
+    const card = readFileSync(join(vault, '02 Cards', 'instincts', 'I260703-release-timing-lever.md'), 'utf-8')
     expect(card).toContain('type: instinct')
     expect(card).toContain('trigger: "when scheduling launch"')
     expect(card).toContain('*Promoted from a confirmed World-State belief (北澜, 2026-07-03).*')

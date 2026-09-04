@@ -2,8 +2,8 @@
 // tool-biased chat loop mishandles. Asked to "write a complete structured document", the
 // write_file-biased model (its tool description commands "ACTUALLY save… never merely
 // describe") treats it as a file-authoring task, churns through search-tool rounds emitting
-// only a narration preamble, and never composes the document (see 02 Cards
-// C260709-duin-large-doc-generation-churns-html-node-gap). Such a request wants PROSE in the
+// only a narration preamble, and never composes the document (recorded in the
+// operator's own card store, not cited here). Such a request wants PROSE in the
 // chat, not a saved file — so the server routes round 0 tools-off (prose-first). The retrieval
 // step runs BEFORE the tool loop and injects vault context, so the model composes from
 // grounding in one pass instead of churning.
