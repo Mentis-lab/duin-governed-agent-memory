@@ -1,16 +1,29 @@
-import { t } from '@/lib/i18n'
-import { useEffect, useState } from 'react'
+import { t, tf } from '@/lib/i18n'
+import { useCallback, useEffect, useId, useState } from 'react'
 import { Button } from '@/components/ui/Button'
+import { Select } from '@/components/ui/Select'
+import { PanelState } from '@/components/ui/PanelState'
+import {
+  ProviderKeyCard,
+  SettingsLink,
+  SettingsLoadError,
+  SettingsLoading,
+  SettingsPage,
+  SettingsRow,
+  SettingsSection,
+  useSavedFlash
+} from '@/components/ui/settings'
+import { flashWhenSaved } from '@/components/ui/settings/useSavedFlash'
+import { invoke, query } from '@/lib/ipc-client'
+import { describeError } from '@/lib/result'
+import { panelFromResult, panelLoading, type PanelStatus } from '@/lib/panel-state'
 import { toast } from '@/stores/toast-store'
 import { ensurePlaintextConsentIfNeeded } from '@/lib/keychain-consent'
 
 // Image Generation provider settings panel.
 //
-// Lets the user pick an image-gen provider (OpenAI today, Stability stub
-// reserved), paste an API key (encrypted via safeStorage in the main
-// process), choose a model + default canvas size, and run a small canary
-// generation to confirm everything is wired up. The component never sees
-// the stored key — `imageGen:getProvider` returns only `hasKey: boolean`.
+// Provider, model and canvas size auto-apply; the key is saved from its own card. The
+// renderer never sees the stored key — `imageGen:getProvider` returns only `hasKey`.
 
 type ImageGenProviderId = 'openai' | 'minimax' | 'seedream' | 'stability'
 
@@ -45,12 +58,12 @@ interface ProviderOption {
 // Keep the model lists in step with PROVIDER_MODELS in
 // electron/services/image-gen-providers.ts — the main process drops any model
 // it does not recognise, so a name only listed here silently falls back.
+// Hints are translated where rendered (module scope would freeze the language).
 const PROVIDER_OPTIONS: ProviderOption[] = [
   {
     id: 'openai',
     label: 'OpenAI Images',
-    hint:
-      'Uses OpenAI\'s Images API: gpt-image-2 for generate/edit, dall-e-2 for variations.',
+    hint: 'Uses OpenAI’s image models: gpt-image-2 to generate and edit, dall-e-2 for variations.',
     docsUrl: 'https://platform.openai.com/account/api-keys',
     models: [
       { value: 'gpt-image-2', label: 'gpt-image-2 (default)' },
@@ -63,8 +76,7 @@ const PROVIDER_OPTIONS: ProviderOption[] = [
   {
     id: 'minimax',
     label: 'MiniMax',
-    hint:
-      'Text-to-image only. MiniMax has no masked-edit or variations endpoint, so image_edit and image_variation stay on OpenAI.',
+    hint: 'Text-to-image only. MiniMax cannot edit or vary an existing image, so editing and variations stay on OpenAI.',
     docsUrl: 'https://platform.minimax.io/user-center/basic-information/interface-key',
     models: [{ value: 'image-01', label: 'image-01 (default)' }],
     available: true
@@ -72,8 +84,7 @@ const PROVIDER_OPTIONS: ProviderOption[] = [
   {
     id: 'seedream',
     label: 'Seedream (Volcengine Ark)',
-    hint:
-      'ByteDance Seedream via Ark, China region. Text-to-image only here: Seedream edits from a public image URL, which DUIN cannot produce from a local file, so image_edit and image_variation stay on OpenAI.',
+    hint: 'ByteDance Seedream via Ark, China region. Text-to-image only here, so editing and variations stay on OpenAI.',
     docsUrl: 'https://console.volcengine.com/ark',
     models: [
       { value: 'doubao-seedream-5-0-260128', label: 'Seedream 5.0 (default)' },
@@ -85,7 +96,7 @@ const PROVIDER_OPTIONS: ProviderOption[] = [
   {
     id: 'stability',
     label: 'Stability AI',
-    hint: 'Reserved. Provider stub returns "not yet implemented" today.',
+    hint: 'Not available yet.',
     docsUrl: 'https://platform.stability.ai/account/keys',
     models: [{ value: 'stable-diffusion-xl', label: 'stable-diffusion-xl' }],
     available: false
@@ -103,340 +114,240 @@ function findProviderOption(id: ImageGenProviderId): ProviderOption {
   return PROVIDER_OPTIONS.find((p) => p.id === id) ?? PROVIDER_OPTIONS[0]
 }
 
-// Bridge into the preload `imageGen:*` channels. Typed locally so this file
-// compiles before the preload bridge is wired up (the preload edit is owned
-// by the session orchestrator). Once preload.ts exposes `window.api.imageGen`
-// with the same shape, this cast becomes a no-op.
-type IpcEnvelope<T> = { success: true; data: T } | { success: false; error: string }
-interface ImageGenBridge {
-  setProvider: (
-    provider: ImageGenProviderId,
-    opts?: { apiKey?: string; model?: string; size?: string }
-  ) => Promise<IpcEnvelope<ProviderSnapshot>>
-  getProvider: () => Promise<IpcEnvelope<ProviderSnapshot>>
-  test: () => Promise<IpcEnvelope<TestResult>>
-}
-
-function imageGenBridge(): ImageGenBridge | null {
-  const api = (window as unknown as { api?: { imageGen?: ImageGenBridge } }).api
-  return api?.imageGen ?? null
-}
-
 export function ImageGenSettings() {
-  const [snapshot, setSnapshot] = useState<ProviderSnapshot | null>(null)
-  const [keyDraft, setKeyDraft] = useState('')
-  const [showKey, setShowKey] = useState(false)
-  const [model, setModel] = useState('')
-  const [size, setSize] = useState('1024x1024')
+  const [snapshot, setSnapshot] = useState<PanelStatus<ProviderSnapshot>>(panelLoading())
   const [busy, setBusy] = useState(false)
   const [testResult, setTestResult] = useState<TestResult | null>(null)
+  const providerSelectId = useId()
+  const modelSelectId = useId()
+  const sizeSelectId = useId()
+  const providerFlash = useSavedFlash()
+  const modelFlash = useSavedFlash()
+  const sizeFlash = useSavedFlash()
 
-  const bridge = imageGenBridge()
-  const apiAvailable = bridge !== null
+  const refresh = useCallback(async () => {
+    const r = await query<ProviderSnapshot>('image generation settings', () => window.api.imageGen.getProvider())
+    setSnapshot(panelFromResult(r))
+  }, [])
 
-  const refresh = async () => {
-    if (!bridge) return
-    const res = await bridge.getProvider()
-    if (res.success) {
-      const data = res.data
-      setSnapshot(data)
-      // Fall back to the SELECTED provider's first model, not a fixed OpenAI
-      // name — otherwise a MiniMax user with no saved model sees 'gpt-image-1'
-      // in a picker that does not offer it.
-      setModel((m) => m || data.model || findProviderOption(data.provider).models[0]?.value || '')
-      setSize((s) => s || data.size || '1024x1024')
+  useEffect(() => {
+    setSnapshot(panelLoading())
+    void refresh()
+  }, [refresh])
+
+  /** One write for everything: provider + model + size, optionally with a key ('' deletes). */
+  const write = async (
+    provider: ImageGenProviderId,
+    opts: { apiKey?: string; model?: string; size?: string },
+    failure: string
+  ): Promise<boolean> => {
+    setBusy(true)
+    setTestResult(null)
+    try {
+      const next = await invoke<ProviderSnapshot>('save image generation settings', () =>
+        window.api.imageGen.setProvider(provider, opts)
+      )
+      setSnapshot(panelFromResult({ ok: true, data: next }))
+      return true
+    } catch (e) {
+      toast.error(describeError(e, failure))
+      return false
+    } finally {
+      setBusy(false)
     }
   }
 
-  useEffect(() => {
-    void refresh()
-  }, [])
-
-  if (!apiAvailable) {
-    return (
-      <div className="space-y-3">
-        <h3 className="font-mono text-[16px] font-semibold text-[var(--text-primary)]">
-          {t('Image Generation')}
-        </h3>
-        <p className="rounded border border-[var(--panel-border)] bg-[var(--bg-primary)] p-3 text-[12px] text-[var(--text-muted)]">
-          Image generation settings are unavailable in this build. Update the
-          preload bridge (`window.api.imageGen.*`) to expose this surface.
-        </p>
-      </div>
+  const changeProvider = (current: ProviderSnapshot, next: ImageGenProviderId): Promise<boolean> => {
+    const opt = findProviderOption(next)
+    return write(
+      next,
+      { model: opt.models[0]?.value, size: current.size || '1024x1024' },
+      t('Could not switch the image provider')
     )
   }
 
-  const currentProvider: ImageGenProviderId = snapshot?.provider ?? 'openai'
-  const option = findProviderOption(currentProvider)
+  const changeModel = (current: ProviderSnapshot, model: string): Promise<boolean> =>
+    write(current.provider, { model, size: current.size || '1024x1024' }, t('Could not save the model'))
 
-  const handleProviderChange = async (next: ImageGenProviderId) => {
-    if (!bridge) return
-    setBusy(true)
-    setTestResult(null)
-    try {
-      const opt = findProviderOption(next)
-      const opts: { model?: string; size?: string } = {
-        size: size || '1024x1024',
-        model: opt.models[0]?.value
-      }
-      const res = await bridge.setProvider(next, opts)
-      if (!res.success) {
-        toast.error(`Failed to switch image provider: ${res.error}`)
-        return
-      }
-      setModel(opt.models[0]?.value ?? '')
-      await refresh()
-    } finally {
-      setBusy(false)
-    }
-  }
+  const changeSize = (current: ProviderSnapshot, size: string): Promise<boolean> =>
+    write(current.provider, { model: current.model, size }, t('Could not save the canvas size'))
 
-  const handleSaveKey = async () => {
-    if (!bridge) return
-    const trimmed = keyDraft.trim()
-    if (!trimmed) return
-    // SEC-10: bridge.setProvider with an apiKey persists to the keychain.
+  const saveKey = async (current: ProviderSnapshot, key: string): Promise<boolean> => {
+    // SEC-10: the key persists to the keychain; gate on the shared plaintext-consent prompt.
     const consent = await ensurePlaintextConsentIfNeeded()
-    if (!consent) return
-    setBusy(true)
-    setTestResult(null)
-    try {
-      const res = await bridge.setProvider(currentProvider, {
-        apiKey: trimmed,
-        model: model || option.models[0]?.value,
-        size: size || '1024x1024'
-      })
-      if (!res.success) {
-        toast.error(`Failed to save key: ${res.error}`)
-        return
-      }
-      toast.success(`${option.label} key saved`)
-      setKeyDraft('')
-      await refresh()
-    } finally {
-      setBusy(false)
-    }
+    if (!consent) return false
+    const option = findProviderOption(current.provider)
+    const ok = await write(
+      current.provider,
+      { apiKey: key, model: current.model || option.models[0]?.value, size: current.size || '1024x1024' },
+      tf('Could not save the {name} key', { name: option.label })
+    )
+    if (ok) toast.success(tf('{name} key saved', { name: option.label }))
+    return ok
   }
 
-  const handleDeleteKey = async () => {
-    if (!bridge) return
-    if (!confirm(`Delete the stored ${option.label} key?`)) return
-    setBusy(true)
-    setTestResult(null)
-    try {
-      const res = await bridge.setProvider(currentProvider, {
-        apiKey: '',
-        model: model || option.models[0]?.value,
-        size: size || '1024x1024'
-      })
-      if (!res.success) {
-        toast.error(`Failed to delete key: ${res.error}`)
-        return
-      }
-      toast.success(`${option.label} key deleted`)
-      await refresh()
-    } finally {
-      setBusy(false)
-    }
+  const deleteKey = async (current: ProviderSnapshot): Promise<void> => {
+    const option = findProviderOption(current.provider)
+    const ok = await write(
+      current.provider,
+      { apiKey: '', model: current.model || option.models[0]?.value, size: current.size || '1024x1024' },
+      tf('Could not delete the {name} key', { name: option.label })
+    )
+    if (ok) toast.success(tf('{name} key deleted', { name: option.label }))
   }
 
-  const handleSaveDefaults = async () => {
-    if (!bridge) return
+  const runTest = async (): Promise<void> => {
     setBusy(true)
     setTestResult(null)
     try {
-      const res = await bridge.setProvider(currentProvider, {
-        model: model || option.models[0]?.value,
-        size: size || '1024x1024'
-      })
-      if (!res.success) {
-        toast.error(`Failed to save defaults: ${res.error}`)
-        return
-      }
-      toast.success('Image gen defaults saved')
-      await refresh()
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const handleTest = async () => {
-    if (!bridge) return
-    setBusy(true)
-    setTestResult(null)
-    try {
-      const res = await bridge.test()
-      const data: TestResult = res.success
-        ? res.data
-        : { ok: false, error: res.error }
+      const r = await query<TestResult>('the image generation test', () => window.api.imageGen.test())
+      const data: TestResult = r.ok ? r.data : { ok: false, error: r.error }
       setTestResult(data)
-      if (data.ok) toast.success('Image gen test succeeded')
-      else toast.error(`Image gen test failed: ${data.error ?? 'unknown'}`)
+      if (data.ok) toast.success(t('Image generation test passed'))
+      else toast.error(tf('Image generation test failed: {reason}', { reason: data.error ?? t('unknown error') }))
     } finally {
       setBusy(false)
     }
   }
 
   return (
-    <div className="space-y-5">
-      <div>
-        <h3 className="font-mono text-[16px] font-semibold text-[var(--text-primary)]">
-          {t('Image Generation')}
-        </h3>
-        <p className="mt-1 text-[12px] leading-relaxed text-[var(--text-muted)]">
-          Configure the provider that powers `image_generate`, `image_edit`,
-          and `image_variation`. Keys are encrypted with safeStorage and
-          stored locally; only the configured provider ever sees them.
-        </p>
-      </div>
+    <SettingsPage
+      purpose={
+        <>
+          {t('Which service draws, edits and varies images for chat. ')}
+          {t('Stored encrypted on this computer and sent only to that provider.')}
+        </>
+      }
+    >
+      <PanelState
+        state={snapshot}
+        loading={<SettingsLoading what={t('image generation settings')} />}
+        error={(message, retry) => (
+          <SettingsLoadError what={t('image generation settings')} message={message} onRetry={retry} />
+        )}
+        empty={<p className="text-[12px] text-[var(--text-muted)]">{t('Image generation is not available in this build.')}</p>}
+        onRetry={() => void refresh()}
+      >
+        {(current) => {
+          const option = findProviderOption(current.provider)
+          const modelKnown = option.models.some((m) => m.value === current.model)
+          return (
+            <>
+              <SettingsSection label={t('Provider')}>
+                <SettingsRow
+                  label={t('Service')}
+                  hint={t(option.hint)}
+                  saved={providerFlash.saved}
+                  control={
+                    <>
+                      <label htmlFor={providerSelectId} className="sr-only">
+                        {t('Image provider')}
+                      </label>
+                      <Select
+                        id={providerSelectId}
+                        value={current.provider}
+                        disabled={busy}
+                        onChange={(e) =>
+                          flashWhenSaved(changeProvider(current, e.target.value as ImageGenProviderId), providerFlash.flash)
+                        }
+                      >
+                        {PROVIDER_OPTIONS.map((p) => (
+                          <option key={p.id} value={p.id} disabled={!p.available}>
+                            {p.available ? p.label : tf('{name} (not available yet)', { name: p.label })}
+                          </option>
+                        ))}
+                      </Select>
+                    </>
+                  }
+                />
 
-      <section className="space-y-3 rounded border border-[var(--panel-border)] bg-[var(--bg-primary)] p-3">
-        <label className="block">
-          <span className="block font-mono text-[12px] uppercase tracking-wider text-[var(--text-muted)]">
-            {t('Provider')}
-          </span>
-          <select
-            value={currentProvider}
-            onChange={(e) => handleProviderChange(e.target.value as ImageGenProviderId)}
-            disabled={busy}
-            className="mt-1 w-full rounded border border-[var(--panel-border)] bg-[var(--bg-secondary)] px-2 py-1.5 font-mono text-[12px] text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
-          >
-            {PROVIDER_OPTIONS.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.label}
-                {p.available ? '' : ' (stub)'}
-              </option>
-            ))}
-          </select>
-          {/* Translated HERE, not where PROVIDER_OPTIONS is declared: that array is
-              module scope, so a t() call there would resolve once at import and never
-              follow a language change in Settings. The English string is the key. */}
-          <span className="mt-1 block text-[12px] leading-relaxed text-[var(--text-muted)]">
-            {t(option.hint)}
-          </span>
-        </label>
+                <ProviderKeyCard
+                  name={option.label}
+                  status={current.hasKey ? 'stored' : 'none'}
+                  note={
+                    current.provider === 'openai' ? (
+                      <>
+                        {t('Separate from the OpenAI key under ')}
+                        <SettingsLink tab="api">{t('API Keys')}</SettingsLink>
+                        {t('; image generation uses its own.')}
+                      </>
+                    ) : undefined
+                  }
+                  docs={{ href: option.docsUrl, label: t('Get a key') }}
+                  busy={busy}
+                  onSave={(key) => saveKey(current, key)}
+                  onDelete={() => deleteKey(current)}
+                  onTest={() => runTest()}
+                >
+                  {testResult && (
+                    <p className={`text-[12px] ${testResult.ok ? 'text-[var(--success)]' : 'text-[var(--error)]'}`}>
+                      {testResult.ok
+                        ? tf('OK · {type} ({bytes} bytes)', {
+                            type: testResult.sample?.mimeType ?? t('image'),
+                            bytes: testResult.sample?.byteLength ?? 0
+                          })
+                        : (testResult.error ?? t('failed'))}
+                    </p>
+                  )}
+                </ProviderKeyCard>
+              </SettingsSection>
 
-        <div className="flex items-center gap-2">
-          <span
-            aria-hidden
-            className={`inline-block h-2 w-2 rounded-full ${
-              snapshot?.hasKey ? 'bg-[var(--success)]' : 'bg-[var(--warning)]'
-            }`}
-          />
-          <span className="font-mono text-[12px] text-[var(--text-muted)]">
-            {snapshot?.hasKey ? 'Key stored' : 'No key on file'}
-          </span>
-          <a
-            href={option.docsUrl}
-            onClick={(e) => {
-              e.preventDefault()
-              window.api?.artifact?.openExternal?.(option.docsUrl)
-            }}
-            className="ml-auto font-mono text-[12px] text-[var(--accent)] hover:underline"
-          >
-            Get a key →
-          </a>
-        </div>
-
-        <div className="flex gap-2">
-          <input
-            type={showKey ? 'text' : 'password'}
-            value={keyDraft}
-            onChange={(e) => setKeyDraft(e.target.value)}
-            placeholder={snapshot?.hasKey ? 'Replace key...' : 'Paste API key'}
-            disabled={busy}
-            className="flex-1 rounded border border-[var(--panel-border)] bg-[var(--bg-secondary)] px-2 py-1.5 font-mono text-[12px] text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
-          />
-          <Button variant="secondary"
-            onClick={() => setShowKey((v) => !v)}
-          >
-            {showKey ? 'Hide' : 'Show'}
-          </Button>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <Button variant="primary"
-            onClick={handleSaveKey}
-            disabled={busy || !keyDraft.trim()}
-          >
-            {t('Save key')}
-          </Button>
-          <Button variant="danger"
-            onClick={handleDeleteKey}
-            disabled={busy || !snapshot?.hasKey}
-          >
-            {t('Delete')}
-          </Button>
-        </div>
-      </section>
-
-      <section className="space-y-3 rounded border border-[var(--panel-border)] bg-[var(--bg-primary)] p-3">
-        <h4 className="font-mono text-[12px] uppercase tracking-wider text-[var(--text-muted)]">
-          {t('Defaults')}
-        </h4>
-
-        <label className="block">
-          <span className="block font-mono text-[12px] uppercase tracking-wider text-[var(--text-muted)]">
-            {t('Model')}
-          </span>
-          <select
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            disabled={busy}
-            className="mt-1 w-full rounded border border-[var(--panel-border)] bg-[var(--bg-secondary)] px-2 py-1.5 font-mono text-[12px] text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
-          >
-            {option.models.map((m) => (
-              <option key={m.value} value={m.value}>
-                {m.label}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <label className="block">
-          <span className="block font-mono text-[12px] uppercase tracking-wider text-[var(--text-muted)]">
-            {t('Canvas size')}
-          </span>
-          <select
-            value={size}
-            onChange={(e) => setSize(e.target.value)}
-            disabled={busy}
-            className="mt-1 w-full rounded border border-[var(--panel-border)] bg-[var(--bg-secondary)] px-2 py-1.5 font-mono text-[12px] text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
-          >
-            {SIZE_OPTIONS.map((s) => (
-              <option key={s.value} value={s.value}>
-                {s.label}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <div className="flex flex-wrap items-center gap-2 pt-1">
-          <Button variant="primary"
-            onClick={handleSaveDefaults}
-            disabled={busy}
-          >
-            {t('Save defaults')}
-          </Button>
-          <Button variant="secondary"
-            onClick={handleTest}
-            disabled={busy || !snapshot?.hasKey}
-          >
-            {t('Test')}
-          </Button>
-          {testResult && (
-            <span
-              className={`text-[12px] ${
-                testResult.ok ? 'text-[var(--success)]' : 'text-[var(--error)]'
-              }`}
-            >
-              {testResult.ok
-                ? `OK · ${testResult.sample?.mimeType ?? 'image'} (${testResult.sample?.byteLength ?? 0} bytes)`
-                : testResult.error ?? 'failed'}
-            </span>
-          )}
-        </div>
-      </section>
-    </div>
+              <SettingsSection label={t('Defaults')}>
+                <SettingsRow
+                  label={t('Model')}
+                  hint={t('Used when a request does not name one.')}
+                  saved={modelFlash.saved}
+                  control={
+                    <>
+                      <label htmlFor={modelSelectId} className="sr-only">
+                        {t('Image model')}
+                      </label>
+                      <Select
+                        id={modelSelectId}
+                        value={modelKnown ? current.model : (option.models[0]?.value ?? '')}
+                        disabled={busy}
+                        onChange={(e) => flashWhenSaved(changeModel(current, e.target.value), modelFlash.flash)}
+                        className="font-mono"
+                      >
+                        {option.models.map((m) => (
+                          <option key={m.value} value={m.value}>
+                            {m.label}
+                          </option>
+                        ))}
+                      </Select>
+                    </>
+                  }
+                />
+                <SettingsRow
+                  label={t('Canvas size')}
+                  hint={t('The size of a generated image unless the request asks for another.')}
+                  saved={sizeFlash.saved}
+                  control={
+                    <>
+                      <label htmlFor={sizeSelectId} className="sr-only">
+                        {t('Canvas size')}
+                      </label>
+                      <Select
+                        id={sizeSelectId}
+                        value={current.size || '1024x1024'}
+                        disabled={busy}
+                        onChange={(e) => flashWhenSaved(changeSize(current, e.target.value), sizeFlash.flash)}
+                        className="font-mono"
+                      >
+                        {SIZE_OPTIONS.map((s) => (
+                          <option key={s.value} value={s.value}>
+                            {s.label}
+                          </option>
+                        ))}
+                      </Select>
+                    </>
+                  }
+                />
+              </SettingsSection>
+            </>
+          )
+        }}
+      </PanelState>
+    </SettingsPage>
   )
 }

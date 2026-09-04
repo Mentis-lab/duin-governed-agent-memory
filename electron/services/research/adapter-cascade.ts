@@ -8,6 +8,7 @@ import {
   type WebSearchResult
 } from '../web-search-adapters'
 import { readSettings } from '../settings-helper'
+import { routeModel } from '../providers/registry'
 
 // Adapter cascade for the deep-research pipeline.
 //
@@ -84,6 +85,25 @@ export function readDeepResearchSettings(): DeepResearchSettings {
       ? raw.synthesizerModel
       : undefined
   }
+}
+
+/** The research stages' model roles (roles.ts): the classifier / planner / claims /
+ *  opposition calls are structured-JSON work (`extraction`); the synthesizer writes the
+ *  grounded report (`chat`). */
+export type ResearchModelKind = 'classifier' | 'synthesizer'
+
+/**
+ * The model a research stage runs on: an explicit per-call override, else the operator's
+ * pinned `deepResearch.classifierModel` / `synthesizerModel` setting, else the stage's ROLE
+ * resolved from the provider policy. Null when nothing is routable — there is no shipped
+ * fallback id; callers fail the stage the way they fail a provider error.
+ */
+export function researchModel(kind: ResearchModelKind, override?: string): string | null {
+  if (override) return override
+  const s = readDeepResearchSettings()
+  const pinned = kind === 'classifier' ? s.classifierModel : s.synthesizerModel
+  if (pinned) return pinned
+  return routeModel(kind === 'classifier' ? 'extraction' : 'chat')
 }
 
 // Canonicalisation is shared with the D5 source collector — both must

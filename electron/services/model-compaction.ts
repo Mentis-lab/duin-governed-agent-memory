@@ -188,8 +188,11 @@ export async function runModelCompaction(
 }
 
 /** Production wiring. The registry import stays dynamic so importing this
- *  module never drags provider/keychain initialization into test processes. */
-export function defaultModelCompactionDeps(): ModelCompactionDeps {
+ *  module never drags provider/keychain initialization into test processes.
+ *  The compaction call runs on the TURN's own engine (chat.ts passes `modelId`) on
+ *  purpose: the summary rides that provider's warm prefix cache, so a cheaper
+ *  'title'-role model would re-bill the whole context cold. */
+export function productionModelCompactionDeps(): ModelCompactionDeps {
   return {
     shouldCompress: (conversationId, contextWindow, thresholdPct) =>
       shouldCompress(conversationId, contextWindow, thresholdPct),

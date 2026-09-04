@@ -5,9 +5,13 @@ import { scaffoldSeed, markOnboarded, type InterviewAnswers } from '@/lib/brain-
 import { buildIdentityFiles, hasIdentitySignal, type IdentityInput } from '@/lib/brain-identity'
 import { useUiStore } from '@/stores/ui-store'
 import { useSettingsStore } from '@/stores/settings-store'
+import { useModelStore } from '@/stores/model-store'
+import { useProvidersStore } from '@/stores/providers-store'
 import { ApiKeyModal } from '@/components/settings/ApiKeyModal'
 import { FEATURED_PROVIDERS } from './provider-cards'
 import { t, tf } from '@/lib/i18n'
+import { healthReasonLabel, providerFixHint } from '@/lib/model-label'
+import type { ProviderHealth } from '@/lib/types'
 
 // First-run onboarding (rebuilt against DUIN_ONBOARDING_BENCHMARK.md).
 //
@@ -18,6 +22,14 @@ import { t, tf } from '@/lib/i18n'
 // offline message (Dim 2/5), makes the vault legible as your own Markdown files
 // (Dim 7), and ends on a concrete come-back reason + a daily-digest opt-in (Dim 8).
 // Connecting an AI model stays fully OPTIONAL — never a wall (Dim 5).
+//
+// Two steps, one job each. Step 0 = the folder. Step 1 = the model: it is the one
+// choice that decides whether this brain grows (keyless DUIN searches; a model builds
+// the knowledge graph and answers in conversation), so it leads the ready step as a
+// real block with the service cards — not a collapsed "optional" line at the bottom
+// under two settings toggles. Already connected (a local Ollama, a stored key) → one
+// line. Everything else on that step is one line: the folder, two settings, a
+// concrete come-back reason when there is one.
 //
 // All user-visible copy goes through t()/tf() — the coldstart is the ONE surface a
 // brand-new operator is guaranteed to see, so it must render in the OS language
@@ -71,17 +83,73 @@ export function OnboardingFlow({ onClose }: OnboardingFlowProps): React.ReactEle
   const [about, setAbout] = useState<{ name: string; role: string; workingStyle: string }>({ name: '', role: '', workingStyle: '' })
   const [seededCount, setSeededCount] = useState(0)
   const [identityWrote, setIdentityWrote] = useState<string[] | null>(null)
-  // Connect-AI (optional, on the ready step)
+  // Connect-a-model block on the ready step: what already answers (a local Ollama, stored
+  // provider keys) decides whether it shows the service cards or a one-line "connected" state.
+  // `showConnect` re-opens the cards from the connected state ("Add another").
   const [showConnect, setShowConnect] = useState(false)
   const [ollama, setOllama] = useState<{ available: boolean; models: string[] } | null>(null)
+  const [storedKeys, setStoredKeys] = useState<string[]>([])
   // Key modal: `{ provider }` from a provider card (scoped), `{}` from the generic
   // "Connect a model →" banners — UNSCOPED, so the modal shows the full card grid
   // instead of pinning the user to a provider they never chose (was hardcoded 'openai').
   const [keyModal, setKeyModal] = useState<{ provider?: string } | null>(null)
+  // Engine check (P0 model plane): after the first key is saved, run a REAL completion probe
+  // and say "Engine ready — <provider>" or the classified reason + fix BEFORE the first chat.
+  // A stored key is not an engine; the eval found a dead default nobody was told about (S2).
+  const [engineCheck, setEngineCheck] = useState<{ status: 'probing' } | { status: 'done'; health: ProviderHealth[] } | null>(null)
+  const probeProviders = useModelStore((s) => s.probe)
+  const policyOrder = useModelStore((s) => s.policy?.order ?? [])
+  const providerEntries = useProvidersStore((s) => s.providers)
+  const providerLabel = (id: string): string => providerEntries.find((p) => p.id === id)?.label ?? id
+  const checkEngine = async (): Promise<void> => {
+    setEngineCheck({ status: 'probing' })
+    const health = await probeProviders('all')
+    setEngineCheck({ status: 'done', health })
+  }
+  const renderEngineCheck = (): React.ReactElement | null => {
+    if (!engineCheck) return null
+    if (engineCheck.status === 'probing') {
+      return (
+        <div className="mt-3 flex items-center gap-2 rounded-lg border border-[var(--panel-border)] bg-[var(--app-bg)] p-2.5 text-[12px] text-[var(--text-secondary)]">
+          <span className="inline-block h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-[var(--accent)] border-t-transparent" />
+          {t('Checking that your engine answers…')}
+        </div>
+      )
+    }
+    const keyed = engineCheck.health.filter((h) => h.reason !== 'no-key')
+    const ordered = [...keyed].sort((a, b) => {
+      const ia = policyOrder.indexOf(a.provider)
+      const ib = policyOrder.indexOf(b.provider)
+      return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib)
+    })
+    const ready = ordered.find((h) => h.healthy)
+    const failing = ordered.filter((h) => !h.healthy)
+    return (
+      <div className="mt-3 space-y-1.5">
+        {ready ? (
+          <div className="rounded-lg border border-[var(--accent)]/30 bg-[var(--accent-dim)] p-2.5 text-[12px] text-[var(--text-secondary)]">
+            <strong className="text-[var(--text-primary)]">{tf('✓ Engine ready — {provider}', { provider: providerLabel(ready.provider) })}</strong>
+            {ready.probedModelId ? ` · ${ready.probedModelId}` : ''}
+            {typeof ready.latencyMs === 'number' ? ` · ${ready.latencyMs} ms` : ''}
+          </div>
+        ) : (
+          <div className="rounded-lg border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-2.5 text-[12px] text-[var(--text-secondary)]">
+            <strong className="text-[var(--text-primary)]">{t('No provider can answer yet.')}</strong>
+          </div>
+        )}
+        {failing.map((h) => (
+          <div key={h.provider} className="rounded-lg border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-2.5 text-[12px] leading-relaxed text-[var(--text-secondary)]">
+            <strong className="text-[var(--text-primary)]">{providerLabel(h.provider)}: {healthReasonLabel(h.reason)}.</strong>{' '}
+            {providerFixHint(h.reason, providerLabel(h.provider))}
+            {h.detail ? <span className="block font-mono text-[11px] text-[var(--text-muted)]">{h.detail}</span> : null}
+          </div>
+        ))}
+      </div>
+    )
+  }
   // Ready-step surfaces
   const [returnReason, setReturnReason] = useState<string | null>(null)
   const [digestOn, setDigestOn] = useState(false)
-  const [showHow, setShowHow] = useState(false)
   // Full computer access — OFF by default in the public build (release D6). The ready step
   // presents the choice once, as one line + a toggle, and persists it through the same settings
   // store Settings → General → Computer access uses, so the two never disagree.
@@ -128,15 +196,17 @@ export function OnboardingFlow({ onClose }: OnboardingFlowProps): React.ReactEle
     return () => { offProgress?.(); offDownload?.(); offBuild?.() }
   }, [])
 
-  // On reaching the ready step: fetch the come-back reason + current digest opt-in.
+  // On reaching the ready step: fetch the come-back reason + current digest opt-in. The generic
+  // "as your brain fills…" nudge is filler on a first run and is not shown; only a concrete
+  // reason (something owed, a track to resume, something noticed) earns the box.
   useEffect(() => {
     if (step !== 1) return
     let alive = true
     void (async () => {
       try {
         const r = await window.api?.brain?.homeDigest?.()
-        const d = r?.success ? (r.data as { returnReason?: string } | undefined) : undefined
-        if (alive && d?.returnReason) setReturnReason(d.returnReason)
+        const d = r?.success ? (r.data as { returnReason?: string; returnReasonIsDefault?: boolean } | undefined) : undefined
+        if (alive && d?.returnReason && !d.returnReasonIsDefault) setReturnReason(d.returnReason)
       } catch { /* non-fatal */ }
       try {
         const s = await window.api?.notifications?.getDigestSchedule?.()
@@ -146,18 +216,29 @@ export function OnboardingFlow({ onClose }: OnboardingFlowProps): React.ReactEle
     return () => { alive = false }
   }, [step])
 
-  // Detect a local Ollama only when the user opens the optional connect panel.
+  // On the ready step: detect a local Ollama and read which services already hold a key, so the
+  // connect block can say "connected" instead of asking for what the operator already has. A key
+  // saved from the modal arrives through onKeychainChanged.
   useEffect(() => {
-    if (!showConnect || ollama !== null) return
+    if (step !== 1) return
     let alive = true
+    const readKeys = async (): Promise<void> => {
+      try {
+        const list = await window.api?.settings?.listProviderKeys?.()
+        const items = list?.success ? ((list.data as { id: string; hasKey: boolean }[] | undefined) ?? []) : []
+        if (alive) setStoredKeys(items.filter((p) => p.hasKey).map((p) => p.id))
+      } catch { /* non-fatal — the cards simply show without a ✓ */ }
+    }
     void (async () => {
       try {
         const r = await window.api?.brain?.detectOllama?.()
         if (alive) setOllama(r?.success ? (r.data ?? { available: false, models: [] }) : { available: false, models: [] })
       } catch { if (alive) setOllama({ available: false, models: [] }) }
     })()
-    return () => { alive = false }
-  }, [showConnect, ollama])
+    void readKeys()
+    const offKeychain = window.api?.settings?.onKeychainChanged?.(() => { void readKeys() })
+    return () => { alive = false; offKeychain?.() }
+  }, [step])
 
   const skip = (): void => { markOnboarded(); onClose() }
   const openBrain = (): void => { useUiStore.getState().setActiveTool('brain'); onClose() }
@@ -186,6 +267,13 @@ export function OnboardingFlow({ onClose }: OnboardingFlowProps): React.ReactEle
       if (sr && sr.success === false) {
         throw new Error(sr.error || t('Could not save the folder choice.'))
       }
+      // The renderer's settings store only learns about a raw settings:set on its next load —
+      // resync now so every surface keyed on localBrainNotesDir (the no-folder banner, Brain
+      // settings) sees the folder at once. The brain folder is also the agent's working folder,
+      // exactly as Settings → Brain does it; without this the composer's folder chip kept
+      // pointing at the app's own directory after a first run.
+      void useSettingsStore.getState().loadSettings()
+      try { await window.api?.files?.setWorkdir?.(dir) } catch { /* non-fatal — a convenience mirror of the brain folder */ }
 
       // Index the user's existing files (keyless). Progress streams over the
       // rag:index:progress subscription above.
@@ -281,6 +369,13 @@ export function OnboardingFlow({ onClose }: OnboardingFlowProps): React.ReactEle
     } catch { setDigestOn(!next) /* revert on failure */ }
   }
 
+  // Connect block (ready step): what already answers, so the block can say so instead of asking.
+  const connectedNames = [
+    ...(ollama?.available ? [tf('Ollama ({n} local)', { n: ollama.models.length })] : []),
+    ...FEATURED_PROVIDERS.filter((p) => storedKeys.includes(p.providerId)).map((p) => p.name)
+  ]
+  const modelReady = connectedNames.length > 0
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
       <div
@@ -303,7 +398,7 @@ export function OnboardingFlow({ onClose }: OnboardingFlowProps): React.ReactEle
           <div>
             <h2 className="text-[20px] font-semibold text-[var(--text-primary)]">{t('Welcome to DUIN')}</h2>
             <p className="mt-2 text-[12px] leading-relaxed text-[var(--text-secondary)]">
-              {t('DUIN turns your notes into a second brain you can ask questions and see. Point it at a folder of your files — it reads them and can answer, right away, with no account and no setup. Your files and the search index stay on this computer; only a model you connect yourself is sent your questions and the relevant excerpts.')}
+              {t('Point DUIN at a folder of your notes. It reads them and builds a brain you can ask and explore — no account needed. Your files stay on this computer; only a model you choose to connect is sent your questions and the relevant excerpts.')}
             </p>
 
             <div className="mt-5 rounded-lg border border-[var(--panel-border)] bg-[var(--app-bg)] p-3">
@@ -403,7 +498,6 @@ export function OnboardingFlow({ onClose }: OnboardingFlowProps): React.ReactEle
               <button onClick={skip} className="text-[12px] text-[var(--text-muted)] hover:text-[var(--text-primary)]">
                 {t('Skip for now')}
               </button>
-              <span className="text-[11px] text-[var(--text-muted)]">{t('Files and the local index stay on this machine.')}</span>
             </div>
           </div>
         )}
@@ -426,6 +520,10 @@ export function OnboardingFlow({ onClose }: OnboardingFlowProps): React.ReactEle
                 ].filter(Boolean).join(' ')}
               </p>
             </div>
+
+            {/* Engine check — the result of a real completion probe after a key was saved,
+                shown BEFORE the first chat so a dead provider is never discovered by a 0-char turn. */}
+            {renderEngineCheck()}
 
             {/* If the local search model couldn't download (offline), say so plainly
                 — keyless/keyword search still works, so this isn't a dead end. */}
@@ -463,65 +561,78 @@ export function OnboardingFlow({ onClose }: OnboardingFlowProps): React.ReactEle
                 {t('The knowledge graph build failed — your AI provider rejected the request. Check the account’s balance or quota; DUIN retries as your notes change.')}
               </div>
             )}
-            {buildState?.phase === 'done' && buildState.status === 'no-model' && (
-              <div className="mt-3 rounded-lg border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-2.5 text-[12px] leading-relaxed text-[var(--text-secondary)]">
-                <strong className="text-[var(--text-primary)]">{t('Connect an AI model to build your knowledge graph.')}</strong>{' '}
-                {t('DUIN indexed your notes for search, but building the entity graph — people, projects, decisions and how they connect — needs a model. Connect one and it builds automatically.')}
-                <button onClick={() => setKeyModal({})}
-                  className="mt-2 block rounded-md bg-[var(--accent)] px-2.5 py-1 text-[11px] font-semibold text-[var(--accent-fg,#fff)] hover:opacity-90">
-                  {t('Connect a model →')}
-                </button>
-              </div>
-            )}
+            {/* A 'no-model' build outcome needs no banner of its own any more: the connect block
+                below is state-driven (no local model, no stored key) and already says exactly this,
+                so the event-driven copy would only repeat it. */}
 
-            {/* Trust / legibility (Dim 7): your brain is plain Markdown you own. */}
+            {/* Connect a model — the one choice that decides whether this brain grows. Keyless DUIN
+                searches; a model builds the knowledge graph and answers in conversation. Already
+                connected (a local Ollama, a stored key)? One line, cards on request. Optional: the
+                footer works without it, and the same cards live in Settings → Models. */}
+            <div className={`mt-4 rounded-lg border p-3 ${modelReady ? 'border-[var(--panel-border)] bg-[var(--app-bg)]' : 'border-[var(--accent)]/40 bg-[var(--accent-dim)]'}`}>
+              {modelReady ? (
+                <div className="flex items-center justify-between gap-2">
+                  <span className="min-w-0 truncate text-[12px] text-[var(--text-primary)]">
+                    <span className="font-medium text-[var(--accent)]">✓ </span>
+                    {tf('Model connected — {names}', { names: connectedNames.join(' · ') })}
+                  </span>
+                  <button onClick={() => setShowConnect((v) => !v)} className="shrink-0 text-[12px] font-medium text-[var(--accent)] hover:underline">
+                    {showConnect ? t('Done') : t('Add another')}
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <div className="text-[13px] font-semibold text-[var(--text-primary)]">{t('Connect a model to build your knowledge graph')}</div>
+                  <p className="mt-1 text-[12px] leading-relaxed text-[var(--text-secondary)]">
+                    {t('DUIN can already search your notes. A model — free on this computer, or an online service — builds the graph of people, projects and decisions, and answers in conversation.')}
+                  </p>
+                  <p className="mt-2 text-[12px] leading-relaxed text-[var(--text-secondary)]">
+                    {ollama === null
+                      ? t('Looking for a free local model…')
+                      : <>{t('No free local model found —')} <button onClick={() => openExternal('https://ollama.com')} className="text-[var(--accent)] hover:underline">{t('install Ollama')}</button> {t('(runs on your computer, works offline) and DUIN picks it up, or pick an online service:')}</>}
+                  </p>
+                </>
+              )}
+              {(!modelReady || showConnect) && (
+                <>
+                  <div className="mt-2.5 grid grid-cols-2 gap-2 sm:grid-cols-3">
+                    {FEATURED_PROVIDERS.map((p) => {
+                      const stored = storedKeys.includes(p.providerId)
+                      return (
+                        <button key={p.cardId} type="button" onClick={() => setKeyModal({ provider: p.providerId })}
+                          className="flex flex-col items-start rounded-lg border border-[var(--panel-border)] bg-[var(--panel-bg)] p-2.5 text-left transition-colors hover:border-[var(--accent)]">
+                          <span className="flex w-full items-center justify-between gap-1">
+                            <span className="text-[12px] font-semibold text-[var(--text-primary)]">{p.name}</span>
+                            {stored && <span className="text-[11px] font-medium text-[var(--accent)]">✓</span>}
+                          </span>
+                          <span className="mt-0.5 text-[11px] leading-snug text-[var(--text-muted)]">{t(p.blurb)}</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                  <p className="mt-2 text-[11px] leading-relaxed text-[var(--text-muted)]">
+                    {t('Tap a service to paste its key — the link to get one is inside. An online model receives your question with the relevant excerpts, and your notes in batches to build the graph.')}
+                  </p>
+                </>
+              )}
+            </div>
+
+            {/* Your brain is plain files you own (Dim 7) — one line, not a card. */}
             {folder && (
-              <div className="mt-4 rounded-lg border border-[var(--panel-border)] bg-[var(--app-bg)] p-3">
+              <div className="mt-3 rounded-lg border border-[var(--panel-border)] bg-[var(--app-bg)] p-3">
                 <div className="flex items-center justify-between gap-2">
                   <span className="min-w-0 truncate font-mono text-[11px] text-[var(--text-muted)]">{folder}</span>
                   <button onClick={openVaultFolder} className="shrink-0 text-[12px] font-medium text-[var(--accent)] hover:underline">
                     {t('Open folder →')}
                   </button>
                 </div>
-                <p className="mt-1.5 text-[12px] text-[var(--text-secondary)]">
-                  {t('DUIN keeps your brain as plain Markdown files you own — open them in any editor, back them up, take them anywhere. The files and local index remain on this machine.')}
+                <p className="mt-1 text-[12px] text-[var(--text-secondary)]">
+                  {t('Plain Markdown files you own — open them in any editor, back them up, take them anywhere. They and the local index stay on this computer.')}
                 </p>
               </div>
             )}
 
-            {/* How DUIN answers (Dim 7): retrieval-shown, explained once. */}
-            <button onClick={() => setShowHow((v) => !v)}
-              className="mt-3 flex items-center gap-1.5 text-[12px] text-[var(--text-muted)] hover:text-[var(--text-primary)]">
-              <span className={`transition-transform ${showHow ? 'rotate-90' : ''}`}>▸</span>
-              {t('How DUIN answers')}
-            </button>
-            {/* Describes what a grounded answer ACTUALLY looks like today: the
-                source named in the prose (rag/context-builder.ts asks for that
-                by name). It used to demo a clickable numbered CitationChip and
-                promise "tap a chip to open the note" — an affordance the real
-                transcript has never produced, because the chip component has no
-                production caller and no sourceMap ever reaches the renderer. */}
-            {showHow && (
-              <div className="mt-2 rounded-lg border border-[var(--panel-border)] bg-[var(--app-bg)] p-3">
-                <p className="text-[12px] leading-relaxed text-[var(--text-secondary)]">
-                  {t('When you ask something, DUIN answers from the notes it finds and names the ones it used, so you can go read them yourself. For example:')}
-                </p>
-                <p className="mt-2 text-[12px] text-[var(--text-primary)]">
-                  {t('“You planned to ship the beta in March — from Q3-planning.md”')}
-                </p>
-                <p className="mt-1 text-[11px] text-[var(--text-muted)]">{t('When nothing in your notes supports an answer, DUIN says so — no guessing, no made-up answers.')}</p>
-              </div>
-            )}
-
-            {/* Retention (Dim 8): a concrete reason to come back. */}
-            {returnReason && (
-              <div className="mt-3 rounded-lg border border-[var(--accent)]/30 bg-[var(--accent-dim)] p-3">
-                <div className="text-[12px] font-semibold text-[var(--text-primary)]">{t('Come back tomorrow')}</div>
-                <p className="mt-0.5 text-[12px] text-[var(--text-secondary)]">{returnReason}</p>
-              </div>
-            )}
-
-            {/* Digest opt-in (Dim 8), jargon-free. */}
+            {/* Two settings worth one line each here; both live in Settings too. */}
             <label className="mt-3 flex cursor-pointer items-start gap-2.5 rounded-lg border border-[var(--panel-border)] bg-[var(--app-bg)] p-3">
               <Toggle checked={digestOn} onChange={() => void toggleDigest()} aria-label={t('Send me a daily brain digest')} className="mt-0.5" />
               <span>
@@ -529,53 +640,22 @@ export function OnboardingFlow({ onClose }: OnboardingFlowProps): React.ReactEle
                 <span className="mt-0.5 block text-[12px] text-[var(--text-secondary)]">{t('A gentle once-a-day summary of what changed in your brain. No account — it stays on this device.')}</span>
               </span>
             </label>
-
-            {/* Computer access — one line + a toggle, default OFF (release D6). Mirrors
-                Settings → General → Computer access through the same settings store. */}
+            {/* Computer access — one line + a toggle. Mirrors Settings → General → Computer access
+                through the same settings store. The copy names both states and no default, so it
+                stays true whichever way a build ships it. */}
             <label className="mt-3 flex cursor-pointer items-start gap-2.5 rounded-lg border border-[var(--panel-border)] bg-[var(--app-bg)] p-3">
               <Toggle checked={fullAccessOn} onChange={(v) => void updateSettings({ fullComputerAccess: v })} aria-label={t('Let DUIN act anywhere on this computer')} className="mt-0.5" />
               <span>
                 <span className="text-[12px] font-medium text-[var(--text-primary)]">{t('Let DUIN act anywhere on this computer')}</span>
-                <span className="mt-0.5 block text-[12px] text-[var(--text-secondary)]">{t('Off by default: DUIN stays inside your brain folder and asks before running commands. On: it can read, write, move and delete files anywhere and run commands without asking. Change it any time in Settings → General.')}</span>
+                <span className="mt-0.5 block text-[12px] text-[var(--text-secondary)]">{t('Off: DUIN stays inside your brain folder and asks before running commands. On: it can read, write and run anywhere without asking. Change it any time in Settings → General.')}</span>
               </span>
             </label>
 
-            {/* Connect an AI model — fully optional (Dim 5). */}
-            <button onClick={() => setShowConnect((v) => !v)}
-              className="mt-3 flex items-center gap-1.5 text-[12px] text-[var(--text-muted)] hover:text-[var(--text-primary)]">
-              <span className={`transition-transform ${showConnect ? 'rotate-90' : ''}`}>▸</span>
-              {t('Want fuller, conversational answers? Connect an AI model — optional')}
-            </button>
-            {showConnect && (
-              <div className="mt-2 space-y-2.5">
-                <div className="rounded-lg border border-[var(--panel-border)] bg-[var(--app-bg)] p-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[12px] font-medium text-[var(--text-primary)]">{t('Free local model')} <span className="text-[11px] font-normal text-[var(--text-muted)]">{t('private · no cost')}</span></span>
-                    {ollama === null ? <span className="text-[11px] text-[var(--text-muted)]">{t('checking…')}</span>
-                      : ollama.available ? <span className="text-[11px] font-medium text-[var(--accent)]">{tf('✓ Found on this computer ({n})', { n: ollama.models.length })}</span>
-                      : <span className="text-[11px] text-[var(--text-muted)]">{t('not detected')}</span>}
-                  </div>
-                  {ollama?.available
-                    ? <p className="mt-1.5 text-[12px] text-[var(--text-secondary)]">{t('DUIN found a free local model on your computer — it’ll use it automatically. Questions and retrieved excerpts stay on this computer.')}</p>
-                    : <p className="mt-1.5 text-[12px] text-[var(--text-secondary)]">{t('Install')} <button onClick={() => openExternal('https://ollama.com')} className="text-[var(--accent)] hover:underline">{t('Ollama')}</button> {t('(free, runs on your computer, works offline) — DUIN picks it up automatically.')}</p>}
-                </div>
-
-                <div className="rounded-lg border border-[var(--panel-border)] bg-[var(--app-bg)] p-3">
-                  <span className="text-[12px] font-medium text-[var(--text-primary)]">{t('Use an online model')}</span>
-                  <p className="mt-0.5 text-[12px] text-[var(--text-secondary)]">{t('Pick a service and paste a key. Most have a free tier — the link opens the page to get one. When you use an online model, DUIN sends that provider your current question plus relevant excerpts and personalization context, and — to build your knowledge graph — your notes, in batches.')}</p>
-                  <div className="mt-2.5 grid grid-cols-2 gap-2 sm:grid-cols-3">
-                    {FEATURED_PROVIDERS.map((p) => (
-                      <div key={p.cardId} className="flex flex-col rounded-lg border border-[var(--panel-border)] bg-[var(--panel-bg)] p-2.5">
-                        <span className="text-[12px] font-semibold text-[var(--text-primary)]">{p.name}</span>
-                        <span className="mt-0.5 text-[11px] leading-snug text-[var(--text-muted)]">{t(p.blurb)}</span>
-                        <div className="mt-1.5 flex items-center gap-2">
-                          <button onClick={() => setKeyModal({ provider: p.providerId })} className="text-[11px] font-medium text-[var(--accent)] hover:underline">{t('Paste key')}</button>
-                          <button onClick={() => openExternal(p.docsUrl)} className="text-[11px] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:underline">{t('Get a key →')}</button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
+            {/* Retention (Dim 8): a concrete reason to come back — only when there is one. */}
+            {returnReason && (
+              <div className="mt-3 rounded-lg border border-[var(--accent)]/30 bg-[var(--accent-dim)] p-3">
+                <div className="text-[12px] font-semibold text-[var(--text-primary)]">{t('Come back tomorrow')}</div>
+                <p className="mt-0.5 text-[12px] text-[var(--text-secondary)]">{returnReason}</p>
               </div>
             )}
 
@@ -592,7 +672,11 @@ export function OnboardingFlow({ onClose }: OnboardingFlowProps): React.ReactEle
           required={false}
           defaultProvider={keyModal.provider}
           onDismiss={() => setKeyModal(null)}
-          onComplete={() => setKeyModal(null)}
+          onComplete={() => {
+            setKeyModal(null)
+            // The key is stored; now prove the engine ANSWERS (a real completion, not a key check).
+            void checkEngine()
+          }}
         />
       )}
     </div>

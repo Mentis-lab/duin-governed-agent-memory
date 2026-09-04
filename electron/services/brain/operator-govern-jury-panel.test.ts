@@ -25,6 +25,9 @@ const h = vi.hoisted(() => ({
 vi.mock('../providers/registry', () => ({
   routeModel: () => 'extractor-model',
   routeDistinctModels: () => h.panel,
+  // P0 (W4): the panel is seated by resolveJury — distinct, keyed, not observed-unhealthy.
+  resolveJury: () =>
+    h.panel.map((id) => ({ task: 'jury', modelId: id, provider: `prov-${id}`, chain: [id], source: 'policy' })),
   getProviderForModel: (m: string) => (m === 'extractor-model' ? 'zhipu' : `prov-${m}`),
   chatOnce: async (_msgs: unknown, model: string) => {
     const r = h.reply[model]
@@ -90,13 +93,14 @@ describe('the jury panel — one flaky juror can no longer spend a fact', () => 
   })
 
   it('does not count an ABSTAINING juror as a vote to revert', async () => {
-    h.reply['jury-b'] = 'not json at all' // parse-miss → abstain
-    h.reply['jury-c'] = null // throws → abstain
+    h.reply['jury-c'] = 'not json at all' // parse-miss → abstain
 
     const r = await defaultGovernJury(POOL)
 
-    // One responder that endorsed everything. Two dead jurors must not drag the pool down.
+    // Two responders that endorsed everything (the quorum, MIN_JURY_ANSWERS). The dead juror must
+    // not drag the pool down, and the provenance counts only the two that answered.
     expect(r.pass!.size).toBe(4)
+    expect(r.jury).toBe(2)
   })
 
   it('abstains entirely when NO juror responds, rather than reverting the pool', async () => {
@@ -115,14 +119,37 @@ describe('the jury panel — one flaky juror can no longer spend a fact', () => 
     expect(r.crossModel).toBe(true) // none of them is the zhipu extractor
   })
 
-  it('falls back to the extractor on a single-provider install, and does NOT claim independence', async () => {
-    h.panel = [] // no distinct family is keyed
+  it('ABSTAINS on a single-provider install — never one model wearing two hats (W4, S8)', async () => {
+    h.panel = [] // no distinct healthy family is keyed
     h.reply = { 'extractor-model': ALL }
 
     const r = await defaultGovernJury(POOL)
 
-    expect(r.juryModelId).toBe('extractor-model')
-    expect(r.crossModel).toBe(false) // one model wearing two hats — say so
-    expect(r.pass!.size).toBe(4) // still functions, exactly as before the panel existed
+    // The extractor is not asked to verify its own output: no call, no verdict, and the
+    // provenance says so. The keyless survival bar (→ ratify, a human) decides instead.
+    expect(r.pass).toBeNull()
+    expect(r.juryModelId).toBeNull()
+    expect(r.juryProvider).toBeNull()
+    expect(r.crossModel).toBe(false)
+    expect(r.jury).toBe('none')
+  })
+
+  it('ONE answering juror is not a quorum: abstain, and record the count honestly', async () => {
+    h.panel = ['jury-a', 'jury-b', 'jury-c']
+    h.reply = { 'jury-a': ALL, 'jury-b': null, 'jury-c': null }
+
+    const r = await defaultGovernJury(POOL)
+
+    expect(r.pass).toBeNull()
+    expect(r.crossModel).toBe(false)
+    expect(r.jury).toBe(1)
+  })
+
+  it('a standing verdict records how many jurors answered', async () => {
+    h.reply = { 'jury-a': ALL, 'jury-b': ALL, 'jury-c': null }
+    const r = await defaultGovernJury(POOL)
+    expect(r.pass!.size).toBe(4)
+    expect(r.jury).toBe(2)
+    expect(r.crossModel).toBe(true)
   })
 })

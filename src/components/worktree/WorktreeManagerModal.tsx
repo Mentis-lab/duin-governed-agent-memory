@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/Button'
 import { useUiStore } from '@/stores/ui-store'
 import { useChatStore } from '@/stores/chat-store'
 import { toast } from '@/stores/toast-store'
+import { AUTO_ENGINE } from '@/lib/types'
 
 interface Worktree {
   path: string
@@ -70,7 +71,8 @@ export function WorktreeManagerModal() {
       if (confirm(`Create a new thread for worktree '${data.branch}'?`)) {
         // createConversation in the store doesn't currently take kind; using
         // direct IPC so the metadata is recorded.
-        const conv = await window.api.conversation.create('deepseek-v4-flash', {
+        // No pin: the thread resolves the chat role from the provider policy.
+        const conv = await window.api.conversation.create(AUTO_ENGINE, {
           kind: 'worktree',
           worktreePath: data.path
         })

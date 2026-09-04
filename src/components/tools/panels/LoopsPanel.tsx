@@ -83,8 +83,8 @@ export function LoopsPanel(): React.ReactElement {
     <div className="flex h-full flex-col gap-2 overflow-y-auto p-3 text-[12px]">
       {loops.length === 0 && (
         <div className="rounded-lg border border-[var(--panel-border)] bg-[var(--bg-primary)] p-4 text-center text-[var(--text-muted)]">
-          No loops yet. Start one with <code>/loop &lt;task&gt;</code> — enable loops in
-          Settings&nbsp;→&nbsp;Loops first.
+          No loops yet. Start one with <code>/loop &lt;task&gt;</code> — enable loops under
+          Settings&nbsp;→&nbsp;Automations first.
         </div>
       )}
       {loops.map((loop) => {

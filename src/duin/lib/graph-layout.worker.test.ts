@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { applyForceParams, buildSimulation, type ForceParams, type SimEdge, type SimNode } from './graph-layout-sim'
-import { positionalStrength } from './graph-layout-forces'
+import { COLLISION } from './graph-layout-forces'
 
 // The slider-drag path. A force change used to be sent to the worker as a whole new layout
 // — 15k nodes serialised and a settle restarted from alpha 1 on every pixel — which is what
@@ -8,8 +8,8 @@ import { positionalStrength } from './graph-layout-forces'
 // the run in flight. These tests pin that the two paths agree (a fresh build and an in-place
 // update land on the same forces) and that the worker honours the message protocol.
 
-const P: ForceParams = { charge: -30, linkDistance: 30, linkStrength: -1, centerStrength: 0.5, velocityDecay: 0.3 }
-const P2: ForceParams = { charge: -400, linkDistance: 120, linkStrength: 0.8, centerStrength: 1, velocityDecay: 0.4 }
+const P: ForceParams = { charge: -30, linkDistance: 30, linkStrengthScale: 1, positional: 0.03, velocityDecay: 0.4 }
+const P2: ForceParams = { charge: -120, linkDistance: 90, linkStrengthScale: 3, positional: 0.15, velocityDecay: 0.4 }
 
 function chain(deg: number[]): { nodes: SimNode[]; edges: SimEdge[]; deg: Uint32Array } {
   const nodes: SimNode[] = deg.map((_, i) => ({ idx: i, x: i * 10, y: 0 }))
@@ -25,7 +25,6 @@ function readForces(sim: ReturnType<typeof buildSimulation>, edge: SimEdge) {
     charge: f('charge').strength()(edge.source),
     linkDistance: f('link').distance()(edge),
     linkStrength: f('link').strength()(edge),
-    centerStrength: f('center').strength(),
     x: f('x').strength()(edge.source),
     y: f('y').strength()(edge.source),
     velocityDecay: sim.velocityDecay(),
@@ -36,10 +35,8 @@ describe('graph-layout-sim — one configuration, two entry points', () => {
   it('a fresh build carries the requested forces', () => {
     const g = chain([1, 2, 1])
     const got = readForces(buildSimulation(g.nodes, g.edges, g.deg, P2), g.edges[0])
-    expect(got).toEqual({
-      charge: -400, linkDistance: 120, linkStrength: 0.8, centerStrength: 1,
-      x: positionalStrength(1), y: positionalStrength(1), velocityDecay: 0.4,
-    })
+    // link strength: 3 / min(1, 2) capped at 1
+    expect(got).toEqual({ charge: -120, linkDistance: 90, linkStrength: 1, x: 0.15, y: 0.15, velocityDecay: 0.4 })
   })
 
   it('applyForceParams on a running simulation lands EXACTLY where a fresh build would', () => {
@@ -52,14 +49,34 @@ describe('graph-layout-sim — one configuration, two entry points', () => {
     expect(readForces(live, g.edges[1])).toEqual(readForces(fresh, h.edges[1]))
   })
 
-  it('linkStrength < 0 selects the adaptive 1 / min(degree) default, from the degrees it was given', () => {
+  it('link strength is d3\'s adaptive 1 / min(degree) times the scale, from the degrees it was given', () => {
     const g = chain([3, 2, 5])
     const sim = buildSimulation(g.nodes, g.edges, g.deg, P)
     const strength = (sim.force('link') as any).strength()
     expect(strength(g.edges[0])).toBe(1 / 2) // min(3, 2)
     expect(strength(g.edges[1])).toBe(1 / 2) // min(2, 5)
-    applyForceParams(sim, g.deg, { ...P, linkStrength: 0.25 })
-    expect((sim.force('link') as any).strength()(g.edges[0])).toBe(0.25)
+    applyForceParams(sim, g.deg, { ...P, linkStrengthScale: 0.25 })
+    expect((sim.force('link') as any).strength()(g.edges[0])).toBe(0.125)
+  })
+
+  it('there is no forceCenter: the pinned core is the centre, forceX/forceY the pull', () => {
+    const g = chain([1, 1])
+    const sim = buildSimulation(g.nodes, g.edges, g.deg, P)
+    expect(sim.force('center')).toBeUndefined()
+    expect(sim.force('x')).toBeDefined()
+    expect(sim.force('y')).toBeDefined()
+  })
+
+  it('collision is on exactly when radii are given, on the drawn radius plus the pad', () => {
+    const g = chain([1, 2, 1])
+    expect(buildSimulation(g.nodes, g.edges, g.deg, P).force('collide')).toBeUndefined()
+    const h = chain([1, 2, 1])
+    const sim = buildSimulation(h.nodes, h.edges, h.deg, P, Float32Array.from([2, 3.5, 11]))
+    const collide = sim.force('collide') as any
+    expect(collide).toBeDefined()
+    expect(collide.radius()(h.nodes[1])).toBeCloseTo(3.5 + COLLISION.padding, 6)
+    expect(collide.strength()).toBe(COLLISION.strength)
+    expect(collide.iterations()).toBe(1)
   })
 
   it('the simulation is built stopped — ticking is the worker\'s decision', () => {
@@ -102,10 +119,14 @@ function layoutRequest(token: number, n = 40) {
   return {
     kind: 'layout', token, ids,
     x: new Float32Array(n).fill(NaN), y: new Float32Array(n).fill(NaN), pinned: new Uint8Array(n),
-    links: Uint32Array.from(links), ...P, maxTicks: 400, snapshotMs: 1,
+    links: Uint32Array.from(links), radius: new Float32Array(n).fill(1.5), ...P, maxTicks: 400, snapshotMs: 1,
   }
 }
-const paramsUpdate = (token: number) => ({ kind: 'params', token, ...P2 })
+/** The re-tune the worker tests send: stronger repulsion, longer links, a weaker inward pull —
+ *  every change pushes the chain OUTWARD, so "spread grew" is the unambiguous check. (P2 above
+ *  also raises the inward pull 5x, which on a 40-node chain wins against the repulsion.) */
+const P_SPREAD: ForceParams = { charge: -120, linkDistance: 90, linkStrengthScale: 3, positional: 0.006, velocityDecay: 0.4 }
+const paramsUpdate = (token: number, alpha = 0.3) => ({ kind: 'params', token, alpha, ...P_SPREAD })
 const dones = (token: number) => posted.filter((m) => m.token === token && m.done)
 
 describe('graph-layout.worker — a params update re-heats the run in flight', () => {
@@ -131,11 +152,57 @@ describe('graph-layout.worker — a params update re-heats the run in flight', (
     const resettled = dones(1)[1]
     // it ran again (a fresh tick budget, not the exhausted one) …
     expect(resettled.ticks).toBeGreaterThan(0)
-    // … under different forces: charge -400 spreads a chain out further than -30.
+    // … under different forces: charge -120, link distance 90 and a weaker pull spread a chain further than -30 / 30 / 0.03.
     const spread = (m: Msg) => { let s = 0; for (let i = 0; i < m.pos.length; i += 2) s += Math.hypot(m.pos[i], m.pos[i + 1]); return s }
     expect(spread(resettled)).toBeGreaterThan(spread(settled))
     // and every response describes the same node list.
     expect(resettled.pos.length).toBe(settled.pos.length)
+  })
+
+  it('a gentler alpha re-heats too, and moves the settled layout less than the full 0.3', async () => {
+    // Two identical settles; one nudged at alpha 0.08, the other at 0.3, same new forces.
+    const run = async (token: number, alpha: number) => {
+      posted.length = 0
+      onmessage!({ data: layoutRequest(token) })
+      await waitFor(() => dones(token).length === 1)
+      const before = Float32Array.from(dones(token)[0].pos)
+      onmessage!({ data: paramsUpdate(token, alpha) })
+      await waitFor(() => dones(token).length === 2)
+      const after = dones(token)[1].pos
+      let d = 0; for (let i = 0; i < before.length; i += 2) d += Math.hypot(after[i] - before[i], after[i + 1] - before[i + 1])
+      return d
+    }
+    const gentle = await run(11, 0.08)
+    const full = await run(12, 0.3)
+    expect(gentle).toBeGreaterThan(0)
+    expect(gentle).toBeLessThan(full)
+  })
+
+  it('a seeded layout request (alpha 0.3) settles in fewer ticks than an unseeded one', async () => {
+    const run = async (token: number, seeded: boolean) => {
+      posted.length = 0
+      const req = layoutRequest(token, 60) as any
+      if (seeded) {
+        for (let i = 0; i < 60; i++) { req.x[i] = i * 30; req.y[i] = 0 }
+        req.alpha = 0.3
+      }
+      onmessage!({ data: req })
+      await waitFor(() => dones(token).length === 1)
+      return dones(token)[0].ticks
+    }
+    const cold = await run(21, false)
+    const warm = await run(22, true)
+    expect(warm).toBeGreaterThan(0)
+    expect(warm).toBeLessThan(cold)
+  })
+
+  it('a non-finite re-heat alpha does not wedge the run: it re-heats to the ceiling and finishes', async () => {
+    posted.length = 0
+    onmessage!({ data: layoutRequest(31) })
+    await waitFor(() => dones(31).length === 1)
+    onmessage!({ data: paramsUpdate(31, NaN) })
+    await waitFor(() => dones(31).length === 2)
+    expect(dones(31)[1].ticks).toBeGreaterThan(0)
   })
 
   it('a params message for a superseded token is dropped without a reply', async () => {

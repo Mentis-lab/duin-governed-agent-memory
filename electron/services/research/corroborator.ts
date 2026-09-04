@@ -1,6 +1,6 @@
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions'
 import { chatOnce } from '../providers/registry'
-import { readDeepResearchSettings } from './adapter-cascade'
+import { researchModel } from './adapter-cascade'
 import type { Claim } from './claims'
 import type { CuratedSource } from './collector'
 
@@ -66,7 +66,6 @@ export interface CorroborateOpts {
 
 const DEFAULT_THRESHOLD = 0.78
 const DEFAULT_MAX_OPPOSITION_PAIRS = 12
-const DEFAULT_OPPOSITION_MODEL = 'deepseek-v4-flash'
 
 const OPPOSITION_SYSTEM_PROMPT = `You decide whether two factual claims about the same topic CONTRADICT each other.
 
@@ -299,7 +298,11 @@ async function askIfOpposed(
   opts: CorroborateOpts
 ): Promise<OppositionVerdict | null> {
   if (!opts.callLlm) return null
-  const model = opts.modelOverride ?? readDeepResearchSettings().classifierModel ?? DEFAULT_OPPOSITION_MODEL
+  const model = researchModel('classifier', opts.modelOverride)
+  if (!model) {
+    console.warn('[research/corroborator] no usable model for the extraction role; opposition check skipped')
+    return null
+  }
   const messages: ChatCompletionMessageParam[] = [
     { role: 'system', content: OPPOSITION_SYSTEM_PROMPT },
     { role: 'user', content: `Claim A: ${textA}\nClaim B: ${textB}` }

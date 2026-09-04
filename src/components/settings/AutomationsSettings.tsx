@@ -1,246 +1,363 @@
-import { t } from '@/lib/i18n'
 import { useCallback, useEffect, useState } from 'react'
+import { t, tf } from '@/lib/i18n'
 import { Button } from '@/components/ui/Button'
+import { Input } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
 import { Toggle } from '@/components/ui/Toggle'
+import { PanelState } from '@/components/ui/PanelState'
+import {
+  SettingsLink,
+  SettingsLoadError,
+  SettingsLoading,
+  SettingsRow,
+  SettingsSection,
+  ToggleRow
+} from '@/components/ui/settings'
+import { useDirtyGuard } from '@/hooks/useDirtyGuard'
+import { invoke, query } from '@/lib/ipc-client'
+import { panelFromResult, panelLoading, type PanelStatus } from '@/lib/panel-state'
+import { describeError } from '@/lib/result'
 import { toast } from '@/stores/toast-store'
 import { useModelStore } from '@/stores/model-store'
 import { useSettingsStore } from '@/stores/settings-store'
+import type { Automation, CronValidation } from '@/stores/automations-store'
+import { AUTONOMY_CONFIRM_MESSAGE, autonomyChangeNeedsConfirm } from './LoopSettings'
 
-interface Automation {
-  id: string
-  label: string
-  cron: string
-  prompt: string
-  model: string | null
-  enabled: boolean
-  createdAt: number
-  lastRunAt: number | null
-  lastResult: string | null
-}
-
+// Settings → Automations, section "Scheduled": the two switches, the create form, and the
+// list. A schedule fires only when BOTH switches are on (automations-runner.ts gates cron
+// dispatch on backgroundAutonomy AND automationsEnabled), so both live here, one under the
+// other, with a warning row when the first is on and the second is off.
+//
 // No "every minute" preset: the runner floors the same automation at one dispatch per
 // 5 minutes, so offering it would promise a cadence that silently never happens.
-const CRON_HINTS: { label: string; expr: string }[] = [
-  { label: 'every 5 minutes', expr: '*/5 * * * *' },
-  { label: 'top of every hour', expr: '0 * * * *' },
-  { label: 'daily at 9am', expr: '0 9 * * *' },
-  { label: 'weekdays at 5pm', expr: '0 17 * * 1-5' }
-]
 
-export function AutomationsSettings() {
-  const [items, setItems] = useState<Automation[]>([])
-  const [label, setLabel] = useState('')
-  const [cron, setCron] = useState('0 9 * * *')
-  const [prompt, setPrompt] = useState('')
-  const [model, setModel] = useState<string>('')
-  const [busy, setBusy] = useState(false)
-  const models = useModelStore((s) => s.models)
+const DEFAULT_CRON = '0 9 * * *'
+const FIELD_LABEL = 'block text-[11px] font-medium text-[var(--text-secondary)]'
+const TEXTAREA =
+  'w-full resize-y rounded-md border border-[var(--panel-border)] bg-[var(--bg-primary)] px-2 py-1.5 text-[12px] leading-relaxed text-[var(--text-primary)] outline-none placeholder:text-[var(--text-muted)] focus:border-[var(--accent)] disabled:opacity-50'
+
+const automationsApi = (): typeof window.api.automations | undefined => window.api?.automations
+
+export function AutomationsSettings(): React.ReactElement {
   const settings = useSettingsStore((s) => s.settings)
   const updateSettings = useSettingsStore((s) => s.updateSettings)
+  const models = useModelStore((s) => s.models)
+
+  const [items, setItems] = useState<PanelStatus<Automation[]>>(panelLoading())
+  const [busyId, setBusyId] = useState<string | null>(null)
+
+  const [label, setLabel] = useState('')
+  const [cron, setCron] = useState(DEFAULT_CRON)
+  const [prompt, setPrompt] = useState('')
+  const [model, setModel] = useState('')
+  const [cronCheck, setCronCheck] = useState<CronValidation | null>(null)
+  const [adding, setAdding] = useState(false)
+
+  const anyFieldFilled =
+    label.trim() !== '' || prompt.trim() !== '' || model !== '' || cron.trim() !== DEFAULT_CRON
+  useDirtyGuard('settings:automations:new', t('the new automation form'), anyFieldFilled)
+
+  const schedulesOn = settings.automationsEnabled === true
+  const autonomy = settings.backgroundAutonomy === true
 
   const refresh = useCallback(async () => {
-    if (!window.api?.automations) return
-    const res = await window.api.automations.list()
-    if (res.success) setItems(res.data as Automation[])
+    setItems(panelFromResult(await query<Automation[]>(t('automations'), automationsApi()?.list)))
   }, [])
-
   useEffect(() => {
     void refresh()
   }, [refresh])
 
-  const handleCreate = async () => {
-    if (!label.trim() || !cron.trim() || !prompt.trim()) {
-      toast.error('label, cron, and prompt are required')
+  const checkCron = useCallback(async (expr: string) => {
+    const api = automationsApi()
+    const trimmed = expr.trim()
+    if (!trimmed) {
+      setCronCheck({ valid: false, error: t('A schedule is required.') })
       return
     }
-    setBusy(true)
-    const res = await window.api?.automations?.create({
-      label: label.trim(),
-      cron: cron.trim(),
-      prompt: prompt.trim(),
-      model: model || undefined
-    })
-    setBusy(false)
-    if (!res?.success) {
-      toast.error(res?.error ?? 'create failed')
-      return
-    }
-    setLabel('')
-    setPrompt('')
-    void refresh()
+    const r = await query<CronValidation>(t('the schedule check'), api ? () => api.validateCron(trimmed) : undefined)
+    setCronCheck(r.ok ? r.data : null)
+  }, [])
+
+  const pickPreset = (expr: string): void => {
+    setCron(expr)
+    void checkCron(expr)
   }
 
-  const toggleEnabled = async (a: Automation) => {
-    await window.api?.automations?.update(a.id, { enabled: !a.enabled })
-    void refresh()
+  const confirmAutonomy = (next: boolean): Promise<boolean> | false => {
+    if (
+      autonomyChangeNeedsConfirm(next) &&
+      typeof window.confirm === 'function' &&
+      !window.confirm(t(AUTONOMY_CONFIRM_MESSAGE))
+    ) {
+      return false
+    }
+    return updateSettings({ backgroundAutonomy: next })
   }
-  const runNow = async (a: Automation) => {
-    toast.info(`Running "${a.label}"…`)
-    const res = await window.api?.automations?.runNow(a.id)
-    if (!res?.success) toast.error(res?.error ?? 'run failed')
-    else toast.success('Done')
-    void refresh()
+
+  const handleCreate = async (): Promise<void> => {
+    const name = label.trim()
+    if (!name || !cron.trim() || !prompt.trim()) {
+      toast.error(t('Name, schedule, and prompt are required.'))
+      return
+    }
+    if (cronCheck && !cronCheck.valid) {
+      toast.error(cronCheck.error ?? t('That schedule does not parse.'))
+      return
+    }
+    const api = automationsApi()
+    setAdding(true)
+    try {
+      await invoke(
+        t('add automation'),
+        api
+          ? () => api.create({ label: name, cron: cron.trim(), prompt: prompt.trim(), model: model || undefined })
+          : undefined
+      )
+      toast.success(tf('Added "{name}".', { name }))
+      setLabel('')
+      setPrompt('')
+      setModel('')
+      setCron(DEFAULT_CRON)
+      setCronCheck(null)
+      await refresh()
+    } catch (e) {
+      toast.error(describeError(e, t('Could not add the automation.')))
+    } finally {
+      setAdding(false)
+    }
   }
-  const remove = async (a: Automation) => {
-    if (!confirm(`Delete automation "${a.label}"?`)) return
-    await window.api?.automations?.delete(a.id)
-    void refresh()
+
+  const toggleEnabled = async (a: Automation, next: boolean): Promise<void> => {
+    const api = automationsApi()
+    setBusyId(a.id)
+    try {
+      await invoke(t('update automation'), api ? () => api.update(a.id, { enabled: next }) : undefined)
+    } catch (e) {
+      toast.error(describeError(e, t('Could not update the automation.')))
+    } finally {
+      setBusyId(null)
+      await refresh()
+    }
   }
+
+  const runNow = async (a: Automation): Promise<void> => {
+    const api = automationsApi()
+    toast.info(tf('Running "{name}"…', { name: a.label }))
+    setBusyId(a.id)
+    try {
+      await invoke(t('run automation'), api ? () => api.runNow(a.id) : undefined)
+      toast.success(tf('"{name}" finished.', { name: a.label }))
+    } catch (e) {
+      toast.error(describeError(e, t('The run failed.')))
+    } finally {
+      setBusyId(null)
+      await refresh()
+    }
+  }
+
+  const remove = async (a: Automation): Promise<void> => {
+    if (!window.confirm(tf('Delete the automation "{name}"?', { name: a.label }))) return
+    const api = automationsApi()
+    setBusyId(a.id)
+    try {
+      await invoke(t('delete automation'), api ? () => api.delete(a.id) : undefined)
+      toast.success(tf('Deleted "{name}".', { name: a.label }))
+    } catch (e) {
+      toast.error(describeError(e, t('Could not delete the automation.')))
+    } finally {
+      setBusyId(null)
+      await refresh()
+    }
+  }
+
+  const presets = [
+    { label: t('Every 5 minutes'), expr: '*/5 * * * *' },
+    { label: t('Every hour'), expr: '0 * * * *' },
+    { label: t('Daily at 9am'), expr: '0 9 * * *' },
+    { label: t('Weekdays at 5pm'), expr: '0 17 * * 1-5' }
+  ]
+
+  const cronLine = !cronCheck
+    ? t('Cron format: minute, hour, day of month, month, weekday. Pick a preset or type your own.')
+    : cronCheck.valid
+      ? (cronCheck.description ?? t('Valid schedule')) +
+        (cronCheck.nextFireAt
+          ? ' · ' + tf('next run {when}', { when: new Date(cronCheck.nextFireAt).toLocaleString() })
+          : '')
+      : (cronCheck.error ?? t('That schedule does not parse.'))
 
   return (
-    <div className="space-y-4">
-      <div>
-        <h2 className="text-[14px] font-medium text-[var(--text-primary)]">{t('Automations')}</h2>
-        <p className="mt-1 text-[12px] text-[var(--text-muted)]">
-          Cron-scheduled prompts. Each automation runs its prompt as a one-shot call to the
-          selected model. Results are saved as "last run output" — no streaming UI. Local-only:
-          your computer must be running for the schedule to fire.
-        </p>
-      </div>
+    <SettingsSection
+      label={t('Scheduled')}
+      description={t('Runs your prompt as a read-only agent over your vault at the times you set, and keeps the last answer here.')}
+    >
+      <ToggleRow
+        label={t('Run automations on their schedule')}
+        hint={t('Off by default. A scheduled run is a real agent turn and costs tokens. Run now always works. The same automation fires at most once every 5 minutes.')}
+        checked={schedulesOn}
+        onChange={(next) => updateSettings({ automationsEnabled: next })}
+      />
+      <ToggleRow
+        label={t('Background autonomy')}
+        hint={
+          <>
+            {t('Lets schedules and loops run unattended and use tools. They stay confined to your vault unless Full computer access is on')}{' '}
+            (<SettingsLink tab="general">{t('General')}</SettingsLink>).{' '}
+            {t('DUIN also tunes its own retrieval settings on a timer; every change is snapshotted and can be undone. When off, nothing runs unattended and DUIN never edits its own settings.')}
+          </>
+        }
+        checked={autonomy}
+        onChange={confirmAutonomy}
+      />
+      {schedulesOn && !autonomy && (
+        <SettingsRow
+          tone="warning"
+          label={t('Schedules are paused until Background autonomy is on.')}
+          hint={t('Turn on Background autonomy above and they start firing. Run now still works.')}
+        />
+      )}
 
-      <div className="rounded border border-[var(--panel-border)] bg-[var(--bg-primary)] p-3">
-        <h3 className="mb-2 text-[12px] uppercase tracking-wider text-[var(--text-muted)]">
-          {t('New automation')}
-        </h3>
-        <div className="flex flex-col gap-2">
-          <input
-            type="text"
-            value={label}
-            onChange={(e) => setLabel(e.target.value)}
-            placeholder="label, e.g. 'morning PR triage'"
-            className="rounded border border-[var(--panel-border)] bg-[var(--bg-secondary)] px-2 py-1 text-[12px] outline-none focus:border-[var(--accent)]"
-          />
-          <input
-            type="text"
-            value={cron}
-            onChange={(e) => setCron(e.target.value)}
-            placeholder="cron (min hour dom month dow), e.g. 0 9 * * *"
-            className="rounded border border-[var(--panel-border)] bg-[var(--bg-secondary)] px-2 py-1 font-mono text-[12px] outline-none focus:border-[var(--accent)]"
-          />
-          <div className="flex flex-wrap gap-1">
-            {CRON_HINTS.map((h) => (
-              <button
-                key={h.expr}
-                type="button"
-                onClick={() => setCron(h.expr)}
-                className="rounded border border-[var(--panel-border)] bg-[var(--bg-secondary)] px-1.5 py-0.5 text-[11px] text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--text-primary)]"
-              >
-                {h.label}
-              </button>
-            ))}
-          </div>
-          <textarea
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            rows={3}
-            placeholder="prompt: e.g. 'Summarize today's open issues across the repo.'"
-            className="rounded border border-[var(--panel-border)] bg-[var(--bg-secondary)] px-2 py-1 text-[12px] outline-none focus:border-[var(--accent)]"
-          />
-          <Select
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-          >
-            <option value="">(use default model)</option>
-            {models.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.name || m.id}
-              </option>
-            ))}
-          </Select>
-          <div className="flex justify-end">
-            <button
-              onClick={handleCreate}
-              disabled={busy}
-              className="rounded border border-[var(--panel-border)] bg-[var(--bg-secondary)] px-3 py-1 text-[12px] hover:border-[var(--accent)] disabled:opacity-50"
-            >
-              {busy ? 'Saving…' : 'Add automation'}
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <div className="rounded border border-[var(--panel-border)] bg-[var(--bg-primary)] p-3">
-        <div className="flex items-start gap-3">
-          <Toggle
-            id="automations-enabled"
-            checked={settings?.automationsEnabled === true}
-            onChange={() =>
-              void updateSettings({ automationsEnabled: !(settings?.automationsEnabled === true) })
-            }
-            aria-label={t('Run automations on their schedule')}
-            className="mt-0.5"
-          />
-          <label htmlFor="automations-enabled" className="min-w-0 flex-1 cursor-pointer">
-            <span className="block text-[13px] text-[var(--text-primary)]">
-              {t('Run automations on their schedule')}
-            </span>
-            <span className="mt-0.5 block text-[12px] text-[var(--text-muted)]">
-              Off by default. Each scheduled run dispatches a real agent that can use tools and
-              costs tokens, so this is a separate yes from background autonomy. Running one by
-              hand always works. Whatever the schedule says, the same automation runs at most
-              once every 5 minutes.
-            </span>
-          </label>
-        </div>
-      </div>
-
-      <div>
-        <h3 className="mb-2 text-[12px] uppercase tracking-wider text-[var(--text-muted)]">
-          Configured ({items.length})
-        </h3>
-        {items.length === 0 && (
-          <p className="text-[12px] text-[var(--text-muted)]">{t('No automations yet.')}</p>
-        )}
-        {items.map((a) => (
-          <div
-            key={a.id}
-            className="mb-2 rounded border border-[var(--panel-border)] bg-[var(--bg-primary)] p-2 text-[12px]"
-          >
-            <div className="flex items-start gap-2">
-              <Toggle
-                checked={a.enabled}
-                onChange={() => void toggleEnabled(a)}
-                aria-label={t('Enabled')}
-                className="mt-1"
+      <SettingsRow label={t('New automation')} hint={t('A name, a schedule, and the question you want answered.')}>
+        <div className="space-y-3">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1">
+              <label htmlFor="automation-name" className={FIELD_LABEL}>
+                {t('Name')}
+              </label>
+              <Input
+                id="automation-name"
+                value={label}
+                onChange={(e) => setLabel(e.target.value)}
+                placeholder={t('Morning catch-up')}
+                disabled={adding}
               />
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <span className="font-medium">{a.label}</span>
-                  <span className="font-mono text-[11px] text-[var(--accent)]">{a.cron}</span>
-                  {a.model && (
-                    <span className="text-[11px] text-[var(--text-muted)]">· {a.model}</span>
-                  )}
-                </div>
-                <p className="mt-1 break-all text-[11px] text-[var(--text-muted)]">{a.prompt}</p>
-                {a.lastRunAt && (
-                  <details className="mt-1">
-                    <summary className="cursor-pointer text-[11px] text-[var(--text-muted)]">
-                      last run {new Date(a.lastRunAt).toLocaleString()}
-                    </summary>
-                    <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap rounded bg-[var(--bg-secondary)] p-2 font-mono text-[11px] text-[var(--text-secondary)]">
-                      {a.lastResult || '(no output)'}
-                    </pre>
-                  </details>
-                )}
-              </div>
-              <div className="flex shrink-0 flex-col gap-1">
-                <button
-                  onClick={() => void runNow(a)}
-                  className="rounded px-2 py-0.5 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-                >
-                  run now
-                </button>
-                <Button variant="danger"
-                  onClick={() => void remove(a)}
-                >
-                  delete
-                </Button>
-              </div>
+            </div>
+            <div className="space-y-1">
+              <label htmlFor="automation-model" className={FIELD_LABEL}>
+                {t('Model')}
+              </label>
+              <Select
+                id="automation-model"
+                className="w-full"
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                disabled={adding}
+              >
+                <option value="">{t('Follow my provider order')}</option>
+                {models.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name || m.id}
+                  </option>
+                ))}
+              </Select>
             </div>
           </div>
-        ))}
-      </div>
-    </div>
+          <div className="space-y-1">
+            <label htmlFor="automation-cron" className={FIELD_LABEL}>
+              {t('Schedule')}
+            </label>
+            <Input
+              id="automation-cron"
+              className="font-mono"
+              value={cron}
+              onChange={(e) => {
+                setCron(e.target.value)
+                setCronCheck(null)
+              }}
+              onBlur={() => void checkCron(cron)}
+              placeholder={DEFAULT_CRON}
+              spellCheck={false}
+              disabled={adding}
+            />
+            <div className="flex flex-wrap gap-1">
+              {presets.map((p) => (
+                <Button key={p.expr} size="sm" variant="ghost" onClick={() => pickPreset(p.expr)} disabled={adding}>
+                  {p.label}
+                </Button>
+              ))}
+            </div>
+            <p
+              aria-live="polite"
+              className={'text-[11px] ' + (cronCheck && !cronCheck.valid ? 'text-[var(--error)]' : 'text-[var(--text-muted)]')}
+            >
+              {cronLine}
+            </p>
+          </div>
+          <div className="space-y-1">
+            <label htmlFor="automation-prompt" className={FIELD_LABEL}>
+              {t('Prompt')}
+            </label>
+            <textarea
+              id="automation-prompt"
+              className={TEXTAREA}
+              rows={3}
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              placeholder={t('Every morning: what did I leave open yesterday?')}
+              disabled={adding}
+            />
+          </div>
+          <div className="flex justify-end">
+            <Button variant="primary" onClick={() => void handleCreate()} disabled={adding}>
+              {adding ? t('Saving…') : t('Add automation')}
+            </Button>
+          </div>
+        </div>
+      </SettingsRow>
+
+      <PanelState
+        state={items}
+        loading={<SettingsLoading what={t('automations')} />}
+        error={(message, retry) => <SettingsLoadError what={t('automations')} message={message} onRetry={retry} />}
+        empty={<p className="text-[12px] text-[var(--text-muted)]">{t('No automations yet.')}</p>}
+        onRetry={() => void refresh()}
+      >
+        {(list) => (
+          <>
+            {list.map((a) => (
+              <SettingsRow
+                key={a.id}
+                label={a.label}
+                hint={
+                  <span className="font-mono text-[11px]">
+                    {a.scheduleLabel ? `${a.scheduleLabel} · ` : ''}
+                    {a.cron}
+                    {a.model ? ` · ${a.model}` : ''}
+                  </span>
+                }
+                control={
+                  <>
+                    <Button size="sm" variant="ghost" disabled={busyId === a.id} onClick={() => void runNow(a)}>
+                      {t('Run now')}
+                    </Button>
+                    <Button size="sm" variant="danger" disabled={busyId === a.id} onClick={() => void remove(a)}>
+                      {t('Delete')}
+                    </Button>
+                    <Toggle
+                      checked={a.enabled}
+                      disabled={busyId === a.id}
+                      aria-label={tf('Run "{name}" on its schedule', { name: a.label })}
+                      onChange={(next) => void toggleEnabled(a, next)}
+                    />
+                  </>
+                }
+              >
+                <p className="break-words text-[12px] text-[var(--text-secondary)]">{a.prompt}</p>
+                {a.lastRunAt ? (
+                  <details className="mt-2">
+                    <summary className="cursor-pointer text-[11px] text-[var(--text-muted)]">
+                      {tf('Last run {when}', { when: new Date(a.lastRunAt).toLocaleString() })}
+                    </summary>
+                    <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap rounded bg-[var(--bg-secondary)] p-2 font-mono text-[11px] text-[var(--text-secondary)]">
+                      {a.lastResult || t('(no output)')}
+                    </pre>
+                  </details>
+                ) : null}
+              </SettingsRow>
+            ))}
+          </>
+        )}
+      </PanelState>
+    </SettingsSection>
   )
 }

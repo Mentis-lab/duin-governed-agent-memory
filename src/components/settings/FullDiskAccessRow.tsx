@@ -1,8 +1,21 @@
 import { useCallback, useEffect, useState } from 'react'
 import { t } from '@/lib/i18n'
 import { isMac } from '@/lib/platform'
+import { toast } from '@/stores/toast-store'
+import { invoke, query } from '@/lib/ipc-client'
+import { describeError } from '@/lib/result'
+import { panelFromResult, panelLoading, type PanelStatus } from '@/lib/panel-state'
+import { PanelState } from '@/components/ui/PanelState'
+import { Button } from '@/components/ui/Button'
+import { SettingsSection, SettingsRow, SettingsLoadError, SettingsLoading } from '@/components/ui/settings'
 
-type State = 'granted' | 'denied' | 'not-applicable' | 'unknown'
+type Status = 'granted' | 'denied' | 'not-applicable'
+
+const STATUS_LABEL: Record<Status, () => string> = {
+  granted: () => t('Granted'),
+  denied: () => t('Not granted'),
+  'not-applicable': () => t('Not applicable')
+}
 
 /**
  * Full Disk Access, macOS only.
@@ -16,12 +29,12 @@ type State = 'granted' | 'denied' | 'not-applicable' | 'unknown'
  * Renders nothing off macOS, where the concept does not exist.
  */
 export function FullDiskAccessRow() {
-  const [state, setState] = useState<State>('unknown')
+  const [state, setState] = useState<PanelStatus<Status>>(panelLoading())
   const [busy, setBusy] = useState(false)
 
   const refresh = useCallback(async () => {
-    const res = await window.api?.settings?.fullDiskAccessStatus?.()
-    setState(res?.success && res.data ? res.data : 'unknown')
+    const r = await query(t('Full Disk Access status'), () => window.api.settings.fullDiskAccessStatus())
+    setState(panelFromResult(r))
   }, [])
 
   useEffect(() => {
@@ -29,58 +42,62 @@ export function FullDiskAccessRow() {
     void refresh()
     // Re-check on focus: the user grants this in System Settings, in another window,
     // so nothing in DUIN would otherwise tell it the answer changed.
-    const onFocus = () => void refresh()
+    const onFocus = (): void => void refresh()
     window.addEventListener('focus', onFocus)
     return () => window.removeEventListener('focus', onFocus)
   }, [refresh])
 
   if (!isMac()) return null
 
-  const open = async () => {
+  const open = async (): Promise<void> => {
     setBusy(true)
-    const res = await window.api?.settings?.openFullDiskAccessSettings?.()
-    setBusy(false)
-    if (!res?.success || !res.data) {
+    try {
+      const opened = await invoke(t('open System Settings'), () => window.api.settings.openFullDiskAccessSettings())
       // The deep link can fail on a locked-down Mac. Say where to go rather than
       // leaving a button that appears to do nothing.
-      setState('unknown')
+      if (!opened) toast.error(t('Could not open the pane. In System Settings, go to Privacy & Security, then Full Disk Access.'))
+    } catch (e) {
+      toast.error(describeError(e, t('Could not open System Settings')))
+    } finally {
+      setBusy(false)
     }
   }
 
-  const granted = state === 'granted'
+  const what = t('the Full Disk Access status')
 
   return (
-    <div>
-      <div className="mb-2 text-[12px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
-        {t('Full Disk Access')}
-      </div>
-      <p className="mb-2 text-[12px] leading-relaxed text-[var(--text-muted)]">
-        macOS blocks apps from reading protected folders until you allow it. Grant this if
-        DUIN cannot reach a vault you have pointed it at.
-      </p>
-      <div className="flex items-center gap-3">
-        <span
-          className={`rounded px-2 py-1 font-mono text-[11px] ${
-            granted
-              ? 'bg-[var(--bg-primary)] text-[var(--success)]'
-              : 'bg-[var(--bg-primary)] text-[var(--text-muted)]'
-          }`}
+    <SettingsSection label={t('Full Disk Access')}>
+      <SettingsRow
+        label={t('Let DUIN read protected folders')}
+        hint={t('macOS blocks apps from reading protected folders until you allow it. Grant this if DUIN cannot reach a vault you have pointed it at.')}
+        control={
+          <Button onClick={() => void open()} disabled={busy}>
+            {busy ? t('Opening…') : t('Open System Settings')}
+          </Button>
+        }
+      >
+        <PanelState
+          state={state}
+          loading={<SettingsLoading what={what} />}
+          error={(message, retry) => <SettingsLoadError what={what} message={message} onRetry={retry} />}
+          empty={null}
+          isEmpty={() => false}
+          onRetry={() => void refresh()}
         >
-          {granted ? 'granted' : state === 'denied' ? 'not granted' : 'unknown'}
-        </span>
-        <button
-          onClick={() => void open()}
-          disabled={busy}
-          className="rounded-md border border-[var(--panel-border)] bg-[var(--bg-primary)] px-3 py-1.5 text-[12px] text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)] disabled:opacity-60"
-        >
-          {busy ? 'Opening…' : t('Open System Settings')}
-        </button>
-      </div>
-      <p className="mt-2 text-[11px] leading-relaxed text-[var(--text-muted)]">
-        In the pane that opens, switch DUIN on. If DUIN is not listed, use <b>+</b> to add
-        it from Applications. macOS ties this permission to an app’s code signature, so an
-        unsigned or ad-hoc build may need it re-applied after an update.
-      </p>
-    </div>
+          {(status) => (
+            <span
+              className={`rounded bg-[var(--bg-tertiary)] px-2 py-1 font-mono text-[11px] ${
+                status === 'granted' ? 'text-[var(--success)]' : 'text-[var(--text-muted)]'
+              }`}
+            >
+              {STATUS_LABEL[status]()}
+            </span>
+          )}
+        </PanelState>
+        <p className="mt-2 text-[11px] leading-relaxed text-[var(--text-muted)]">
+          {t('In the pane that opens, switch DUIN on. If DUIN is not listed, use + to add it from Applications. An unsigned build may need this granted again after an update.')}
+        </p>
+      </SettingsRow>
+    </SettingsSection>
   )
 }

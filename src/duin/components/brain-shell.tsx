@@ -10,8 +10,7 @@ import { t } from '@/lib/i18n'
 // the bottom of the whole workspace and hands off to the chat popup.
 
 import dynamic from "@/duin/lib/dynamic";
-import SpriteText from "three-spritetext"; // persistent text labels for the 3D graph
-import * as THREE from "three"; // image sprites for project/core node logos (billboarded in 3D)
+import { drawCoreMark } from "@/duin/lib/core-mark"; // the core mark, shared with the cosmos sprite and the 3D billboard
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Bookmark, CalendarClock, Check, ChevronDown, ChevronRight, FileText, Folder, FolderKanban, Hash, Layers,
@@ -24,8 +23,11 @@ import {
 import { forceX, forceY } from "d3-force"; // per-node inward pull; forceCenter cannot compact
 import { runAgent } from "@/duin/lib/agui-client";
 import { useGraphLayout } from "@/duin/lib/use-graph-layout";
-import { positionalStrength } from "@/duin/lib/graph-layout-forces";
-import { cullForLod, focusNeighbourhood } from "@/duin/lib/graph-lod";
+import { slidersToForces, reheatAlphaFor, linkStrengthFor, VELOCITY_DECAY } from "@/duin/lib/graph-layout-forces"; // the sliders → d3 forces, one mapping for both engines
+import { cullForLod, focusNeighbourhood, budgetBySalience } from "@/duin/lib/graph-lod";
+import { simParams as gpuSimParams, denseClusters } from "@/duin/lib/graph-gpu-layout"; // cosmos's own simulation as the physics, opt-in via `localStorage.brainLayout=gpu`; the d3 worker is the default
+import { shapeForNode, arrowForLink, sizeForNode, layerAlpha, linkInkBoost, blendHex, clusterDisplayLabel, CLUSTER_TINT, LAYER_WEIGHT, REFIT_DRIFT } from "@/duin/lib/graph-visual-grammar"; // the map's visual grammar (shape = kind family, size = connectedness, extracted layer recedes; provenance in the link tooltip)
+import { loadPositions, savePositions, positionsKey } from "@/duin/lib/graph-positions"; // the map comes back where it was
 import { LayoutSlider } from "@/duin/components/layout-slider";
 import { getGraphColors, resolveColor } from "@/duin/lib/graph-colors";
 import { DEFAULT_KIND_COLOR, getSchemeColors, getSchemePalette } from "@/duin/lib/graph-schemes";
@@ -44,7 +46,9 @@ import { markOnboarded } from "@/lib/brain-seed"; // CTA converts the demo → a
 import { CosmosBrainCanvas, type CosmosBrainCanvasHandle } from "@/duin/components/cosmos-brain-canvas"; // Tier 3: GPU 2D renderer
 
 const ForceGraph2D = dynamic(() => import("react-force-graph-2d"), { ssr: false });
-const ForceGraph3D = dynamic(() => import("react-force-graph-3d"), { ssr: false }); // 3D brain toggle (reversible — default off)
+// The 3D map is gone (2026-09-03, on the operator's call): its control had been withdrawn on
+// 2026-08-26 for lag, and the path plus three.js, three-spritetext and react-force-graph-3d were
+// dead weight in the tree. `git log -- src/duin/components/brain-graph-3d.tsx` has the code.
 const AGUI_URL = (): string =>
   ((typeof window !== "undefined" && (window as any).__DUIN_BASE) || "http://127.0.0.1:8799") + "/agui";
 const km = (k: string) => KIND_META[k] || { color: "#94a3b8", label: k };
@@ -113,14 +117,6 @@ type GraphLayout = { nodeSpacing: number; linkLength: number; linkForce: number;
 /** The four slider-driven axes — everything in GraphLayout that moves a node. */
 type ForceAxis = "nodeSpacing" | "linkLength" | "linkForce" | "centerForce";
 const DEFAULT_GRAPH_LAYOUT: GraphLayout = { nodeSpacing: 50, linkLength: 50, linkForce: 50, centerForce: 50, connectionDepth: 2 };
-// Map a 0..100 slider (50 = the graph's current value) to a physics value via two
-// linear ramps that meet at the mid anchor, so 50 lands EXACTLY on `atMid`. Values
-// are clamped to sane endpoints; the CORE stays pinned (fx/fy=0) regardless, so no
-// setting can eject it.
-function rampFrom50(v: number, atLow: number, atMid: number, atHigh: number): number {
-  const t = Math.max(0, Math.min(100, v));
-  return t <= 50 ? atLow + (atMid - atLow) * (t / 50) : atMid + (atHigh - atMid) * ((t - 50) / 50);
-}
 const D_PATH = "M28 16 H52 C72 16 84 28 84 50 C84 72 72 84 52 84 H28 Z M44 30 H51 C61 30 68 39 68 50 C68 61 61 70 51 70 H44 Z";
 let _dLogo: Path2D | null = null;
 const dLogo = (): Path2D | null => { if (typeof Path2D === "undefined") return null; if (!_dLogo) _dLogo = new Path2D(D_PATH); return _dLogo; };
@@ -133,63 +129,8 @@ function logoFor(url: string): HTMLImageElement | null {
   if (!img) { img = new Image(); img.src = url; _logoCache[url] = img; }
   return img.complete && img.naturalWidth ? img : null;
 }
-// The DUIN CORE mark (the 2D vector logo) rasterised once to a texture, so 3D can show the core as a
-// screen-facing billboard sprite (THREE.Sprite always faces the camera and never rotates).
-let _coreTex: THREE.CanvasTexture | null = null;
-// Cache key = theme mode + accent; the rasterised core must rebuild when either
-// changes, else 3D keeps a stale dark badge / old accent dot after a theme switch.
-let _coreTexKey = "";
-// The DUIN core mark: brain-wave lines within a ring on the dark brand ground,
-// drawn in a 100×100 box. Shared by the 3D billboard sprite and the 2D core node
-// so the graph core matches the titlebar logo + app icon.
-let _corePath: Path2D | null = null;
-const corePath = (): Path2D | null => {
-  if (typeof Path2D === "undefined") return null;
-  if (!_corePath) _corePath = new Path2D("M50 96 C29 93 18 74 25 55 C29 43 41 37 51 41 C51 29 67 21 81 27 C87 17 105 19 111 31 C125 32 133 50 126 65 C120 82 107 93 89 90 C69 87 57 73 64 59 C69 49 84 47 93 55");
-  return _corePath;
-};
-function drawCoreMark(ctx: CanvasRenderingContext2D, accentOverride?: string): void {
-  const light = typeof document !== "undefined" && document.documentElement.dataset.themeMode === "light";
-  ctx.save();
-  // Brand badge — light paper on the light theme, near-black brand ground on dark.
-  ctx.beginPath(); ctx.arc(50, 50, 49, 0, 2 * Math.PI);
-  ctx.fillStyle = light ? "#EEF0F3" : "#101013"; ctx.fill();
-  // Single continuous-line brain mark (150×120 viewBox), fitted into the badge;
-  // content centres ~ (74,58). Matches the titlebar logo + app icon.
-  const p = corePath();
-  if (p) {
-    ctx.save();
-    ctx.translate(50, 53); ctx.scale(0.52, 0.52); ctx.translate(-74, -58);
-    // Ink strokes on light paper; off-white strokes on the dark badge.
-    ctx.strokeStyle = light ? "#191A1E" : "#F2F0EA"; ctx.lineWidth = 6.4; ctx.lineCap = "round"; ctx.lineJoin = "round";
-    ctx.stroke(p);
-    // Accent node — use the caller-hoisted value if given (the 2D draw passes one
-    // read once per render, not per frame); else read live (cached-texture path).
-    const accent = accentOverride || ((typeof document !== "undefined"
-      ? getComputedStyle(document.documentElement).getPropertyValue("--accent").trim()
-      : "") || "#d97757");
-    ctx.beginPath(); ctx.arc(50, 96, 6.4, 0, 2 * Math.PI); ctx.fillStyle = accent; ctx.fill();
-    ctx.restore();
-  }
-  ctx.restore();
-}
-
-function coreLogoTexture(): THREE.CanvasTexture | null {
-  if (typeof document === "undefined") return _coreTex;
-  const mode = document.documentElement.dataset.themeMode || "dark";
-  const accent = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim();
-  const key = mode + "|" + accent;
-  if (_coreTex && _coreTexKey === key) return _coreTex;
-  const c = document.createElement("canvas"); c.width = 256; c.height = 256;
-  const ctx = c.getContext("2d"); if (!ctx) return _coreTex;
-  ctx.save(); ctx.translate(128, 128); ctx.scale(2.3, 2.3); ctx.translate(-50, -50); // centre the 100×100 mark
-  drawCoreMark(ctx, accent);
-  ctx.restore();
-  _coreTex?.dispose?.();
-  _coreTex = new THREE.CanvasTexture(c); _coreTex.needsUpdate = true;
-  _coreTexKey = key;
-  return _coreTex;
-}
+// The core mark itself (corePath / drawCoreMark) lives in @/duin/lib/core-mark, shared with the
+// cosmos GPU sprite and the 3D billboard.
 
 // `layers` mirrors the Explorer's three tiers (BrainExplorerPanel TIER_LAYERS). Both surfaces read
 // the SAME `lens` off brain-store, so a lens the graph does not know falls through to LENSES[0] =
@@ -280,38 +221,6 @@ export function BrainMap({
     if (el) pinHolder();
   }, [pinHolder]);
   const fgRef = useRef<any>(null);
-  // ── Framing: show the WHOLE brain, and come back to it when left alone ──────────
-  // The graph opened at whatever zoom the simulation happened to settle on, which on a
-  // large vault is deep inside the cloud — you land on a handful of nodes with no idea
-  // the rest exists. zoomToFit frames every node instead.
-  const didInitialFitRef = useRef(false);
-  const idleFitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const IDLE_REFIT_MS = 60_000;
-
-  /** Frame the whole graph. Safe on both 2D and 3D — both expose zoomToFit. */
-  const fitGraph = useCallback((durationMs = 600) => {
-    const fg = fgRef.current;
-    if (!fg || typeof fg.zoomToFit !== "function") return;
-    try {
-      // 60px padding so edge labels are not clipped against the canvas border.
-      fg.zoomToFit(durationMs, 60);
-    } catch {
-      /* the graph can unmount mid-animation; framing is never worth throwing over */
-    }
-  }, []);
-
-  /** Any deliberate interaction resets the idle clock. Re-framing under someone's
-   *  hands would yank the view away mid-inspection, which is worse than not doing it. */
-  const markGraphInteraction = useCallback(() => {
-    if (idleFitTimerRef.current) clearTimeout(idleFitTimerRef.current);
-    idleFitTimerRef.current = setTimeout(() => fitGraph(900), IDLE_REFIT_MS);
-  }, [fitGraph]);
-
-  useEffect(() => {
-    return () => {
-      if (idleFitTimerRef.current) clearTimeout(idleFitTimerRef.current);
-    };
-  }, []);
   const omniRef = useRef<HTMLTextAreaElement>(null);
   // ── viewport culling (2D) ───────────────────────────────────────────────────────────────
   // force-graph repaints EVERY node and link on every redraw — it has no frustum culling of
@@ -346,29 +255,62 @@ export function BrainMap({
   const listSig = useRef({ p: "", t: "", s: "" });        // skip no-op list updates (avoid re-render churn)
   const [dim, setDim] = useState(() => ({ w: window.innerWidth, h: window.innerHeight })); // canvas = window size; the wrapper only clips (see the geometry effect below)
   dimRef.current = dim; // the view-rect math reads the canvas size without re-subscribing
-  // 3D brain toggle — default OFF, but the user's choice persists (like Lite/Labels).
-  // FORCE_3D_WITHDRAWN — the 2D/3D control was removed from the Display menu on the
-  // operator's call (2026-08-26): 3D is laggy on a graph this dense, and they want to
-  // revisit it themselves rather than have it half-fixed underneath them.
-  //
-  // Pinned to false rather than deleted, deliberately. Every 3D branch below — the
-  // ForceGraph3D holder, the SpriteText labels, the billboard textures, the
-  // worker-suppression rule that exists BECAUSE 3D evolves its own third dimension —
-  // stays compiled and reachable, so returning to it is restoring one control rather
-  // than reconstructing a view. Deleting them would make "I will work on it in the
-  // future" mean rewriting it.
-  //
-  // A previously-stored `brain3d: "1"` is deliberately IGNORED rather than migrated: an
-  // operator who left it on last session would otherwise land in the laggy view with no
-  // control to leave it by. The key is left in localStorage untouched, so flipping this
-  // back to the stored read restores their choice exactly.
-  const is3d = false;
+  // A stored `brain3d` key from the withdrawn 3D view is ignored and left untouched.
   // Tier 3: the 2D map renders on cosmos.gl (GPU points/links — no per-element canvas
   // replay, no practical node ceiling) by default. `localStorage.brainRenderer=legacy`
   // is the operator escape hatch back to the canvas renderer, and a WebGL/device init
   // failure at runtime flips the same switch automatically for the session.
   const [use2dGpu, setUse2dGpu] = useState(() => { try { return localStorage.getItem("brainRenderer") !== "legacy"; } catch { return true; } });
   const cosmosRef = useRef<CosmosBrainCanvasHandle>(null);
+  // The physics engine. The d3 worker is the default (graph-layout-forces holds its tuning):
+  // the operator's verdict on the GPU simulation as the default (2026-09-03, "looks different
+  // but not as beautiful", the cluster pull made one blob) put it behind a flag. cosmos's own
+  // simulation stays available with `localStorage.brainLayout=gpu` (node drag with live
+  // neighbours, a cluster pull while Clusters is on). The legacy canvas and 3D paths always use
+  // the worker, since only cosmos can run the GPU simulation. Read once: the renderer's config
+  // is set at construction.
+  const [layoutPref] = useState<"gpu" | "worker">(() => { try { return localStorage.getItem("brainLayout") === "gpu" ? "gpu" : "worker"; } catch { return "worker"; } });
+  const gpuLayout = layoutPref === "gpu" && use2dGpu;
+  // ── Framing: show the WHOLE brain, and come back to it when left alone ──────────
+  // The graph opened at whatever zoom the simulation happened to settle on, which on a
+  // large vault is deep inside the cloud — you land on a handful of nodes with no idea
+  // the rest exists. Framing shows every node instead.
+  //
+  // Declared HERE, below the renderer state, because it has to know which renderer is
+  // live: `fgRef.zoomToFit` reaches only the legacy force-graph canvas, and cosmos is
+  // the default — so for most operators this routed to a null ref and did nothing.
+  const didInitialFitRef = useRef(false);
+  const idleFitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const IDLE_REFIT_MS = 60_000;
+
+  /** Frame the whole graph, on whichever renderer is live. */
+  const fitGraph = useCallback((durationMs = 600, opts?: { onlyIfUntouched?: boolean }) => {
+    if (use2dGpu) { cosmosRef.current?.fitView(durationMs, opts); return; }
+    const fg = fgRef.current;
+    if (!fg || typeof fg.zoomToFit !== "function") return;
+    try {
+      // 60px padding so edge labels are not clipped against the canvas border.
+      fg.zoomToFit(durationMs, 60);
+    } catch {
+      /* the graph can unmount mid-animation; framing is never worth throwing over */
+    }
+  }, [use2dGpu]);
+
+  /** Any deliberate interaction resets the idle clock. Re-framing under someone's
+   *  hands would yank the view away mid-inspection, which is worse than not doing it.
+   *  Armed only by the force-graph paths. On the cosmos renderer the only automatic
+   *  re-frame is afterSettle's, and it asks the renderer to skip a camera the operator
+   *  has touched; otherwise framing is the operator's call via Recenter. */
+  const markGraphInteraction = useCallback(() => {
+    if (idleFitTimerRef.current) clearTimeout(idleFitTimerRef.current);
+    idleFitTimerRef.current = setTimeout(() => fitGraph(900), IDLE_REFIT_MS);
+  }, [fitGraph]);
+
+  useEffect(() => {
+    return () => {
+      if (idleFitTimerRef.current) clearTimeout(idleFitTimerRef.current);
+    };
+  }, []);
   // How many ticks the ON-SCREEN engine may run after a graphData change.
   //
   // force-graph's update() hard-codes `.alpha(1)` and restarts the countdown on EVERY graphData
@@ -385,6 +327,10 @@ export function BrainMap({
   // the lock. Clicking empty space clears the lock. Null/null = full graph.
   const [hoverId, setHoverId] = useState<string | null>(null);
   const [lockId, setLockId] = useState<string | null>(null);
+  // Lasso selection (shift + drag on the map): the ids inside the rectangle. Lit like a focus,
+  // labelled, and offered to the chat as "these notes". Null = no selection.
+  const [lassoIds, setLassoIds] = useState<string[] | null>(null);
+  const lassoSet = useMemo(() => (lassoIds && lassoIds.length ? new Set(lassoIds) : null), [lassoIds]);
   // Recency fade: when on, nodes fade by file age (newest full → old dim) so
   // "what's alive now" reads at a glance. Uses node.mtime; persisted like the rest.
   const [showRecent, setShowRecent] = useState(() => { try { return localStorage.getItem("brainRecent") === "1"; } catch { return false; } });
@@ -404,15 +350,25 @@ export function BrainMap({
   // All the graph display toggles live behind ONE "Display" button (a popover) so
   // the graph surface stays clean instead of showing 5 chips + a legend row.
   const [displayOpen, setDisplayOpen] = useState(false);
-  // Escape closes the Display popover (outside-click already does via its backdrop).
+  // Right-click menu on a node (screen coords from the pointer event). Null = closed.
+  const [nodeMenu, setNodeMenu] = useState<{ node: any; x: number; y: number } | null>(null);
+  // Escape, innermost first: the node menu, then the Display popover, then a locked
+  // neighbourhood. The lock used to be clearable only by clicking empty canvas, which is hard
+  // to find on a dense map, and the keyboard had no way into this view at all.
   useEffect(() => {
-    if (!displayOpen) return;
+    if (!displayOpen && !nodeMenu && lockId == null && !lassoIds) return;
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === "Escape") setDisplayOpen(false);
+      if (e.key !== "Escape") return;
+      const el = e.target as HTMLElement | null;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
+      if (nodeMenu) setNodeMenu(null);
+      else if (displayOpen) setDisplayOpen(false);
+      else if (lassoIds) setLassoIds(null);
+      else setLockId(null);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [displayOpen]);
+  }, [displayOpen, nodeMenu, lockId, lassoIds]);
   const filesRef = useRef<HTMLInputElement>(null);
   const [uploaded, setUploaded] = useState<string[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -581,8 +537,18 @@ export function BrainMap({
     return () => { window.removeEventListener("resize", onResize); ro?.disconnect(); if (raf != null) cancelAnimationFrame(raf); };
   }, [pinHolder]);
 
+  // The layout remembered from the last launch, per vault (graph-positions). A node that has no
+  // live position yet seeds from it, so a launch re-heats the map you know instead of scattering
+  // it from d3's spiral and settling for eight seconds into a different picture.
+  const vaultDir = useSettingsStore((s) => s.settings.localBrainNotesDir);
+  // Seeding waits for the settings to hydrate: before that `vaultDir` is '' and the key is the
+  // wrong one, and a graph built then would carry unseeded nodes that the real key could no
+  // longer seed (carried positions win), then save its scattered layout OVER the remembered one.
+  const settingsLoaded = useSettingsStore((s) => s.loaded);
+  const posKey = useMemo(() => positionsKey(vaultDir), [vaultDir]);
+  const storedPos = useMemo(() => (settingsLoaded ? loadPositions(typeof window !== "undefined" ? window.localStorage : null, posKey) : null), [posKey, settingsLoaded]);
   const graphData = useMemo(() => {
-    if (!data) return { nodes: [] as any[], links: [] as any[] };
+    if (!data || !storedPos) return { nodes: [] as any[], links: [] as any[] };
     const deg: Record<string, number> = {};
     for (const l of data.links) { deg[l.source] = (deg[l.source] || 0) + 1; deg[l.target] = (deg[l.target] || 0) + 1; }
     // CORE pinned at centre; everything else (incl. people, who are now merged into their connected
@@ -590,8 +556,9 @@ export function BrainMap({
     const prev = prevNodes.current;
     let nodes = data.nodes.map((n) => {
       const p = prev.get(n.id); // carry the live force-sim position so an unchanged node doesn't jump on refresh
+      const sp = p ? undefined : storedPos.get(n.id); // else the position remembered from the last launch
       return { ...n, deg: deg[n.id] || 0,
-        ...(p ? { x: p.x, y: p.y, z: p.z, vx: p.vx, vy: p.vy, vz: p.vz } : {}),
+        ...(p ? { x: p.x, y: p.y, z: p.z, vx: p.vx, vy: p.vy, vz: p.vz } : sp ? { x: sp[0], y: sp[1] } : {}),
         ...(n.id === data.core ? { fx: 0, fy: 0 } : {}) };
     });
     // A node with no carried position is NEW. d3 would place it on a phyllotaxis spiral around
@@ -621,6 +588,9 @@ export function BrainMap({
             const h = hashId(n.id);
             n.x = sx / c + ((h % 41) - 20);
             n.y = sy / c + (((h >> 6) % 41) - 20);
+            // A guess, not a settled place: the layout worker must not count it as seeded
+            // when it decides how hot the run starts (use-graph-layout).
+            n.__seed = "centroid";
           }
         }
       }
@@ -635,7 +605,7 @@ export function BrainMap({
     }
     prevNodes.current = new Map(nodes.map((n: any) => [n.id, n])); // force-graph mutates these with x/y each tick
     return { nodes, links };
-  }, [data, showBrain]);
+  }, [data, showBrain, storedPos]);
 
   // Graph always renders in the lightweight "Lite" profile: no link particles, fewer label
   // sprites, lower sphere detail, faster settle. (The Lite/Full performance toggle was removed.)
@@ -657,6 +627,7 @@ export function BrainMap({
   // It culls the two highest-count, lowest-signal link families and the degree-0/1 leaves, only
   // above a threshold, and never structure the operator navigates by (core, hubs, roadmap kinds).
   const LOD_NODE_FLOOR = 2500; // below this the graph is comfortable; leave it whole
+  const LOD_BUDGET = 2500;     // above this, after the cull, keep the skeleton + the most salient (T2)
   // `mentions` (7.6k) + `synonym` (3.9k) are ~54% of all edges and are the least informative
   // at overview zoom — synonym edges in particular are the entity auto-merge's bookkeeping.
   const LOD_BULK_LINKS = useMemo(() => new Set(["mentions", "synonym"]), []);
@@ -671,28 +642,43 @@ export function BrainMap({
   // clusterFilter: when set, the graph is FILTERED down to just that community.
   const [clusterFilter, setClusterFilter] = useState<number | null>(null);
   useEffect(() => {
-    // Only fetch once the brain graph is actually loaded. On a cold launch with
-    // Clusters persisted ON, the toggle used to fire before the brain index was
-    // ready → the IPC returned empty → the effect never retried (it only re-ran on
-    // toggle), so Clusters silently failed until toggled off/on. Gating on `data`
-    // and storing only NON-empty rows makes it retry on the next graph refresh.
-    if (!colorByCommunity || communityRows.length || !data) return;
+    // Fetched whenever the GRAPH changes (`data` identity moves only on a signature change),
+    // not once per component life: after "Build my brain" or a reindex the new entities used
+    // to render in folder colors under Clusters ON, with a stale legend, until the toggle was
+    // cycled. The old rows stay on screen until the new ones arrive (no flash of folder
+    // colors), and an empty answer (the brain index not ready on a cold launch) is retried a
+    // few seconds later instead of waiting for the next graph change.
+    if (!colorByCommunity || !data) return;
     let alive = true;
-    void (async () => {
+    let retry: ReturnType<typeof setTimeout> | null = null;
+    const fetchRows = async (attempt: number): Promise<void> => {
       try {
         const r = await window.api?.brain?.graphCommunities?.();
         const rows = r?.success ? (r.data as { id: string; community: number; label: string; color: string }[]) : [];
-        if (alive && Array.isArray(rows) && rows.length) setCommunityRows(rows);
+        if (!alive) return;
+        if (Array.isArray(rows) && rows.length) setCommunityRows(rows);
+        else if (attempt < 2) retry = setTimeout(() => void fetchRows(attempt + 1), 4000);
       } catch {
-        /* transient (brain not ready yet) — retry on the next data change */
+        if (alive && attempt < 2) retry = setTimeout(() => void fetchRows(attempt + 1), 4000);
       }
-    })();
+    };
+    void fetchRows(0);
     return () => {
       alive = false;
+      if (retry) clearTimeout(retry);
     };
-  }, [colorByCommunity, communityRows, data]);
+  }, [colorByCommunity, data]);
   // Turning Clusters off drops any active isolation so the full graph returns.
   useEffect(() => { if (!colorByCommunity) setClusterFilter(null); }, [colorByCommunity]);
+  // Isolating a cluster relays the survivors out from under a camera that does not move, so
+  // the cluster could land entirely off-screen (the case the Recenter button was added for).
+  // Frame it as soon as the renderer holds the new node set; Recenter remains for after the
+  // settle moves things.
+  useEffect(() => {
+    if (clusterFilter == null) return;
+    const id = requestAnimationFrame(() => fitGraph(600));
+    return () => cancelAnimationFrame(id);
+  }, [clusterFilter, fitGraph]);
   const communityColors = useMemo(() => { const m: Record<string, string> = {}; for (const r of communityRows) m[r.id] = r.color; return m; }, [communityRows]);
   const communityOf = useMemo(() => new Map(communityRows.map((r) => [r.id, r.community])), [communityRows]);
   // Named clusters for the legend/filter: group by community, drop isolated
@@ -706,6 +692,18 @@ export function BrainMap({
     }
     return [...g.values()].filter((c) => c.size >= 2).sort((a, b) => b.size - a.size);
   }, [communityRows]);
+  // Community NAMES for the map's overview (Clusters on): the largest communities and their
+  // members, so the renderer can put each name at its centre of mass instead of piling node
+  // labels there. The tint in colorOf says which community a node is in; this says which is which.
+  const clusterLabels = useMemo(() => {
+    if (!colorByCommunity || clusterList.length === 0) return null;
+    const members = new Map<number, string[]>();
+    for (const r of communityRows) {
+      if (r.community < 0) continue;
+      let a = members.get(r.community); if (!a) { a = []; members.set(r.community, a); } a.push(r.id);
+    }
+    return clusterList.slice(0, 12).map((c) => ({ label: clusterDisplayLabel(c.label), color: c.color, members: members.get(c.community) ?? [] }));
+  }, [colorByCommunity, clusterList, communityRows]);
   // The graph actually rendered: filtered to one cluster when clusterFilter is set.
   const displayGraph = useMemo(() => {
     if (clusterFilter == null) return graphData;
@@ -725,9 +723,18 @@ export function BrainMap({
     // The cull itself is pure graph maths and lives in graph-lod.ts (with tests). Only the
     // domain judgement — which link families are bulk, what counts as structure worth keeping
     // however sparsely linked — belongs here.
-    return cullForLod(displayGraph.nodes as any[], displayGraph.links as any[], {
-      bulkLinkTypes: LOD_BULK_LINKS,
-      isRoleKept: (n: any) => isCornerstone(n) || ROADMAP_KINDS.has(n.kind),
+    const isRoleKept = (n: any): boolean => isCornerstone(n) || ROADMAP_KINDS.has(n.kind);
+    const culled = cullForLod(displayGraph.nodes as any[], displayGraph.links as any[], { bulkLinkTypes: LOD_BULK_LINKS, isRoleKept });
+    // T2. The cull is a FRACTION (it kept 53% of the live map), so the drawn set still grew
+    // with the vault. Above the budget, keep the skeleton and the most SALIENT of the rest:
+    // connectedness tempered by recency, the two signals the home digest ranks by. The
+    // disclosure in Display states the numbers and "Show all nodes" overrules it.
+    if (culled.nodes.length <= LOD_BUDGET) return culled;
+    const now = Date.now();
+    return budgetBySalience(culled.nodes as any[], culled.links as any[], {
+      budget: LOD_BUDGET,
+      isRoleKept,
+      salienceOf: (n: any) => Math.log1p(n.deg || 0) * (n.mtime ? recencyMul(n.mtime, now) : 0.6),
     });
   }, [displayGraph, lodActive, LOD_BULK_LINKS]);
   // Structural identity of what is being laid out. Node ids + link count is enough to tell
@@ -738,50 +745,8 @@ export function BrainMap({
   );
   useEffect(() => { try { const s = localStorage.getItem("brainLabels"); if (s != null) setShowLabels(s === "1"); } catch { /* ignore */ } }, []);
   const toggleLabels = () => setShowLabels((v) => { const nv = !v; try { localStorage.setItem("brainLabels", nv ? "1" : "0"); } catch { /* ignore */ } return nv; });
-  // The `brain3d` write is GONE while the control is withdrawn (FORCE_3D_WITHDRAWN).
-  // With `is3d` pinned false it would have written "0" on every mount and quietly
-  // destroyed a stored "1" — erasing the operator's own choice on the way to restoring
-  // it, which is the opposite of leaving the key untouched. Restore this line together
-  // with the control and the stored read.
   // Persist the Clusters choice (match Lite/Labels) — write on any change.
   useEffect(() => { try { localStorage.setItem("brainClusters", colorByCommunity ? "1" : "0"); } catch { /* ignore */ } }, [colorByCommunity]);
-
-  // 3D labels: every node label (the core anchor aside) appears at the SAME camera
-  // distance ("zoom in to read"), mirroring the 2D scale gate — so no labels render
-  // from farther than others. Per-frame distance cull against the live camera.
-  useEffect(() => {
-    if (!is3d) return;
-    const LABEL_DIST = 150; // world-units; tune for how close you must be before note labels appear
-    let raf = 0;
-    let lastX = NaN, lastY = NaN, lastZ = NaN, lastRun = 0;
-    const loop = (t: number) => {
-      raf = requestAnimationFrame(loop);
-      const fg = fgRef.current;
-      if (!fg || typeof fg.camera !== "function") return;
-      const cam = fg.camera();
-      if (!cam?.position) return;
-      const { x: cx, y: cy, z: cz } = cam.position;
-      // Don't recompute distances at 60Hz over every node. When the camera is
-      // static, refresh at ~4Hz (enough to catch a settling layout at near-zero
-      // idle cost); while it's moving, throttle to ~15Hz (imperceptible for
-      // label pop-in).
-      const moved = cx !== lastX || cy !== lastY || cz !== lastZ;
-      if (moved ? t - lastRun < 66 : t - lastRun < 250) return;
-      lastRun = t; lastX = cx; lastY = cy; lastZ = cz;
-      for (const n of graphData.nodes as any[]) {
-        const s = n.__label;
-        if (!s) continue;
-        if (!showLabels) { s.visible = false; continue; } // labels toggled off → hide every label
-        if (isAnchorLabel(n)) { s.visible = true; continue; } // top-level folder anchors stay on (the region legend)
-        // Everything else reveals only when the camera is close, so nothing else
-        // labels from afar (uniform proximity pop-in).
-        const dx = (n.x || 0) - cx, dy = (n.y || 0) - cy, dz = (n.z || 0) - cz;
-        s.visible = dx * dx + dy * dy + dz * dz < LABEL_DIST * LABEL_DIST;
-      }
-    };
-    raf = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(raf);
-  }, [is3d, graphData, lite, showLabels]);
 
   // Active kind→color map, driven by the persisted Brain graph scheme. Falls
   // back to the default palette for unknown / unset ids — so the graph recolors
@@ -806,15 +771,32 @@ export function BrainMap({
   const [layoutOpen, setLayoutOpen] = useState(false);
   const [layoutDraft, setLayoutDraft] = useState<GraphLayout>(layout);
   useEffect(() => { if (persistedLayout) setLayoutDraft(persistedLayout); }, [persistedLayout]);
-  const commitLayout = (next: GraphLayout) => { setLayoutDraft(next); void updateSettings({ brainGraphLayout: next }); };
+  // How much energy the next force change puts back into the layout: proportional to how far
+  // the slider travelled from the COMMITTED value (graph-layout-forces `reheatAlphaFor`), so a
+  // nudge barely stirs the map and a full sweep re-settles it. Read by useGraphLayout when the
+  // change is sent; written by every path that moves a slider.
+  const reheatAlphaRef = useRef(reheatAlphaFor(0));
+  const maxTravel = (a: GraphLayout, b: GraphLayout): number =>
+    Math.max(Math.abs(a.nodeSpacing - b.nodeSpacing), Math.abs(a.linkLength - b.linkLength), Math.abs(a.linkForce - b.linkForce), Math.abs(a.centerForce - b.centerForce));
+  const commitLayout = (next: GraphLayout) => { reheatAlphaRef.current = reheatAlphaFor(maxTravel(layout, next)); setLayoutDraft(next); void updateSettings({ brainGraphLayout: next }); };
   const layoutDraftRef = useRef(layoutDraft); layoutDraftRef.current = layoutDraft;
+  // GPU layout inputs: the four sliders → cosmos coefficients, memoised per VALUE so a re-render
+  // never re-heats the simulation; Clusters on adds the cluster pull, so detected communities
+  // GATHER on the map instead of only sharing a colour.
+  const gpuSim = useMemo(() => gpuSimParams(layoutDraft, colorByCommunity),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [layoutDraft.nodeSpacing, layoutDraft.linkLength, layoutDraft.linkForce, layoutDraft.centerForce, colorByCommunity]);
   const layoutRef = useRef(layout); layoutRef.current = layout;
   // One axis at a time, from LayoutSlider. `liveAxis` is the per-frame preview; `commitAxis`
   // is the release, and it writes settings only when the axis actually moved — a keyboard
   // release on an untouched slider costs nothing.
-  const liveAxis = useCallback((key: ForceAxis, v: number) => setLayoutDraft((d) => (d[key] === v ? d : { ...d, [key]: v })), []);
+  const liveAxis = useCallback((key: ForceAxis, v: number) => {
+    reheatAlphaRef.current = reheatAlphaFor(v - layoutRef.current[key]);
+    setLayoutDraft((d) => (d[key] === v ? d : { ...d, [key]: v }));
+  }, []);
   const commitAxis = useCallback((key: ForceAxis, v: number) => {
     const next = { ...layoutDraftRef.current, [key]: v };
+    reheatAlphaRef.current = reheatAlphaFor(v - layoutRef.current[key]);
     setLayoutDraft(next);
     if (layoutRef.current[key] !== v) void updateSettings({ brainGraphLayout: next });
   }, [updateSettings]);
@@ -835,11 +817,14 @@ export function BrainMap({
   const colorOf = (n: any): string => {
     let c: string;
     if (n.kind === "core") c = kindColor.core;
-    else if (colorByCommunity && communityColors[n.id]) c = communityColors[n.id]; // color by detected cluster
     else if (ROADMAP_KINDS.has(n.kind) && n.passed) c = "#7a6a2f"; // passed milestone → faded gold (auto-fade)
     else if (n.kind === "person" || n.kind === "org") c = kindColor[n.kind]; // distinct even though they're vault notes
     else if (n.layer === "product") c = kindColor[n.kind] || "#94a3b8";
     else c = resolveColor(n.group || "", overrides, schemePalette);
+    // Clusters on: lean toward the community's colour and keep the folder hue underneath. A full
+    // recolour read as candy (2026-09-03); the tint says which community without erasing which
+    // folder, and the community NAMES at overview (cosmos-brain-canvas) carry the rest.
+    if (colorByCommunity && n.kind !== "core" && communityColors[n.id]) c = blendHex(c, communityColors[n.id], CLUSTER_TINT);
     return isLight ? forLight(c) : c;
   };
 
@@ -858,10 +843,16 @@ export function BrainMap({
 
   // colour each link by its higher-priority endpoint (used by both 2D + 3D)
   const nodesById = useMemo(() => new Map(graphData.nodes.map((n: any) => [n.id, n])), [graphData]);
+  // Link ink follows how many links are DRAWN (graph-visual-grammar linkInkBoost): the whisper
+  // alphas below were tuned at ~16k links, where overlap composited the web toward 0.4; on the
+  // 6.5k-link map they read as nothing. Two extracted endpoints draw fainter still (LAYER_WEIGHT).
+  const inkBoost = linkInkBoost(lodGraph.links.length);
   const linkColorByPrio = (l: any): string => {
     const a = l.source && typeof l.source === "object" ? l.source : nodesById.get(l.source);
     const b = l.target && typeof l.target === "object" ? l.target : nodesById.get(l.target);
     const hi = prio(a) >= prio(b) ? a : b;
+    const layerMul = a?.layer === "construction" && b?.layer === "construction" ? LAYER_WEIGHT.construction.link : 1;
+    const alphaOf = (base: number): number => Math.min(0.4, base * inkBoost * layerMul);
     // Links are SUBTLE structure — the graph should read as colorful NODES joined
     // by faint connections, not a colorful web. Keep only a whisper of the node's
     // hue at very low alpha (was 0.5 → far too vivid); fire links fainter still.
@@ -869,9 +860,9 @@ export function BrainMap({
     // whisper alphas (0.05/0.11) are invisible over near-white paper.
     if (!hi)
       return isLight
-        ? (FIRE.has(l.type) ? "rgba(90,100,120,0.14)" : "rgba(90,100,120,0.24)")
-        : (FIRE.has(l.type) ? "rgba(140,150,170,0.05)" : "rgba(140,150,170,0.11)");
-    const linkA = isLight ? (FIRE.has(l.type) ? 0.14 : 0.26) : (FIRE.has(l.type) ? 0.05 : 0.11);
+        ? `rgba(90,100,120,${alphaOf(FIRE.has(l.type) ? 0.14 : 0.24)})`
+        : `rgba(140,150,170,${alphaOf(FIRE.has(l.type) ? 0.05 : 0.11)})`;
+    const linkA = alphaOf(isLight ? (FIRE.has(l.type) ? 0.14 : 0.26) : (FIRE.has(l.type) ? 0.05 : 0.11));
     return withAlpha(hi.__color || colorOf(hi) || (isLight ? "#0f766e" : "#5eead4"), linkA);
   };
   // Links get their color STAMPED once per data/theme change, like nodes above. The accessor
@@ -883,7 +874,7 @@ export function BrainMap({
   useMemo(() => {
     for (const l of graphData.links as any[]) l.__color = linkColorByPrio(l);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [graphData, isLight, schemePalette, overrides, colorByCommunity, communityColors, kindColor]);
+  }, [graphData, isLight, schemePalette, overrides, colorByCommunity, communityColors, kindColor, inkBoost]);
   // ── cosmos (GPU 2D) glue ────────────────────────────────────────────────────────────────
   // The GPU renderer consumes typed arrays, so it needs a tick when the STAMPED colors (or
   // the recency fade) change — the stamps above mutate in place and change no identity.
@@ -891,15 +882,14 @@ export function BrainMap({
   const paletteVersion = useMemo(
     () => ++paletteCounter.current,
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [graphData, isLight, schemePalette, overrides, colorByCommunity, communityColors, kindColor, showRecent]
+    [graphData, isLight, schemePalette, overrides, colorByCommunity, communityColors, kindColor, showRecent, inkBoost]
   );
   const showRecentRef = useRef(showRecent);
   showRecentRef.current = showRecent;
   // Stable adapter object — cosmos re-reads through refs, so hover/toggle churn never
   // rebuilds its arrays. Size/label formulas mirror the canvas painter exactly.
   const cosmosAdapters = useMemo(() => ({
-    sizeFor: (n: any): number =>
-      n.kind === "core" ? 11 : n.kind === "folder" ? 3.5 : n.layer === "product" ? 2.4 + Math.sqrt(n.deg || 0) * 0.7 : 1.1 + Math.sqrt(n.deg || 0) * 0.35,
+    sizeFor: (n: any): number => sizeForNode(n),
     labelFor: (n: any): string => {
       const lbl = ROADMAP_KINDS.has(n.kind)
         ? `${n.label}${n.date ? " · " + n.date : ""}${n.prep ? " · " + n.prep + "▸" : ""}`
@@ -907,7 +897,10 @@ export function BrainMap({
       return lbl.length > 30 ? lbl.slice(0, 28) + "…" : lbl;
     },
     isAnchor: (n: any): boolean => isAnchorLabel(n),
-    alphaFor: (n: any): number => (showRecentRef.current && n.mtime ? recencyMul(n.mtime, Date.now()) : 1),
+    alphaFor: (n: any): number => (showRecentRef.current && n.mtime ? recencyMul(n.mtime, Date.now()) : 1) * layerAlpha(n),
+    shapeFor: (n: any): number => shapeForNode(n),
+    linkArrowFor: (l: any): boolean => arrowForLink(l.type),
+    logoFor: (url: string): HTMLImageElement | null => logoFor(url),
   }), []);
   // The core's canvas-drawn mark, rendered once to a data URL for the DOM sprite.
   const coreMarkUrl = useMemo(() => {
@@ -959,17 +952,18 @@ export function BrainMap({
   // hover/lock focus is active, sits inside the N-hop neighborhood. Null = nothing dims.
   const lensRestricts = !!(lens.layers || lens.group || lens.tags || lens.kinds);
   const litSet = useMemo(() => {
-    if (focusSet == null && !lensRestricts) return null;
+    if (focusSet == null && !lensRestricts && !lassoSet) return null;
     const s = new Set<string>();
     for (const n of graphData.nodes as any[]) {
       const lensOk = !lensRestricts || n.kind === "core" || inLens(n);
       const focusOk = focusSet == null || focusSet.has(n.id);
-      if (lensOk && focusOk) s.add(n.id);
+      const lassoOk = !lassoSet || lassoSet.has(n.id);
+      if (lensOk && focusOk && lassoOk) s.add(n.id);
     }
     return s;
     // inLens closes over `lens`, itself derived from lensId + areas.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focusSet, graphData, lensId, areas, lensRestricts]);
+  }, [focusSet, graphData, lensId, areas, lensRestricts, lassoSet]);
   // A node is "in focus" when there's no anchor, or it's within the N-hop set.
   // A link is in focus when BOTH its endpoints are in the set (the neighborhood's
   // own edges), which at depth 1 keeps the anchor's incident links lit.
@@ -997,11 +991,10 @@ export function BrainMap({
   const selProject = node?.kind === "project" ? (projects.find((p) => p.name === node.label || p.name === node.id) ?? { name: node.label, desc: "", tracks: tracks.filter((t) => t.project === node.label).length }) : null;
 
   function focusNode(id: string) {
-    if (!is3d && use2dGpu) { cosmosRef.current?.focusNode(id); return; }
+    if (use2dGpu) { cosmosRef.current?.focusNode(id); return; }
     const gn = graphData.nodes.find((n: any) => n.id === id);
     if (!gn || !fgRef.current || typeof gn.x !== "number") return;
     if (typeof fgRef.current.centerAt === "function") { fgRef.current.centerAt(gn.x, gn.y, 600); fgRef.current.zoom(2.6, 600); }
-    else if (typeof fgRef.current.cameraPosition === "function") { const r = Math.hypot(gn.x, gn.y, gn.z || 0) || 1; const k = 1 + 160 / r; fgRef.current.cameraPosition({ x: gn.x * k, y: gn.y * k, z: (gn.z || 0) * k }, gn, 800); }
   }
   // The native Brain Explorer (right panel) focuses a node by bumping focusToken.
   useEffect(() => { const id = useBrainStore.getState().focusId; if (id) focusNode(id); }, [focusToken]);
@@ -1015,22 +1008,17 @@ export function BrainMap({
     nodes: lodGraph.nodes,
     links: lodGraph.links,
     signature: lodSig,
-    charge: rampFrom50(layoutDraft.nodeSpacing, -8, -30, -400),
-    linkDistance: rampFrom50(layoutDraft.linkLength, 10, 30, 120),
-    linkStrength: layoutDraft.linkForce === 50 ? -1 : 0.05 + (Math.max(0, Math.min(100, layoutDraft.linkForce)) / 100) * 0.95,
-    centerStrength: rampFrom50(layoutDraft.centerForce, 0.05, 0.5, 1),
-    velocityDecay: 0.3,
-    // THE WORKER IS 2D. graph-layout.worker.ts runs plain d3-force and returns an [x,y] pair per
-    // node — there is no `z` anywhere in it. react-force-graph-3d runs d3-force-3d, where `z` is a
-    // real dimension the on-screen engine evolves. So in 3D the worker must not run at all: its
-    // snapshots would write x/y and leave z untouched at its seed, collapsing the whole graph onto
-    // a plane. (That is exactly what happened when the "one settler at a time" rule was first
-    // added and applied unconditionally — 3D rendered flat.)
-    enabled: !!data && !is3d,
+    // The four sliders → d3 forces, the ONE mapping both engines use (graph-layout-forces).
+    ...slidersToForces(layoutDraft),
+    reheatAlpha: reheatAlphaRef.current,
+    // Each node's drawn radius, so the worker's collision keeps what the renderer draws apart.
+    radiusOf: cosmosAdapters.sizeFor,
+    // Parked while cosmos's own simulation (the opt-in GPU layout) owns the physics.
+    enabled: !!data && !gpuLayout,
   });
   /** True when the worker is both available AND applicable — i.e. it owns the settle and the
-   *  on-screen engine must stay parked. In 3D it never owns it, because it cannot compute z. */
-  const workerOwnsLayout = layoutState.available && !is3d;
+   *  on-screen engine must stay parked. */
+  const workerOwnsLayout = layoutState.available && !gpuLayout;
   useEffect(() => {
     if (!workerOwnsLayout) setSimTicks(lite ? 60 : 200);
   }, [workerOwnsLayout, lite]);
@@ -1092,10 +1080,43 @@ export function BrainMap({
   // The settle's LAST positions need one shadow repaint too, or hover/click targets stay
   // where the graph was mid-flight. Edge-triggered on computing→false, NOT per snapshot.
   const prevComputingRef = useRef(false);
+  // After a settle (worker done, or the GPU simulation's onSettled): remember the layout for the
+  // next launch, and re-frame when the drawn set changed shape by REFIT_DRIFT or more (a rebuild
+  // that dropped 40% of the nodes used to leave the camera framing a map that was no longer
+  // there). The first settle of a session always frames: the mount fit saw the seed positions.
+  const lastFitCountRef = useRef(0);
+  // The save is debounced: the worker reports a settle after EVERY slider release, and a
+  // synchronous stringify of 3k positions on each of them is a few ms the drag does not need.
+  const saveTimerRef = useRef<number | null>(null);
+  const savePending = useCallback(() => {
+    if (saveTimerRef.current != null) window.clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = window.setTimeout(() => {
+      saveTimerRef.current = null;
+      savePositions(typeof window !== "undefined" ? window.localStorage : null, posKey, lodGraph.nodes as any[]);
+    }, 1500);
+  }, [posKey, lodGraph]);
+  useEffect(() => () => {
+    // Unmount: flush a pending save rather than lose the last settle.
+    if (saveTimerRef.current != null) { window.clearTimeout(saveTimerRef.current); saveTimerRef.current = null; savePositions(window.localStorage, posKey, lodGraph.nodes as any[]); }
+  }, [posKey, lodGraph]);
+  const afterSettle = useCallback(() => {
+    savePending();
+    const n = lodGraph.nodes.length;
+    const last = lastFitCountRef.current;
+    // First settle of the session: frame only a COLD run (startAlpha 1, the mount frame saw a
+    // blob at the origin). A run seeded from the remembered layout was framed right at mount.
+    // Any re-frame skips a camera the operator has moved (onlyIfUntouched).
+    const first = last === 0;
+    const drift = !first && Math.abs(n - last) / last >= REFIT_DRIFT;
+    if (n > 0 && (first || drift)) {
+      lastFitCountRef.current = n;
+      if (!first || layoutState.startAlpha >= 1) fitGraph(600, { onlyIfUntouched: true });
+    }
+  }, [savePending, lodGraph, fitGraph, layoutState.startAlpha]);
   useEffect(() => {
-    if (prevComputingRef.current && !layoutState.computing) nudgeRedraw();
+    if (prevComputingRef.current && !layoutState.computing) { nudgeRedraw(); afterSettle(); }
     prevComputingRef.current = layoutState.computing;
-  }, [layoutState.computing, nudgeRedraw]);
+  }, [layoutState.computing, nudgeRedraw, afterSettle]);
   // THE REFRESH STORM FIX. Worker positions are written straight into the live node objects,
   // and this identity must NOT change per snapshot. It used to (`[lodGraph, layoutState.version]`),
   // which made every 120ms snapshot hand force-graph a "new" graphData → a full update() on BOTH
@@ -1108,6 +1129,12 @@ export function BrainMap({
   const renderGraph = useMemo(
     () => ({ nodes: lodGraph.nodes, links: lodGraph.links }),
     [lodGraph]
+  );
+  // Dense cluster membership for the GPU cluster force, in renderGraph order; null when
+  // Clusters is off (the renderer clears the force rather than pushing 6k undefineds).
+  const gpuClusters = useMemo(
+    () => (colorByCommunity ? denseClusters(renderGraph.nodes as { id: string }[], communityOf) : null),
+    [colorByCommunity, communityOf, renderGraph]
   );
 
   // Degree counts for the adaptive link strength, computed ONCE per graph. This used to be
@@ -1124,8 +1151,7 @@ export function BrainMap({
 
   // Recall-style FORCE controls → live d3-force simulation, updated in REAL TIME as the
   // slider drags. 50 == the shipped default (charge -30, link distance 30, link strength
-  // 1/min(deg)). CENTER strength is capped at 1.0: d3's forceCenter OVERSHOOTS and blows the
-  // graph apart above 1, so the ramp tops out there (0.05 spread .. 0.5 default .. 1.0 tight).
+  // 1/min(deg), inward pull 0.03); the ramps and their reasons live in graph-layout-forces.
   //
   // Setting force parameters is cheap; RE-SETTLING on them is not. This effect therefore only
   // writes the parameters — the reheat is debounced separately below. It used to do both, on
@@ -1133,40 +1159,35 @@ export function BrainMap({
   useEffect(() => {
     const fg = fgRef.current;
     if (!fg || typeof fg.d3Force !== "function") return;
+    const f = slidersToForces(layoutDraft);
     const charge = fg.d3Force("charge");
-    if (charge?.strength) charge.strength(rampFrom50(layoutDraft.nodeSpacing, -8, -30, -400));
+    if (charge?.strength) charge.strength(f.charge);
     const link = fg.d3Force("link");
-    if (link?.distance) link.distance(rampFrom50(layoutDraft.linkLength, 10, 30, 120));
+    if (link?.distance) link.distance(f.linkDistance);
     if (link?.strength) {
-      if (layoutDraft.linkForce === 50) {
-        // Reproduce d3's adaptive default EXACTLY: strength = 1/min(deg(a),deg(b)).
-        link.strength((l: any) => {
-          const s = l.source?.id ?? l.source, t = l.target?.id ?? l.target;
-          return 1 / Math.min(linkDegree.get(s) || 1, linkDegree.get(t) || 1);
-        });
-      } else {
-        link.strength(0.05 + (Math.max(0, Math.min(100, layoutDraft.linkForce)) / 100) * 0.95); // 0.05..1
-      }
+      // d3's adaptive default scaled by the slider (graph-layout-forces), off the same degree
+      // counts the worker uses. One model across the whole range: this used to switch from
+      // adaptive to a constant the moment the slider left 50, a 10x jolt on every hub link.
+      link.strength((l: any) => {
+        const s = l.source?.id ?? l.source, t = l.target?.id ?? l.target;
+        return linkStrengthFor(f.linkStrengthScale, linkDegree.get(s) || 1, linkDegree.get(t) || 1);
+      });
     }
-    const centerStrength = rampFrom50(layoutDraft.centerForce, 0.05, 0.5, 1);
-    const center = fg.d3Force("center");
-    if (center?.strength) center.strength(centerStrength);
-    // forceCenter only TRANSLATES the system so its centroid sits at the origin — it applies
-    // no per-node attraction, so it cannot pull an outlier in no matter how high it goes. A
-    // node the charge force pushed away (a degree-0 node especially, which the LOD cull can
-    // create by removing all of its neighbours) had nothing acting on it in the inward
-    // direction at all. forceX/forceY supply that, off the same slider, so "Center force"
-    // does what its label says. Installed here rather than at graph construction because
-    // react-force-graph builds the simulation itself; d3Force(name, force) is the seam.
-    const positional = positionalStrength(centerStrength);
+    // No forceCenter. It only TRANSLATES the system so its centroid sits at the origin — no
+    // per-node attraction, so it cannot pull an outlier in — and with the core pinned at the
+    // origin it fought the pinned node on every tick. forceX/forceY are the per-node inward
+    // pull, so "Center force" does what its label says. Installed here rather than at graph
+    // construction because react-force-graph builds the simulation itself; d3Force(name, force)
+    // is the seam, and null removes the center force it installs by default.
+    fg.d3Force("center", null);
     const fx = fg.d3Force("x");
-    if (fx?.strength) fx.strength(positional);
-    else fg.d3Force("x", forceX(0).strength(positional));
+    if (fx?.strength) fx.strength(f.positional);
+    else fg.d3Force("x", forceX(0).strength(f.positional));
     const fy = fg.d3Force("y");
-    if (fy?.strength) fy.strength(positional);
-    else fg.d3Force("y", forceY(0).strength(positional));
+    if (fy?.strength) fy.strength(f.positional);
+    else fg.d3Force("y", forceY(0).strength(f.positional));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [layoutDraft.nodeSpacing, layoutDraft.linkLength, layoutDraft.linkForce, layoutDraft.centerForce, is3d, lodGraph, linkDegree]);
+  }, [layoutDraft.nodeSpacing, layoutDraft.linkLength, layoutDraft.linkForce, layoutDraft.centerForce, lodGraph, linkDegree]);
 
   // The reheat, debounced. A deliberate force change SHOULD re-settle the graph — but once,
   // after the operator stops moving the slider, not on every input event. connectionDepth is
@@ -1244,6 +1265,73 @@ export function BrainMap({
     }
   }
   void pickNode; // retained for the Explorer focus path; node clicks use the single/double split above
+  // Walk a lit connection: clicking a link inside a focused neighbourhood steps the lock (and
+  // the chat context) to the node at its far end, exactly as clicking that node would.
+  function walkToNode(n: any): void {
+    if (!n || n.kind === "core") return;
+    setNode(n);
+    focusNode(n.id);
+    setLockId(n.id);
+    useBrainStore.getState().setChatContext({ id: n.id, label: n.label, kind: n.kind });
+  }
+  // Right-click on a point opens a short menu of what DUIN can do with that node; a
+  // background right-click only closes it.
+  const openNodeMenu = useCallback((n: any | null, ev: MouseEvent): void => {
+    if (!n || n.kind === "core") { setNodeMenu(null); return; }
+    setNodeMenu({ node: n, x: ev.clientX, y: ev.clientY });
+  }, []);
+  type NodeMenuAction = "open" | "ask" | "lock" | "unlock" | "isolate" | "copy";
+  function runMenuAction(action: NodeMenuAction): void {
+    const n = nodeMenu?.node;
+    setNodeMenu(null);
+    if (!n) return;
+    switch (action) {
+      case "open": if (n.kind === "page") void openPageInWorkbench(n); else pickNode(n); break;
+      case "ask": setNode(n); useBrainStore.getState().setChatContext({ id: n.id, label: n.label, kind: n.kind }); omniRef.current?.focus(); break;
+      case "lock": setLockId(n.id); break;
+      case "unlock": setLockId(null); break;
+      case "isolate": { const c = communityOf.get(n.id); if (c != null) { setColorByCommunity(true); setClusterFilter(c); } break; }
+      case "copy": try { void navigator.clipboard?.writeText(String(n.id)); } catch { /* clipboard unavailable */ } break;
+    }
+  }
+  // A lasso selection handed to the chat: the names go into the omnibox as text, so what will be
+  // asked about is exactly what the operator can see and edit; the chat context chip stays a
+  // single node by design.
+  function askAboutSelection(): void {
+    if (!lassoIds || lassoIds.length === 0) return;
+    const labels = lassoIds.map((id) => String(nodesById.get(id)?.label || byId.get(id)?.label || id));
+    const shown = labels.slice(0, 12).join(", ");
+    const rest = labels.length - 12;
+    setOmni(`${t('About these notes')}: ${shown}${rest > 0 ? ` (+${rest})` : ""}\n`);
+    omniRef.current?.focus();
+  }
+  // Arrow keys walk a locked node's connections: ← → step the lock through the neighbours of
+  // the node you locked (most connected first), the keyboard's answer to clicking a lit link.
+  // The ring stays the ORIGIN's until the lock moves by some other means, so the arrows cycle
+  // siblings instead of wandering off along the first neighbour.
+  const stepRef = useRef<{ origin: string | null; last: string | null; i: number }>({ origin: null, last: null, i: -1 });
+  useEffect(() => {
+    if (lockId == null || nodeMenu || displayOpen) return;
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+      const el = e.target as HTMLElement | null;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
+      const st = stepRef.current;
+      if (st.origin == null || (lockId !== st.origin && lockId !== st.last)) { st.origin = lockId; st.last = null; st.i = -1; }
+      const ring = Array.from(neighborMap.get(st.origin) ?? [])
+        .filter((id) => nodesById.has(id))
+        .sort((a, b) => ((nodesById.get(b)?.deg || 0) - (nodesById.get(a)?.deg || 0)) || (a < b ? -1 : 1));
+      if (ring.length === 0) return;
+      e.preventDefault();
+      st.i = e.key === "ArrowRight" ? (st.i + 1) % ring.length : (st.i - 1 + ring.length) % ring.length;
+      st.last = ring[st.i];
+      walkToNode(nodesById.get(st.last));
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // walkToNode is a plain function of this render; the listener is re-bound per lock change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lockId, nodeMenu, displayOpen, neighborMap, nodesById]);
   function growOmni() { const ta = omniRef.current; if (!ta) return; ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 160) + "px"; }
   function askOmni() {
     const v = omni.trim(); if (!v) return;
@@ -1561,222 +1649,199 @@ export function BrainMap({
           {/* All display controls consolidated behind ONE "Display" popover so the
               graph surface stays clean (was 5 chips + a floating cluster legend). */}
           {data && !err && (
-            <div className="absolute right-3 top-3 z-20">
+            <div className="absolute right-3 top-3 z-20 flex items-start gap-1.5">
+              {/* Lasso selection (shift + drag): what is selected, and the two things to do with it. */}
+              {lassoIds && lassoIds.length > 0 && (
+                <div className="relative z-20 flex items-center gap-1 rounded-md border border-[var(--accent)]/40 bg-[var(--accent-dim)] px-2 py-1 text-[12px] font-medium text-[var(--text-primary)] backdrop-blur">
+                  <span className="tabular-nums">{lassoIds.length}</span>
+                  <span className="text-[var(--text-secondary)]">{t('selected')}</span>
+                  <button onClick={askAboutSelection} className="ml-1 rounded px-1.5 py-0.5 text-[var(--accent)] transition hover:bg-[var(--bg-tertiary)] active:translate-y-px">{t('Ask about these')}</button>
+                  <button onClick={() => setLassoIds(null)} aria-label={t('Clear selection')} title={t('Clear selection')} className="rounded p-0.5 text-[var(--text-secondary)] transition hover:text-[var(--text-primary)]"><X className="size-3" /></button>
+                </div>
+              )}
+              {/* Recenter — frame the whole brain again.
+                  Changing what is on the map (isolating a cluster, clearing it, showing
+                  all nodes) relays the graph out from under a camera that does not move,
+                  so the brain can end up entirely off-screen and the canvas reads as
+                  empty. There was a fitGraph() for exactly this, but nothing in the UI
+                  called it and on the default GPU renderer it reached a null ref, so the
+                  only ways back were the 60s idle refit (armed by the legacy canvas only)
+                  and reloading. This is the way back.
+
+                  `relative z-20` keeps it above the Display popover's click-away backdrop
+                  (`fixed inset-0 z-10`). Without it the first click after isolating a
+                  cluster only dismisses the popover — precisely the moment the brain has
+                  gone off-screen and this button is wanted. It closes the popover itself,
+                  so one click both dismisses and reframes. */}
               <button
-                onClick={() => setDisplayOpen((o) => !o)}
-                className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[12px] font-medium backdrop-blur transition ${displayOpen ? "border-[var(--accent)]/40 bg-[var(--accent-dim)] text-[var(--accent)]" : "border-[var(--panel-border)] bg-[var(--panel-bg)]/80 text-[var(--text-secondary)] hover:text-[var(--text-primary)]"}`}
-                title={t('Display options — view, labels, clusters, recency, performance')}
+                onClick={() => { setDisplayOpen(false); fitGraph(600); }}
+                title={t('Recenter — frame the whole brain')}
+                aria-label={t('Recenter — frame the whole brain')}
+                className="relative z-20 flex items-center gap-1.5 rounded-md border border-[var(--panel-border)] bg-[var(--panel-bg)]/80 px-2.5 py-1 text-[12px] font-medium text-[var(--text-secondary)] backdrop-blur transition hover:text-[var(--text-primary)]"
               >
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                  <line x1="4" y1="21" x2="4" y2="14" /><line x1="4" y1="10" x2="4" y2="3" /><line x1="12" y1="21" x2="12" y2="12" /><line x1="12" y1="8" x2="12" y2="3" /><line x1="20" y1="21" x2="20" y2="16" /><line x1="20" y1="12" x2="20" y2="3" /><line x1="1" y1="14" x2="7" y2="14" /><line x1="9" y1="8" x2="15" y2="8" /><line x1="17" y1="16" x2="23" y2="16" />
-                </svg>
-                {t('Display')}
+                <Target className="size-3.5" />
+                {t('Recenter')}
               </button>
-              {displayOpen && (
-                <>
-                  <div className="fixed inset-0 z-10" onClick={() => setDisplayOpen(false)} />
-                  <div className="absolute right-0 top-9 z-20 w-64 rounded-lg border border-[var(--panel-border)] bg-[var(--panel-bg)]/95 p-2.5 shadow-xl backdrop-blur">
-                    {/* The View 2D/3D segmented pair lived here and is WITHDRAWN on the
-                        operator's call (2026-08-26): 3D is laggy on a graph this dense
-                        and is theirs to revisit. The rendering path is intact — see
-                        FORCE_3D_WITHDRAWN by `is3d` — so restoring the control is
-                        putting this block back, not rebuilding the view. */}
-                    {/* On/off toggles */}
-                    {([
-                      { label: "Brain nodes", on: showBrain, set: toggleBrain },
-                      { label: "Labels", on: showLabels, set: toggleLabels },
-                      { label: "Recency fade", on: showRecent, set: () => setShowRecent((v) => !v) },
-                      { label: "Clusters", on: colorByCommunity, set: () => setColorByCommunity((v) => !v) }
-                    ]).map((r) => (
-                      <button key={r.label} onClick={r.set} className="flex w-full items-center justify-between rounded px-1 py-1 text-[12px] hover:bg-[var(--bg-tertiary)]">
-                        <span className="text-[var(--text-secondary)]">{r.label}</span>
-                        <span className={`relative h-3.5 w-6 rounded-full transition ${r.on ? "bg-[var(--accent)]" : "bg-[var(--panel-border)]"}`}>
-                          <span className={`absolute top-0.5 h-2.5 w-2.5 rounded-full bg-white transition-all ${r.on ? "left-3" : "left-0.5"}`} />
-                        </span>
-                      </button>
-                    ))}
-                    {/* Level-of-detail disclosure. The cull is the single largest thing this
-                        view does to the operator's data, and it used to be invisible: on a
-                        large vault most of the brain simply was not on screen and nothing
-                        said so. State the numbers, and offer the way out. */}
-                    {displayGraph.nodes.length > LOD_NODE_FLOOR && (
-                      <div className="mt-1 border-t border-[var(--panel-border)] pt-1.5">
-                        <button
-                          onClick={() => setLodOverride((v) => !v)}
-                          className="flex w-full items-center justify-between rounded px-1 py-1 text-[12px] hover:bg-[var(--bg-tertiary)]"
-                          title={lodOverride
-                            ? "Drawing every node. On a large brain this makes the graph slower to settle and to pan."
-                            : "Sparsely-linked nodes are hidden so the graph stays responsive. Turn on to draw all of them."}
-                        >
-                          <span className="text-[var(--text-secondary)]">{t('Show all nodes')}</span>
-                          <span className={`relative h-3.5 w-6 rounded-full transition ${lodOverride ? "bg-[var(--accent)]" : "bg-[var(--panel-border)]"}`}>
-                            <span className={`absolute top-0.5 h-2.5 w-2.5 rounded-full bg-white transition-all ${lodOverride ? "left-3" : "left-0.5"}`} />
+              <div className="relative">
+                <button
+                  onClick={() => setDisplayOpen((o) => !o)}
+                  className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[12px] font-medium backdrop-blur transition ${displayOpen ? "border-[var(--accent)]/40 bg-[var(--accent-dim)] text-[var(--accent)]" : "border-[var(--panel-border)] bg-[var(--panel-bg)]/80 text-[var(--text-secondary)] hover:text-[var(--text-primary)]"}`}
+                  title={t('Display options — view, labels, clusters, recency, performance')}
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <line x1="4" y1="21" x2="4" y2="14" /><line x1="4" y1="10" x2="4" y2="3" /><line x1="12" y1="21" x2="12" y2="12" /><line x1="12" y1="8" x2="12" y2="3" /><line x1="20" y1="21" x2="20" y2="16" /><line x1="20" y1="12" x2="20" y2="3" /><line x1="1" y1="14" x2="7" y2="14" /><line x1="9" y1="8" x2="15" y2="8" /><line x1="17" y1="16" x2="23" y2="16" />
+                  </svg>
+                  {t('Display')}
+                </button>
+                {displayOpen && (
+                  <>
+                    <div className="fixed inset-0 z-10" onClick={() => setDisplayOpen(false)} />
+                    <div className="absolute right-0 top-9 z-20 w-64 rounded-lg border border-[var(--panel-border)] bg-[var(--panel-bg)]/95 p-2.5 shadow-xl backdrop-blur">
+                      {/* On/off toggles */}
+                      {([
+                        { label: "Brain nodes", on: showBrain, set: toggleBrain },
+                        { label: "Labels", on: showLabels, set: toggleLabels },
+                        { label: "Recency fade", on: showRecent, set: () => setShowRecent((v) => !v) },
+                        { label: "Clusters", on: colorByCommunity, set: () => setColorByCommunity((v) => !v) }
+                      ]).map((r) => (
+                        <button key={r.label} onClick={r.set} className="flex w-full items-center justify-between rounded px-1 py-1 text-[12px] hover:bg-[var(--bg-tertiary)]">
+                          <span className="text-[var(--text-secondary)]">{r.label}</span>
+                          <span className={`relative h-3.5 w-6 rounded-full transition ${r.on ? "bg-[var(--accent)]" : "bg-[var(--panel-border)]"}`}>
+                            <span className={`absolute top-0.5 h-2.5 w-2.5 rounded-full bg-white transition-all ${r.on ? "left-3" : "left-0.5"}`} />
                           </span>
                         </button>
-                        <div className="px-1 pb-0.5 text-[11px] text-[var(--text-muted)]">
-                          {lodActive
-                            ? `Showing ${lodGraph.nodes.length.toLocaleString()} of ${displayGraph.nodes.length.toLocaleString()} nodes`
-                            : `Showing all ${displayGraph.nodes.length.toLocaleString()} nodes — slower`}
-                        </div>
-                      </div>
-                    )}
-                    {/* Cluster legend + filter — folded in under Clusters (was a floating row) */}
-                    {colorByCommunity && clusterList.length > 0 && (
-                      <div className="mt-1.5 border-t border-[var(--panel-border)] pt-1.5">
-                        <div className="mb-1 flex items-center justify-between px-1">
-                          <span className="text-[11px] uppercase tracking-wide text-[var(--text-muted)]">{t('Isolate a cluster')}</span>
-                          <button onClick={() => setClusterFilter(null)} className={`text-[11px] ${clusterFilter == null ? "text-[var(--accent)]" : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]"}`}>{t('All')}</button>
-                        </div>
-                        <div className="max-h-40 space-y-0.5 overflow-y-auto">
-                          {clusterList.slice(0, 30).map((c) => (
-                            <button key={c.community} onClick={() => setClusterFilter((cur) => (cur === c.community ? null : c.community))}
-                              className={`flex w-full items-center gap-1.5 rounded px-1 py-0.5 hover:bg-[var(--bg-tertiary)] ${clusterFilter === c.community ? "bg-[var(--accent-dim)]" : ""}`}>
-                              <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: c.color }} />
-                              <span className="min-w-0 flex-1 truncate text-left text-[11px] text-[var(--text-secondary)]">{c.label}</span>
-                              <span className="tabular-nums text-[11px] text-[var(--text-muted)]">{c.size}</span>
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    {/* Layout — Recall-style force + depth controls, ABSORBED into
-                        this Display popover (no bolt-on floating panel). Collapsed
-                        by default; 50 on every axis == today's look. */}
-                    <div className="mt-1.5 border-t border-[var(--panel-border)] pt-1.5">
-                      <button onClick={() => setLayoutOpen((o) => !o)}
-                        className="flex w-full items-center justify-between rounded px-1 py-1 text-[12px] hover:bg-[var(--bg-tertiary)]">
-                        <span className="text-[var(--text-secondary)]">{t('Layout')}</span>
-                        <ChevronDown className={`size-3.5 text-[var(--text-muted)] transition ${layoutOpen ? "rotate-180" : ""}`} />
-                      </button>
-                      {layoutOpen && (
-                        <div className="mt-1 space-y-2 px-1">
-                          {/* Each axis owns its in-hand value (LayoutSlider): the thumb
-                              tracks the pointer, the draft hears once per frame, settings
-                              hear on release. */}
-                          {([
-                            { key: "nodeSpacing", label: t('Node spacing') },
-                            { key: "linkLength", label: t('Link length') },
-                            { key: "linkForce", label: t('Link force') },
-                            { key: "centerForce", label: t('Center force') },
-                          ] as const).map((s) => (
-                            <LayoutSlider key={s.key} label={s.label} value={layoutDraft[s.key]}
-                              onLive={(v) => liveAxis(s.key, v)} onCommit={(v) => commitAxis(s.key, v)} />
-                          ))}
-                          {/* Connection depth — a 1..5 stepper (N-hop focus). Commits
-                              immediately; it never reheats, only widens the focus set. */}
-                          <div className="flex items-center justify-between pt-0.5">
-                            <span className="text-[11px] text-[var(--text-secondary)]">{t('Connection depth')}</span>
-                            <div className="flex items-center gap-1.5">
-                              <button aria-label={t('Fewer hops')} disabled={layoutDraft.connectionDepth <= 1}
-                                onClick={() => commitLayout({ ...layoutDraft, connectionDepth: Math.max(1, layoutDraft.connectionDepth - 1) })}
-                                className="flex size-5 items-center justify-center rounded border border-[var(--panel-border)] text-[var(--text-secondary)] transition hover:text-[var(--text-primary)] disabled:opacity-40">
-                                <Minus className="size-3" />
-                              </button>
-                              <span className="w-4 text-center tabular-nums text-[11px] text-[var(--text-primary)]">{layoutDraft.connectionDepth}</span>
-                              <button aria-label={t('More hops')} disabled={layoutDraft.connectionDepth >= 5}
-                                onClick={() => commitLayout({ ...layoutDraft, connectionDepth: Math.min(5, layoutDraft.connectionDepth + 1) })}
-                                className="flex size-5 items-center justify-center rounded border border-[var(--panel-border)] text-[var(--text-secondary)] transition hover:text-[var(--text-primary)] disabled:opacity-40">
-                                <Plus className="size-3" />
-                              </button>
-                            </div>
-                          </div>
-                          <button onClick={() => commitLayout(DEFAULT_GRAPH_LAYOUT)}
-                            className="w-full rounded px-1 py-1 text-left text-[11px] text-[var(--accent)] transition hover:bg-[var(--accent-dim)]">
-                            {t('Reset layout')}
+                      ))}
+                      {/* Level-of-detail disclosure. The cull is the single largest thing this
+                          view does to the operator's data, and it used to be invisible: on a
+                          large vault most of the brain simply was not on screen and nothing
+                          said so. State the numbers, and offer the way out. */}
+                      {displayGraph.nodes.length > LOD_NODE_FLOOR && (
+                        <div className="mt-1 border-t border-[var(--panel-border)] pt-1.5">
+                          <button
+                            onClick={() => setLodOverride((v) => !v)}
+                            className="flex w-full items-center justify-between rounded px-1 py-1 text-[12px] hover:bg-[var(--bg-tertiary)]"
+                            title={lodOverride
+                              ? "Drawing every node. On a large brain this makes the graph slower to settle and to pan."
+                              : "Sparsely-linked nodes are hidden so the graph stays responsive. Turn on to draw all of them."}
+                          >
+                            <span className="text-[var(--text-secondary)]">{t('Show all nodes')}</span>
+                            <span className={`relative h-3.5 w-6 rounded-full transition ${lodOverride ? "bg-[var(--accent)]" : "bg-[var(--panel-border)]"}`}>
+                              <span className={`absolute top-0.5 h-2.5 w-2.5 rounded-full bg-white transition-all ${lodOverride ? "left-3" : "left-0.5"}`} />
+                            </span>
                           </button>
+                          <div className="px-1 pb-0.5 text-[11px] text-[var(--text-muted)]">
+                            {lodActive
+                              ? `Showing ${lodGraph.nodes.length.toLocaleString()} of ${displayGraph.nodes.length.toLocaleString()} nodes`
+                              : `Showing all ${displayGraph.nodes.length.toLocaleString()} nodes — slower`}
+                          </div>
                         </div>
                       )}
+                      {/* Cluster legend + filter — folded in under Clusters (was a floating row) */}
+                      {colorByCommunity && clusterList.length > 0 && (
+                        <div className="mt-1.5 border-t border-[var(--panel-border)] pt-1.5">
+                          <div className="mb-1 flex items-center justify-between px-1">
+                            <span className="text-[11px] uppercase tracking-wide text-[var(--text-muted)]">{t('Isolate a cluster')}</span>
+                            <button onClick={() => setClusterFilter(null)} className={`text-[11px] ${clusterFilter == null ? "text-[var(--accent)]" : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]"}`}>{t('All')}</button>
+                          </div>
+                          <div className="max-h-40 space-y-0.5 overflow-y-auto">
+                            {clusterList.slice(0, 30).map((c) => (
+                              <button key={c.community} onClick={() => setClusterFilter((cur) => (cur === c.community ? null : c.community))}
+                                className={`flex w-full items-center gap-1.5 rounded px-1 py-0.5 hover:bg-[var(--bg-tertiary)] ${clusterFilter === c.community ? "bg-[var(--accent-dim)]" : ""}`}>
+                                <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: c.color }} />
+                                <span className="min-w-0 flex-1 truncate text-left text-[11px] text-[var(--text-secondary)]">{c.label}</span>
+                                <span className="tabular-nums text-[11px] text-[var(--text-muted)]">{c.size}</span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {/* Layout — Recall-style force + depth controls, ABSORBED into
+                          this Display popover (no bolt-on floating panel). Collapsed
+                          by default; 50 on every axis == today's look. */}
+                      <div className="mt-1.5 border-t border-[var(--panel-border)] pt-1.5">
+                        <button onClick={() => setLayoutOpen((o) => !o)}
+                          className="flex w-full items-center justify-between rounded px-1 py-1 text-[12px] hover:bg-[var(--bg-tertiary)]">
+                          <span className="text-[var(--text-secondary)]">{t('Layout')}</span>
+                          <ChevronDown className={`size-3.5 text-[var(--text-muted)] transition ${layoutOpen ? "rotate-180" : ""}`} />
+                        </button>
+                        {layoutOpen && (
+                          <div className="mt-1 space-y-2 px-1">
+                            {/* Each axis owns its in-hand value (LayoutSlider): the thumb
+                                tracks the pointer, the draft hears once per frame, settings
+                                hear on release. */}
+                            {([
+                              { key: "nodeSpacing", label: t('Node spacing') },
+                              { key: "linkLength", label: t('Link length') },
+                              { key: "linkForce", label: t('Link force') },
+                              { key: "centerForce", label: t('Center force') },
+                            ] as const).map((s) => (
+                              <LayoutSlider key={s.key} label={s.label} value={layoutDraft[s.key]}
+                                onLive={(v) => liveAxis(s.key, v)} onCommit={(v) => commitAxis(s.key, v)} />
+                            ))}
+                            {/* Connection depth — a 1..5 stepper (N-hop focus). Commits
+                                immediately; it never reheats, only widens the focus set. */}
+                            <div className="flex items-center justify-between pt-0.5">
+                              <span className="text-[11px] text-[var(--text-secondary)]">{t('Connection depth')}</span>
+                              <div className="flex items-center gap-1.5">
+                                <button aria-label={t('Fewer hops')} disabled={layoutDraft.connectionDepth <= 1}
+                                  onClick={() => commitLayout({ ...layoutDraft, connectionDepth: Math.max(1, layoutDraft.connectionDepth - 1) })}
+                                  className="flex size-5 items-center justify-center rounded border border-[var(--panel-border)] text-[var(--text-secondary)] transition hover:text-[var(--text-primary)] disabled:opacity-40">
+                                  <Minus className="size-3" />
+                                </button>
+                                <span className="w-4 text-center tabular-nums text-[11px] text-[var(--text-primary)]">{layoutDraft.connectionDepth}</span>
+                                <button aria-label={t('More hops')} disabled={layoutDraft.connectionDepth >= 5}
+                                  onClick={() => commitLayout({ ...layoutDraft, connectionDepth: Math.min(5, layoutDraft.connectionDepth + 1) })}
+                                  className="flex size-5 items-center justify-center rounded border border-[var(--panel-border)] text-[var(--text-secondary)] transition hover:text-[var(--text-primary)] disabled:opacity-40">
+                                  <Plus className="size-3" />
+                                </button>
+                              </div>
+                            </div>
+                            <button onClick={() => commitLayout(DEFAULT_GRAPH_LAYOUT)}
+                              className="w-full rounded px-1 py-1 text-left text-[11px] text-[var(--accent)] transition hover:bg-[var(--accent-dim)]">
+                              {t('Reset layout')}
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                </>
-              )}
+                  </>
+                )}
+              </div>
             </div>
+          )}
+          {nodeMenu && (
+            <>
+              <div className="fixed inset-0 z-30" onClick={() => setNodeMenu(null)} onContextMenu={(e) => { e.preventDefault(); setNodeMenu(null); }} />
+              <div
+                role="menu"
+                className="fixed z-40 w-52 rounded-lg border border-[var(--panel-border)] bg-[var(--panel-bg)]/95 p-1 shadow-xl backdrop-blur"
+                style={{ left: Math.max(0, Math.min(nodeMenu.x, dim.w - 220)), top: Math.max(0, Math.min(nodeMenu.y, dim.h - 200)) }}
+              >
+                <div className="truncate px-2 pb-1 pt-1 text-[11px] text-[var(--text-muted)]">{String(nodeMenu.node.label || nodeMenu.node.id)}</div>
+                {([
+                  { id: "open", label: t('Open') },
+                  { id: "ask", label: t('Ask about this') },
+                  lockId === nodeMenu.node.id ? { id: "unlock", label: t('Unlock neighborhood') } : { id: "lock", label: t('Lock neighborhood') },
+                  ...(communityOf.has(nodeMenu.node.id) ? [{ id: "isolate", label: t('Isolate its cluster') }] : []),
+                  ...(isMemoryNode(nodeMenu.node) ? [{ id: "copy", label: t('Copy path') }] : []),
+                ] as { id: NodeMenuAction; label: string }[]).map((a) => (
+                  <button
+                    key={a.id}
+                    role="menuitem"
+                    onClick={() => runMenuAction(a.id)}
+                    className="flex w-full items-center rounded px-2 py-1 text-left text-[12px] text-[var(--text-secondary)] transition hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)] active:translate-y-px"
+                  >
+                    {a.label}
+                  </button>
+                ))}
+              </div>
+            </>
           )}
           {/* Event prep is shown in the standard detail Sheet (NodeDetail), like every other node — no separate popup. */}
           {err ? (
             <p className="p-6 text-[14px] text-[var(--text-secondary)]">Couldn&apos;t load your brain. Is the brain reachable?</p>
           ) : !data ? (
             <p className="flex items-center gap-2 p-6 text-[14px] text-[var(--text-secondary)]"><Loader2 className="size-4 animate-spin" /> Wiring your second brain…</p>
-          ) : is3d ? (
-            /* Window-sized, window-pinned canvas holder — the wrapper clips it.
-               See the geometry comment on the measure effect. */
-            <div ref={holderMountRef} className="absolute left-0 top-0" style={{ width: dim.w, height: dim.h }}>
-            <ForceGraph3D
-              key={(lite ? "fg3d-lite" : "fg3d-full") + "-" + (isLight ? "light" : "dark")}
-              ref={fgRef}
-              graphData={renderGraph as any}
-              width={dim.w}
-              height={dim.h}
-              backgroundColor="rgba(0,0,0,0)"
-              cooldownTicks={simTicks}
-              // Same framing contract as the 2D graph: fit the whole brain once the
-              // simulation settles, and re-frame after a minute untouched.
-              onEngineStop={() => {
-                if (!didInitialFitRef.current) {
-                  didInitialFitRef.current = true;
-                  fitGraph(0);
-                }
-                markGraphInteraction();
-              }}
-              onNodeDrag={onNodeDragTick}
-              onNodeDragEnd={onNodeDragDone}
-              d3VelocityDecay={0.3}
-              onNodeClick={handleNodeClick}
-              onNodeHover={(n: any) => setHoverId(n?.id ?? null)}
-              onBackgroundClick={() => setLockId(null)}
-              nodeColor={(n: any) => (focusId != null && !inFocus(n.id) ? (isLight ? "rgba(150,160,175,0.3)" : "rgba(90,100,120,0.22)") : (n.__color || colorOf(n)))}
-              nodeRelSize={rampFrom50(layout.nodeSpacing, 1.5, 2.6, 4)}
-              nodeVal={(n: any) => (n.kind === "core" ? 9 : n.kind === "folder" ? 3 : n.layer === "product" ? 1.6 + (n.deg || 0) * 0.22 : 0.5 + (n.deg || 0) * 0.12)}
-              nodeOpacity={1}
-              nodeResolution={lite ? 6 : 10}
-              nodeLabel={(n: any) => String(n.label || n.id)}
-              nodeThreeObjectExtend={(n: any) => !(n.kind === "core" || (n.kind === "project" && n.logo))}
-              nodeThreeObject={(n: any) => {
-                // CORE → its mark as a screen-facing billboard sprite (always faces camera, never rotates).
-                if (n.kind === "core") {
-                  const tex = coreLogoTexture();
-                  if (tex) {
-                    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, opacity: 0.62, depthWrite: false }));
-                    sp.scale.set(26, 26, 1);
-                    return sp;
-                  }
-                }
-                // Project with an uploaded logo → billboard sprite (aspect-preserved, never rotates).
-                if (n.kind === "project" && n.logo) {
-                  const im = logoFor(n.logo);
-                  if (im) {
-                    const tex = new THREE.Texture(im); tex.needsUpdate = true;
-                    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, opacity: 1, depthWrite: false }));
-                    const ar = (im.naturalWidth / im.naturalHeight) || 1; const S = 18;
-                    sp.scale.set(ar >= 1 ? S : S * ar, ar >= 1 ? S / ar : S, 1);
-                    return sp;
-                  }
-                }
-                // label EVERY node; cornerstones stay visible, the rest appear when the camera is close (the cull loop below) — mirrors the 2D rule.
-                const hub = isCornerstone(n);
-                if (lite && !hub) return null as unknown as THREE.Object3D; // lite: only cornerstone labels — falsy → default node, skips ~1300 sprites
-                const s = new SpriteText(ROADMAP_KINDS.has(n.kind) && n.prep ? `${n.label} · ${n.prep}▸` : String(n.label || n.id));
-                s.color = isLight ? "rgba(24,26,32,0.95)" : "rgba(228,231,240,0.92)";
-                s.textHeight = n.kind === "core" ? 7 : 3.5; // uniform size for every non-core label
-                (s as any).position.y = -(n.kind === "core" ? 11 : hub ? 6 : 3.5);
-                (s as any).visible = isAnchorLabel(n); // folder anchors start on; the cull loop reveals the rest by camera proximity
-                (n as any).__label = s;
-                return s;
-              }}
-              linkColor={linkColorFocused}
-              // 0 = GL lines, not tube geometry. three-forcegraph promotes ANY truthy width
-              // to a CylinderGeometry MESH per link — at ~16k links that alone was most of
-              // the measured ~23k draw calls behind 3D's 15fps floor. Lines carry the same
-              // color/opacity treatment at a fraction of the cost; the 0.2/0.6 width split
-              // was barely perceptible in 3D anyway.
-              linkWidth={0}
-              linkOpacity={1}
-              linkDirectionalParticles={(l: any) => (lite || FIRE.has(l.type) ? 0 : 2)}
-              linkDirectionalParticleWidth={1.5}
-              linkDirectionalParticleSpeed={0.006}
-              linkDirectionalParticleColor={() => (isLight ? "rgba(13,110,102,0.5)" : "rgba(94,234,212,0.4)")}
-            />
-            </div>
           ) : use2dGpu ? (
             /* Tier 3 default: GPU points/links via cosmos.gl. Same window-pinned holder,
                same worker-fed positions; the legacy canvas renderer stays one flag away
@@ -1795,12 +1860,21 @@ export function BrainMap({
                 adapters={cosmosAdapters}
                 focusSet={litSet}
                 lockId={lockId}
+                focusAnchorId={focusId}
+                layoutMode={gpuLayout ? "gpu" : "worker"}
+                simParams={gpuSim}
+                clusters={gpuClusters}
+                clusterLabels={clusterLabels}
+                onSettled={afterSettle}
                 selectedId={node?.id ?? null}
                 coreMarkUrl={coreMarkUrl}
                 fireTypes={FIRE}
                 onNodeClick={(n) => handleNodeClick(n as any)}
                 onNodeHover={(n) => setHoverId((n as any)?.id ?? null)}
                 onBackgroundClick={() => setLockId(null)}
+                onLinkClick={(_l, far) => walkToNode(far)}
+                onNodeContextMenu={openNodeMenu}
+                onLasso={(ids) => { setLassoIds(ids.length ? ids : null); if (ids.length) setLockId(null); }}
                 onFallback={() => setUse2dGpu(false)}
               />
             </div>
@@ -1821,6 +1895,8 @@ export function BrainMap({
                   didInitialFitRef.current = true;
                   fitGraph(0);
                 }
+                // No worker (main-thread engine): this is the settle end, so remember the layout here.
+                if (!workerOwnsLayout) afterSettle();
                 markGraphInteraction();
               }}
               onZoom={(t: any) => { updateViewRect(t); nudgeRedraw(); markGraphInteraction(); }}
@@ -1849,7 +1925,7 @@ export function BrainMap({
               linkPointerAreaPaint={() => {}}
               onNodeDrag={onNodeDragTick}
               onNodeDragEnd={onNodeDragDone}
-              d3VelocityDecay={0.3}
+              d3VelocityDecay={VELOCITY_DECAY}
               onNodeClick={handleNodeClick}
               onNodeHover={(n: any) => setHoverId(n?.id ?? null)}
               onBackgroundClick={() => setLockId(null)}
@@ -1872,8 +1948,8 @@ export function BrainMap({
                 const dimmed = (!isCore && !inLens(n)) || (focusId != null && !inFocus(n.id));
                 // Recency fade: older files draw fainter (0.3 floor); unknown mtime (0)
                 // stays full so pre-reindex nodes aren't all hidden.
-                const recMul = showRecent && n.mtime ? recencyMul(n.mtime, Date.now()) : 1;
-                const base = isCore ? 11 : n.kind === "folder" ? 3.5 : n.layer === "product" ? 2.4 + Math.sqrt(n.deg || 0) * 0.7 : 1.1 + Math.sqrt(n.deg || 0) * 0.35;
+                const recMul = (showRecent && n.mtime ? recencyMul(n.mtime, Date.now()) : 1) * layerAlpha(n);
+                const base = sizeForNode(n);
                 const color = n.__color || colorOf(n);
                 const isSel = node?.id === n.id;
                 // The CORE mark no longer breathes (operator call, 2026-08-17): its pulse was a
@@ -1946,7 +2022,7 @@ export function BrainMap({
               nodePointerAreaPaint={(n: any, color: string, ctx: CanvasRenderingContext2D) => {
                 const vr = viewRectRef.current; // off-screen nodes need no hit area either
                 if (vr && (n.x < vr.x0 || n.x > vr.x1 || n.y < vr.y0 || n.y > vr.y1)) return;
-                const base = n.kind === "core" ? 11 : n.kind === "folder" ? 3.5 : n.layer === "product" ? 2.4 + Math.sqrt(n.deg || 0) * 0.7 : 1.1 + Math.sqrt(n.deg || 0) * 0.35;
+                const base = sizeForNode(n);
                 ctx.fillStyle = color; ctx.beginPath(); ctx.arc(n.x, n.y, base + 2, 0, 2 * Math.PI); ctx.fill();
               }}
             />

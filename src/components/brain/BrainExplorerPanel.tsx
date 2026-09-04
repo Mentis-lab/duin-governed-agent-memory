@@ -14,6 +14,8 @@ import { linkifyWikilinks, wikilinkTarget } from '@/lib/wikilinks'
 import { CodeMirrorEditor } from '@/components/editor/CodeMirrorEditor'
 import { toast } from '@/stores/toast-store'
 import { forLight } from '@/duin/lib/light-color'
+import { OrganizeForm, RowMenu, applyOrganizeToGraph, isNoteId, type OrganizeAction, type OrganizeChange } from './ExplorerOrganize'
+import { EntityCard } from './EntityCard'
 import '@/styles/markdown.css' // .markdown-body prose styles for the read view
 
 // Native lamprey Brain Explorer — the navigation for the center brain graph,
@@ -236,6 +238,10 @@ export function BrainExplorerPanel(): React.ReactElement {
   const setData = useBrainStore((s) => s.setData)
   const [confirmDel, setConfirmDel] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  // Organize by hand: the one inline form open right now (rename / move / rename folder / new
+  // note / name an entity). The form calls the brain; on success the graph in the store is
+  // patched at once so the tree, the detail pane and the map follow, and the re-index confirms.
+  const [organize, setOrganize] = useState<OrganizeAction | null>(null)
   // Backlinks/outlinks section — collapsed by default (session-local); the toggle
   // header still shows the counts so links are discoverable without expanding.
   const [linksOpen, setLinksOpen] = useState(false)
@@ -458,6 +464,31 @@ export function BrainExplorerPanel(): React.ReactElement {
       setChatContext({ id: n.id, label: n.label, kind: n.kind }) // scope the chat to this node
     }
   }
+  /** Top-level folders the tree shows, for the move form's suggestions. */
+  const folderNames = useMemo(() => tree.map(([f]) => f).filter((f) => f !== 'Other'), [tree])
+  const finishOrganize = (change: OrganizeChange, note: string): void => {
+    const cur = useBrainStore.getState().data
+    if (cur) setData(applyOrganizeToGraph(cur, change))
+    setOrganize(null)
+    const detail = useBrainStore.getState().detailNode
+    if (detail) {
+      if ((change.kind === 'rename-note' || change.kind === 'move-note') && detail.id === change.from) {
+        setDetail({ ...detail, id: change.to, label: change.kind === 'rename-note' ? change.label : detail.label })
+      } else if (change.kind === 'label-node' && detail.id === change.id) {
+        setDetail({ ...detail, label: change.label })
+      }
+    }
+    if (change.kind === 'new-note') {
+      const fresh = useBrainStore.getState().data?.nodes.find((x) => x.id === change.path)
+      if (fresh) openNode(fresh.id)
+    }
+    toast.success(note ? `${t('Done.')} ${note}` : t('Done.'))
+  }
+  const organizeForm = (action: OrganizeAction): React.ReactElement => (
+    <OrganizeForm action={action} folders={folderNames} onDone={finishOrganize} onCancel={() => setOrganize(null)} />
+  )
+  const organizeTargets = (id: string): boolean =>
+    !!organize && (organize.kind === 'rename-note' || organize.kind === 'move-note' || organize.kind === 'label-node') && organize.id === id
   // P4+ — vault note titles for the editor's [[wikilink]] autocomplete.
   const noteTitles = useMemo(
     () =>
@@ -512,22 +543,40 @@ export function BrainExplorerPanel(): React.ReactElement {
     }
     return { back, out }
   }, [data, nodes, detailNode])
-  const row = (id: string, label: string, kind: string): React.ReactElement => (
-    <button
-      key={id}
-      // Stable hook for the node id. Without it a row is only identifiable by its
-      // visible label, which collides (two nodes can share a label) and is unusable
-      // for UI automation or QA.
-      data-node-id={id}
-      data-node-kind={kind}
-      onClick={() => openNode(id)}
-      title={label}
-      className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-[12px] text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]"
-    >
-      <span className="size-2 shrink-0 rounded-full" style={{ background: (c => (isLight ? forLight(c) : c))(KIND_DOT[kind] || '#9ca3af') }} />
-      <span className="min-w-0 flex-1 truncate">{label}</span>
-    </button>
-  )
+  const row = (id: string, label: string, kind: string, layer?: string): React.ReactElement => {
+    // A vault note can be renamed and moved; a derived entity can be named. Everything else
+    // (cards, tracks, the core) is the operator's committed structure and keeps its name.
+    const menu: { label: string; onSelect: () => void }[] = isNoteId(id)
+      ? [
+          { label: t('Rename'), onSelect: () => setOrganize({ kind: 'rename-note', id, label }) },
+          { label: t('Move to folder'), onSelect: () => setOrganize({ kind: 'move-note', id, label }) }
+        ]
+      : layer === 'construction'
+        ? [{ label: t('Rename'), onSelect: () => setOrganize({ kind: 'label-node', id, label }) }]
+        : []
+    return (
+      <div key={id}>
+        <div className="group flex items-center">
+          <button
+            // Stable hook for the node id. Without it a row is only identifiable by its
+            // visible label, which collides (two nodes can share a label) and is unusable
+            // for UI automation or QA.
+            data-node-id={id}
+            data-node-kind={kind}
+            onClick={() => openNode(id)}
+            onContextMenu={menu.length > 0 ? (e) => { e.preventDefault(); setOrganize(isNoteId(id) ? { kind: 'rename-note', id, label } : { kind: 'label-node', id, label }) } : undefined}
+            title={label}
+            className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1 text-left text-[12px] text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]"
+          >
+            <span className="size-2 shrink-0 rounded-full" style={{ background: (c => (isLight ? forLight(c) : c))(KIND_DOT[kind] || '#9ca3af') }} />
+            <span className="min-w-0 flex-1 truncate">{label}</span>
+          </button>
+          {menu.length > 0 && <RowMenu title={t('Organize')} items={menu} />}
+        </div>
+        {organize && organizeTargets(id) && organizeForm(organize)}
+      </div>
+    )
+  }
 
   // Native node detail (replaces DUIN's Sheet slide-over). Markdown for any node
   // backed by a real .md; an info card for pure graph entities.
@@ -559,6 +608,23 @@ export function BrainExplorerPanel(): React.ReactElement {
           <span className="min-w-0 flex-1 truncate font-medium text-[var(--text-primary)]" title={detailNode.label}>
             {detailNode.label}
           </span>
+          {/* Rename: a note renames its file (links follow); a derived entity takes the
+              operator's name, which the extractor cannot overwrite. */}
+          {!editing && !organize && ((docReady && isNoteId(doc.path ?? '')) || (deletableNode && detailNode.layer === 'construction')) && (
+            <button
+              onClick={() =>
+                setOrganize(
+                  docReady && doc.path
+                    ? { kind: 'rename-note', id: doc.path, label: detailNode.label }
+                    : { kind: 'label-node', id: detailNode.id, label: detailNode.label }
+                )
+              }
+              title={docReady ? t('Rename this note') : t('Name this node')}
+              className="rounded-md px-2 py-1 text-[12px] text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]"
+            >
+              {t('Rename')}
+            </button>
+          )}
           {docReady && !editing && (
             <button
               onClick={() => {
@@ -687,6 +753,9 @@ export function BrainExplorerPanel(): React.ReactElement {
             ⧉
           </button>
         </div>
+        {organize && (organize.kind === 'rename-note' || organize.kind === 'label-node') && (
+          <div className="border-b border-[var(--panel-border)] px-2">{organizeForm(organize)}</div>
+        )}
         <div className="brain-md min-h-0 flex-1 overflow-y-auto px-3 py-3 text-[12px] leading-relaxed text-[var(--text-secondary)]">
           {!docFresh || doc.loading ? (
             <p className="text-[var(--text-muted)]">Loading…</p>
@@ -705,8 +774,11 @@ export function BrainExplorerPanel(): React.ReactElement {
               // Read view uses the app's canonical markdown prose styles
               // (.markdown-body — same as chat), so a viewed note is formatted
               // (headings, lists, bold, code, tables) and unified with the editor,
-              // not raw text.
-              <div className="markdown-body">
+              // not raw text. `doc-md` takes the reading size from Settings →
+              // Appearance → Document text size instead of inheriting the panel's
+              // 12px chrome, which is what made a read note the smallest place in
+              // the app to read one.
+              <div className="markdown-body doc-md">
                 {/* Wikilinks are rewritten to `wikilink:` hrefs before rendering and
                     intercepted here, so a VIEWED note has working [[links]] — they
                     previously rendered as literal bracket text, since markdown has no
@@ -760,57 +832,17 @@ export function BrainExplorerPanel(): React.ReactElement {
               </div>
             )
           ) : (
-            // Pure graph entity (resolved to no file) — person, org, topic, entity…
-            //
-            // This used to render the kind, an optional body and "ask the brain",
-            // which for the ~74% of the graph that is doc-less read as an empty
-            // panel. A graph node's CONTENT is its identity plus what it connects
-            // to, so show that inline rather than hiding it behind the collapsed
-            // links section below.
-            <div className="space-y-3">
-              <div className="flex items-center gap-2">
-                <span
-                  className="h-2 w-2 shrink-0 rounded-full"
-                  style={{ background: KIND_DOT[detailNode.kind] ?? '#9ca3af' }}
-                />
-                <span className="text-[11px] uppercase tracking-wide text-[var(--text-muted)]">
-                  {detailNode.kind}
-                </span>
-              </div>
-              {detailNode.body ? <p>{String(detailNode.body)}</p> : null}
-              <div className="rounded-md border border-[var(--panel-border)] bg-[var(--app-bg)] px-2.5 py-2">
-                <div className="text-[11px] text-[var(--text-muted)]">id</div>
-                <div className="break-all font-mono text-[11px] text-[var(--text-secondary)]">
-                  {detailNode.id}
-                </div>
-              </div>
-              {linkRefs.out.length + linkRefs.back.length > 0 ? (
-                <div className="space-y-1.5">
-                  <div className="text-[11px] uppercase tracking-wide text-[var(--text-muted)]">
-                    Connected to ({linkRefs.out.length + linkRefs.back.length})
-                  </div>
-                  <div className="flex flex-wrap gap-1">
-                    {[...linkRefs.out, ...linkRefs.back].slice(0, 40).map((l) => (
-                      <button
-                        key={`${l.id}-inline`}
-                        onClick={() => openNode(l.id)}
-                        title={l.id}
-                        className="max-w-full truncate rounded-full border border-[var(--panel-border)] px-2 py-0.5 text-[11px] text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]"
-                      >
-                        {l.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ) : (
-                <p className="text-[12px] text-[var(--text-muted)]">
-                  {t('Nothing links to this yet — it may be left over from an earlier extraction run.')}
-                </p>
-              )}
-              <p className="text-[12px] text-[var(--text-muted)]">
-                {t('Ask the brain about this from the composer below.')}
-              </p>
-            </div>
+            // Pure graph entity (resolved to no file): person, org, topic, decision, event…
+            // Its content is what the brain knows about it, joined server-side into one card
+            // (facts, sources with the naming sentence, typed connections, aliases, merge
+            // candidates) plus a model-written description when a model is available.
+            <EntityCard
+              id={detailNode.id}
+              label={detailNode.label}
+              kind={detailNode.kind}
+              dot={KIND_DOT[detailNode.kind] ?? '#9ca3af'}
+              onOpen={openNode}
+            />
           )}
         </div>
         {(linkRefs.back.length > 0 || linkRefs.out.length > 0) && (
@@ -991,23 +1023,36 @@ export function BrainExplorerPanel(): React.ReactElement {
           <div className="space-y-0.5">
             {tree.map(([folder, items]) => {
               const open = expanded.has(folder)
+              // "Other" is the graph's bucket for root-level notes, not a folder on disk.
+              const realFolder = folder === 'Other' ? '' : folder
+              const folderMenu = [
+                ...(realFolder ? [{ label: t('Rename folder'), onSelect: () => setOrganize({ kind: 'rename-folder', folder: realFolder }) }] : []),
+                { label: t('New note here'), onSelect: () => setOrganize({ kind: 'new-note', folder: realFolder }) }
+              ]
+              const folderFormOpen =
+                !!organize && ((organize.kind === 'rename-folder' && organize.folder === realFolder) || (organize.kind === 'new-note' && organize.folder === realFolder))
               return (
                 <div key={folder}>
-                  <button
-                    onClick={() =>
-                      setExpanded((prev) => {
-                        const n = new Set(prev)
-                        if (n.has(folder)) n.delete(folder)
-                        else n.add(folder)
-                        return n
-                      })
-                    }
-                    className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-[12px] font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]"
-                  >
-                    <span className="text-[var(--text-muted)]">{open ? '▾' : '▸'}</span>
-                    <span className="min-w-0 flex-1 truncate">{folder}</span>
-                    <span className="shrink-0 text-[11px] tabular-nums text-[var(--text-muted)]">{items.length}</span>
-                  </button>
+                  <div className="group flex items-center">
+                    <button
+                      onClick={() =>
+                        setExpanded((prev) => {
+                          const n = new Set(prev)
+                          if (n.has(folder)) n.delete(folder)
+                          else n.add(folder)
+                          return n
+                        })
+                      }
+                      onContextMenu={realFolder ? (e) => { e.preventDefault(); setOrganize({ kind: 'rename-folder', folder: realFolder }) } : undefined}
+                      className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-[12px] font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]"
+                    >
+                      <span className="text-[var(--text-muted)]">{open ? '▾' : '▸'}</span>
+                      <span className="min-w-0 flex-1 truncate">{folder}</span>
+                      <span className="shrink-0 text-[11px] tabular-nums text-[var(--text-muted)]">{items.length}</span>
+                    </button>
+                    <RowMenu title={t('Organize this folder')} items={folderMenu} />
+                  </div>
+                  {folderFormOpen && organize && <div className="ml-3">{organizeForm(organize)}</div>}
                   {open && (
                     <div className="ml-3 border-l border-[var(--panel-border)] pl-1.5">
                       {items.map((it) => row(it.id, it.label, it.kind))}
@@ -1019,7 +1064,7 @@ export function BrainExplorerPanel(): React.ReactElement {
           </div>
         ) : (
           <div className="space-y-0.5">
-            {list.map((n) => row(n.id, n.label, n.kind))}
+            {list.map((n) => row(n.id, n.label, n.kind, (n as { layer?: string }).layer))}
             {listTotal === 0 && (
               <p className="px-2 py-3 text-[12px] text-[var(--text-muted)]">
                 {q ? `Nothing here matches “${filter.trim()}”.` : 'Nothing in this view yet.'}

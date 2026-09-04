@@ -11,14 +11,12 @@
 
 export type Tier = 'cheap' | 'pro' | 'unknown'
 
-export const TIER_MODEL_MAP: Record<string, string> = {
-  // Workflow scripts say `model: 'cheap'` or `model: 'pro'` — these symbolic
-  // names resolve to concrete provider model IDs at runtime. Production wiring
-  // overrides this via setTierModelResolver() so user-selected models drive the
-  // mapping; the defaults below are sensible across the three Lamprey providers.
-  cheap: 'deepseek-v4-flash',
-  pro: 'deepseek-v4-pro'
-}
+/** Operator/test overrides for the symbolic tiers (`setTierModelMap`). Ships EMPTY: a
+ *  workflow's `model: 'cheap' | 'pro'` resolves against live provider state through the
+ *  registered resolver, and when nothing resolves the fork falls through to the
+ *  `agentic` role (subagent-runner.ts). No model id is hardcoded here — a shipped
+ *  DeepSeek pair used to make every built-in workflow demand a DeepSeek key. */
+export const TIER_MODEL_MAP: Record<string, string> = {}
 
 const tierByModel = new Map<string, Tier>()
 
@@ -64,9 +62,10 @@ export function registerTier(modelId: string, tier: Tier): void {
 /** Resolve a model ID OR a symbolic tier name to a concrete model ID. Symbolic
  *  tiers are re-resolved against live state on EVERY call, so a key added mid-
  *  session (or an Ollama probe that finishes after boot) takes effect without a
- *  restart; TIER_MODEL_MAP is the last-resort default when nothing resolves. */
-export function resolveModelId(idOrTier: string | undefined, defaultModel: string): string {
-  if (!idOrTier) return defaultModel
+ *  restart. `fallback` is the caller's own engine (the parent turn's model), not a
+ *  default; undefined all the way down means "let the fork resolve the agentic role". */
+export function resolveModelId(idOrTier: string | undefined, fallback?: string): string | undefined {
+  if (!idOrTier) return fallback
   if (idOrTier === 'cheap' || idOrTier === 'pro') {
     // Fail soft: this seam now runs on the workflow agent() path, where a
     // resolver throw would abort the agent call. It used to run once at boot
@@ -80,6 +79,9 @@ export function resolveModelId(idOrTier: string | undefined, defaultModel: strin
     }
   }
   if (idOrTier in TIER_MODEL_MAP) return TIER_MODEL_MAP[idOrTier]
+  // A symbolic tier that nothing resolved: hand back the caller's engine (or nothing,
+  // so the fork resolves the agentic role) — never send the word 'cheap' to a provider.
+  if (idOrTier === 'cheap' || idOrTier === 'pro') return fallback
   return idOrTier
 }
 
@@ -118,7 +120,9 @@ export interface BudgetTracker {
   spent(): number
   remaining(): number
   byTier(): Record<Tier, number>
-  record(modelId: string | undefined, tokens: number): void
+  /** `tier` wins when the caller knows it (a workflow's symbolic `model: 'cheap'`);
+   *  otherwise the id is classified by substring. */
+  record(modelId: string | undefined, tokens: number, tier?: Tier): void
 }
 
 export function makeBudgetTracker(total: number | null = null): BudgetTracker {
@@ -131,10 +135,10 @@ export function makeBudgetTracker(total: number | null = null): BudgetTracker {
     spent: () => spent,
     remaining: () => (total === null ? Infinity : Math.max(0, total - spent)),
     byTier: () => ({ ...perTier }),
-    record: (modelId, tokens) => {
+    record: (modelId, tokens, tier) => {
       const t = tokens > 0 ? tokens : 0
       spent += t
-      perTier[tierOfModel(modelId)] += t
+      perTier[tier ?? tierOfModel(modelId)] += t
     }
   }
 }

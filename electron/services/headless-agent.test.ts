@@ -43,6 +43,7 @@ const seam = vi.hoisted(() => {
 
 vi.mock('./providers/registry', () => ({
   resolveModel: (id: string) => ({ id, supportsTools: true }),
+  routeModel: () => null,
   chatStream: async (
     _messages: unknown,
     _modelId: string,

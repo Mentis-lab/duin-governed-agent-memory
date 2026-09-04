@@ -13,6 +13,7 @@ import { setActiveDenylist } from './governance/confidential-firewall'
 import { invalidateBrainGraphCache } from './local-brain/brain-graph-cache'
 import { reindex, reindexUntilReady } from './local-brain/index-store'
 import { restartNotesWatcher } from './local-brain/notes-watcher'
+import { pauseMemoryStoreWatcher, resumeMemoryStoreWatcher } from './memory-store'
 import {
   recordSwitchOutcome,
   switchMoatVault,
@@ -220,56 +221,67 @@ export async function commitReadyBrainVault(
 
   let count: number
   let durability: VaultDurabilityTransferResult | null = null
+  // The moat switch removes <userData>/lamprey-memory wholesale and rehydrates it from the vault.
+  // The memory store's watcher holds that directory open (on Windows a directory with an open
+  // handle cannot be removed), so every first-run folder pick died at the switch's cleanup step
+  // with "Vault durability moat failed" — the very first action a new operator takes. Release the
+  // handles for the whole switch, INCLUDING the rollback transfer in the catch below, and re-arm
+  // once the vault is settled either way.
+  if (vaultChanged) await pauseMemoryStoreWatcher()
   try {
-    count = await reindexUntilReady(afterDir)
-    if (vaultChanged) {
-      durability = transferVaultDurability(beforeDir, afterDir)
-      if (!durability.ok) {
-        throw new Error(`Vault durability ${durability.stage} failed: ${durability.reason}`)
-      }
-      // A cache from another vault is a confidentiality and provenance boundary.
-      // Invalidate before the new setting can become visible to any renderer.
-      invalidateVaultScopedCaches()
-    }
-    restartNotesWatcher(afterDir)
-    const onDisk = readSettingsFile(settingsPath()).data
-    writeSettingsFile(settingsPath(), { ...onDisk, ...safePartial })
-  } catch (error) {
-    const rollbackErrors: string[] = []
-    if (vaultChanged && durability?.ok) {
-      if (beforeDir) {
-        const reversed = transferVaultDurability(afterDir, beforeDir)
-        if (!reversed.ok) rollbackErrors.push(`durability rollback failed: ${reversed.reason}`)
-      } else {
-        recordSwitchOutcome(app.getPath('userData'), {
-          scope: 'brain-vault-adoption',
-          outcome: 'pending',
-          from: null,
-          to: afterDir,
-          failedStage: 'settings-publish',
-          reason: error instanceof Error ? error.message : String(error)
-        })
-      }
-    }
     try {
-      await reindexUntilReady(beforeDir)
-    } catch (rollbackError) {
-      rollbackErrors.push(
-        `index rollback failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`
-      )
+      count = await reindexUntilReady(afterDir)
+      if (vaultChanged) {
+        durability = transferVaultDurability(beforeDir, afterDir)
+        if (!durability.ok) {
+          throw new Error(`Vault durability ${durability.stage} failed: ${durability.reason}`)
+        }
+        // A cache from another vault is a confidentiality and provenance boundary.
+        // Invalidate before the new setting can become visible to any renderer.
+        invalidateVaultScopedCaches()
+      }
+      restartNotesWatcher(afterDir)
+      const onDisk = readSettingsFile(settingsPath()).data
+      writeSettingsFile(settingsPath(), { ...onDisk, ...safePartial })
+    } catch (error) {
+      const rollbackErrors: string[] = []
+      if (vaultChanged && durability?.ok) {
+        if (beforeDir) {
+          const reversed = transferVaultDurability(afterDir, beforeDir)
+          if (!reversed.ok) rollbackErrors.push(`durability rollback failed: ${reversed.reason}`)
+        } else {
+          recordSwitchOutcome(app.getPath('userData'), {
+            scope: 'brain-vault-adoption',
+            outcome: 'pending',
+            from: null,
+            to: afterDir,
+            failedStage: 'settings-publish',
+            reason: error instanceof Error ? error.message : String(error)
+          })
+        }
+      }
+      try {
+        await reindexUntilReady(beforeDir)
+      } catch (rollbackError) {
+        rollbackErrors.push(
+          `index rollback failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`
+        )
+      }
+      try {
+        restartNotesWatcher(beforeDir || null)
+        if (vaultChanged) invalidateVaultScopedCaches()
+      } catch (rollbackError) {
+        rollbackErrors.push(
+          `runtime rollback failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`
+        )
+      }
+      const message = error instanceof Error ? error.message : String(error)
+      throw new Error(rollbackErrors.length ? `${message}; ${rollbackErrors.join('; ')}` : message, {
+        cause: error
+      })
     }
-    try {
-      restartNotesWatcher(beforeDir || null)
-      if (vaultChanged) invalidateVaultScopedCaches()
-    } catch (rollbackError) {
-      rollbackErrors.push(
-        `runtime rollback failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`
-      )
-    }
-    const message = error instanceof Error ? error.message : String(error)
-    throw new Error(rollbackErrors.length ? `${message}; ${rollbackErrors.join('; ')}` : message, {
-      cause: error
-    })
+  } finally {
+    if (vaultChanged) resumeMemoryStoreWatcher()
   }
 
   emitSettingsUpdated(current, updated, safePartial)

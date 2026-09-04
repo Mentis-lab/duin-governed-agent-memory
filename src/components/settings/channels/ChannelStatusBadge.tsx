@@ -64,7 +64,7 @@ export function stateLabel(state: ChannelState): string {
 export function stateTone(state: ChannelState): string {
   switch (state) {
     case 'off':
-      return 'border-[var(--border)] text-[var(--text-muted)]'
+      return 'border-[var(--panel-border)] text-[var(--text-muted)]'
     case 'needs-setup':
       return 'border-[var(--warning)]/40 bg-[var(--warning)]/10 text-[var(--warning)]'
     case 'connecting':

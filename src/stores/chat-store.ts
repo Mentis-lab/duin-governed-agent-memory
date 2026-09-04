@@ -12,6 +12,7 @@ import type {
   ToolRisk,
   ForkParams
 } from '@/lib/types'
+import { AUTO_ENGINE } from '@/lib/types'
 import { useSettingsStore } from '@/stores/settings-store'
 import { useModelStore } from '@/stores/model-store'
 import { usePlanStore } from '@/stores/plan-store'
@@ -133,7 +134,13 @@ interface ChatState {
     tokenEstimate: number
     attemptElapsedMs: number
   } | null
+  /** The ACTIVE conversation's engine PIN — a model id, or AUTO_ENGINE for "resolve the chat
+   *  role from the provider policy". Mirrors `conversation.model`; never a global setting
+   *  (there is no default model). What it resolves to lives in model-store.resolution. */
   activeModel: string
+  /** A pin chosen on the home composer before any conversation exists; consumed by the next
+   *  createConversation so the choice is not silently discarded. */
+  pendingPin: string | null
   /** Composer reasoning-effort selection. Sent per turn; the backend falls back
    *  to the settings global default when omitted. Only meaningful for reasoning
    *  models (the composer hides the control otherwise). */
@@ -159,7 +166,9 @@ interface ChatState {
   createConversation: () => Promise<string>
   forkFromMessage: (messageId: string, opts?: Partial<ForkParams>) => Promise<string | null>
   deleteConversation: (id: string) => Promise<void>
-  sendMessage: (content: string, activeSkillIds: string[]) => Promise<void>
+  /** `retry` re-runs a failed turn: the remembered content is sent again WITHOUT appending a
+   *  second user bubble (main dedupes the persisted row the same way) — L5 F9. */
+  sendMessage: (content: string, activeSkillIds: string[], opts?: { retry?: boolean }) => Promise<void>
   /** Last sendMessage input per conversation, kept so a failed turn's transcript
    *  notice can offer one-click retry (chat:error renders a TranscriptNotice
    *  whose onActivate calls retryLastSend). In-memory only — a retry after an
@@ -292,7 +301,7 @@ function buildAttachmentBlock(file: ProcessedFile): string {
 
 // One-way migration for the retired `raw:` model-id prefix. The Advanced
 // "talk to a raw model" picker rows are gone — no UI can emit the prefix —
-// but a conversation.model column or defaultModel written while they existed
+// but a conversation.model column (or a since-retired stored setting) written while they existed
 // can still carry it. Strip it once at every read boundary so the store only
 // ever holds plain catalog ids; never write the prefix back.
 const stripRetiredRawPrefix = (id: string): string =>
@@ -429,13 +438,11 @@ export const useChatStore = create<ChatState>()(
   streamStartedAt: null,
   lastActivityAt: null,
   streamingVitals: null,
-  // New/home conversation default — the DUIN brain agent, matching
-  // settings.defaultModel + model-store so the composer shows the same model the
-  // status bar / active-model resolve to. Per-conversation switching still wins:
-  // selectConversation() overwrites this with conv.model, and setModel() persists
-  // explicit user choices. Sourced from the settings store so the two stay in sync
-  // instead of carrying a second hardcoded literal.
-  activeModel: stripRetiredRawPrefix(useSettingsStore.getState().settings.defaultModel),
+  // No conversation on screen → no pin: the chat role resolves from the provider policy.
+  // selectConversation() overwrites this with the conversation's own pin; setModel() writes a
+  // pin for THAT conversation only. There is no global default model to read here.
+  activeModel: AUTO_ENGINE,
+  pendingPin: null,
   reasoningEffort: (useSettingsStore.getState().settings as { reasoningEffort?: 'low' | 'medium' | 'high' | 'max' })
     .reasoningEffort ?? 'low',
   toolCalls: [],
@@ -453,7 +460,8 @@ export const useChatStore = create<ChatState>()(
     if (s.isStreaming || conversationId !== s.activeConversationId) return
     const last = s.lastSendByConv[conversationId]
     if (!last) return
-    void get().sendMessage(last.content, last.skillIds)
+    // Re-run the failed row: no second user bubble, no second persisted user row (L5 F9).
+    void get().sendMessage(last.content, last.skillIds, { retry: true })
   },
   conversationContexts: {},
 
@@ -527,7 +535,11 @@ export const useChatStore = create<ChatState>()(
     }
     const conv = get().conversations.find((c) => c.id === id)
     if (conv) {
-      set({ activeModel: stripRetiredRawPrefix(conv.model) })
+      // The conversation's own pin (AUTO_ENGINE when it has none); the resolved engine for
+      // it comes from model-store, refreshed here so chip + status line follow the switch.
+      const pin = stripRetiredRawPrefix(conv.model) || AUTO_ENGINE
+      set({ activeModel: pin })
+      void useModelStore.getState().refreshResolution(pin)
     }
     // Load the plan for the new active conversation. Fire-and-forget — the
     // plan checklist renders empty until the snapshot arrives, which is fine.
@@ -544,28 +556,20 @@ export const useChatStore = create<ChatState>()(
     // per-conversation stream slot keeps its state and syncs back when the
     // user returns to it.
     //
-    // New chats start from the GLOBAL active model — the last explicit picker
-    // choice, persisted via model.setActive — not from whichever conversation was
-    // last on screen. selectConversation overwrites the composer model with the
-    // viewed conversation's pin, so without this read, browsing an old chat
-    // silently changed what the NEXT chat would use, and model.getActive()
-    // disagreed with observable behavior (QA 2026-08-24, F7).
-    let model = get().activeModel
-    try {
-      const active = await window.api.model.getActive()
-      if (active?.success && typeof active.data === 'string' && active.data) {
-        model = stripRetiredRawPrefix(active.data)
-      }
-    } catch {
-      /* store value is the fallback */
-    }
+    // New chats start UNPINNED (AUTO_ENGINE): the chat role resolves from the provider policy
+    // at send time. The one exception is a pin picked on the home composer before this
+    // conversation existed (pendingPin) — that choice belongs to the chat it was made for.
+    // Nothing global is read: browsing an old chat cannot change what the NEXT chat uses.
+    const model = get().pendingPin ?? AUTO_ENGINE
     try {
       const result = await window.api.conversation.create(model)
       if (result.success) {
         const conv = result.data
         useNavHistoryStore.getState().push(conv.id)
+        void useModelStore.getState().refreshResolution(model)
         set((state) => ({
           activeModel: model,
+          pendingPin: null,
           conversations: [conv, ...state.conversations],
           activeConversationId: conv.id,
           messages: [],
@@ -661,7 +665,7 @@ export const useChatStore = create<ChatState>()(
     }
   },
 
-  sendMessage: async (content: string, activeSkillIds: string[]) => {
+  sendMessage: async (content: string, activeSkillIds: string[], opts?: { retry?: boolean }) => {
     const state = get()
     let conversationId = state.activeConversationId
 
@@ -684,35 +688,26 @@ export const useChatStore = create<ChatState>()(
     // id here: the retired `raw:` prefix is stripped once at the read
     // boundaries (initial value + selectConversation), never carried.
     const pending = state.pendingAttachments
-    const baseModelId = state.activeModel
-    const allModels = useModelStore.getState().models
-    // `duin-brain` is a SENTINEL, not a model — it never calls a provider itself
-    // (registry.ts: its `provider` field is cosmetic). The brain picks the real
-    // engine in resolveAnswerModel(): an explicit `brainEngine`, else
-    // `defaultModel`. So the sentinel's own catalog flag says nothing about
-    // whether this turn can see an image — resolve it to the ENGINE and read
-    // that model's capability instead. Mirroring the brain's own precedence
-    // keeps one source of truth rather than inventing a second.
-    const resolveEngineId = (id: string): string => {
-      if (id !== 'duin-brain') return id
-      const s = useSettingsStore.getState().settings
-      const engine = typeof s.brainEngine === 'string' && s.brainEngine !== 'auto' ? s.brainEngine : ''
-      const candidate = engine || (typeof s.defaultModel === 'string' ? s.defaultModel : '')
-      // `defaultModel` itself DEFAULTS to the sentinel, so on a stock install this
-      // resolves to nothing. That is not a failure — it means the brain will pick
-      // via its tier policy, which the renderer genuinely cannot see.
-      return candidate && candidate !== 'duin-brain' ? candidate : ''
-    }
-    const engineId = resolveEngineId(baseModelId)
+    const modelStore = useModelStore.getState()
+    const allModels = modelStore.models
+    // AUTO_ENGINE is a SENTINEL, not a model — the brain resolves the chat role from the
+    // provider policy. The renderer's view of that answer is model-store.resolution (the
+    // same router, asked over IPC for this conversation's pin), so read the ENGINE's
+    // capability there instead of guessing from the sentinel's catalog row.
+    const engineId =
+      state.activeModel !== AUTO_ENGINE
+        ? state.activeModel
+        : modelStore.resolvedFor === state.activeModel
+          ? (modelStore.resolution?.modelId ?? '')
+          : ''
     // Guard the empty id: `find(m => m.id === '')` would match a malformed custom
     // model row and read ITS capability.
     const modelInfo = engineId ? allModels.find((m) => m.id === engineId) : undefined
     const images = pending.filter((f) => f.kind === 'image')
 
     // Three-state capability, not two. The renderer can be CERTAIN a model sees,
-    // CERTAIN it doesn't, or genuinely NOT KNOW — the last case is the default
-    // install (`defaultModel: 'duin-brain'`, `brainEngine: 'auto'`), where the
-    // engine is chosen by a tier policy the renderer has no view of.
+    // CERTAIN it doesn't, or genuinely NOT KNOW — the last case is an unpinned
+    // conversation whose resolution has not arrived (or nothing is routable).
     //
     // Collapsing "unknown" into "cannot see" is what makes a feature look dead:
     // every image on a stock install would be dropped even with a vision model
@@ -783,14 +778,22 @@ export const useChatStore = create<ChatState>()(
     // not something to restate in the transcript on every turn.
     const displayContent = attachmentBlocks ? `${content}${attachmentBlocks}` : content
 
+    // The row records the ENGINE the turn is expected to run on (the pin, else the resolved
+    // policy pick) — not the AUTO sentinel — so per-message chips and group-by-model stay
+    // truthful for first turns too (L5 F6).
+    const rowModel = state.activeModel !== AUTO_ENGINE ? state.activeModel : engineId || AUTO_ENGINE
     const userMessage: Message = {
       id: crypto.randomUUID(),
       role: 'user',
       content: displayContent,
       timestamp: Date.now(),
       conversationId,
-      model: state.activeModel
+      model: rowModel
     }
+    // A retry re-runs the failed turn: the bubble for it is already on screen (L5 F9).
+    const lastShown = state.messages[state.messages.length - 1]
+    const reuseBubble =
+      opts?.retry === true && !!lastShown && lastShown.role === 'user' && lastShown.content === displayContent
 
     // Captured BEFORE the send. `chat:send` resolves at TURN END, so everything
     // after the await runs at a moment when the user may be looking at a
@@ -812,7 +815,7 @@ export const useChatStore = create<ChatState>()(
       toolCalls: []
     }
     set((s) => ({
-      messages: [...s.messages, userMessage],
+      messages: reuseBubble ? s.messages : [...s.messages, userMessage],
       streams: { ...s.streams, [conversationId]: streamState },
       isStreaming: true,
       streamingConversationId: conversationId,
@@ -957,29 +960,41 @@ export const useChatStore = create<ChatState>()(
     }),
 
   setModel: async (model: string) => {
+    // A PIN for the active conversation only (AUTO_ENGINE clears it). This never writes a
+    // global setting: there is no default model, and the composer picker must not rewrite
+    // what every OTHER chat runs on (L5 F6).
     const state = get()
     const previousModel = state.activeModel
     if (previousModel === model) return
-    set({ activeModel: model })
-    void window.api.model.setActive(model)
-
     const activeId = state.activeConversationId
+    set({ activeModel: model, pendingPin: activeId ? state.pendingPin : model })
+    void useModelStore.getState().refreshResolution(model)
+    if (!activeId) return
+
+    // `conversation.model` is written on EVERY pin change, not only once messages exist —
+    // the row must say what the conversation runs on from its first turn.
+    const saved = await window.api.conversation.setModel(activeId, model)
+    if (!saved.success) {
+      set({ activeModel: previousModel })
+      void useModelStore.getState().refreshResolution(previousModel)
+      toast.error(`Couldn't pin the model: ${saved.error}`)
+      return
+    }
+
     const realMessageCount = state.messages.filter(
       (m) => m.role === 'user' || m.role === 'assistant'
     ).length
-
-    if (activeId && realMessageCount > 0) {
+    if (realMessageCount > 0) {
       const info = useModelStore.getState().models.find((m) => m.id === model)
-      const modelName = info?.name ?? model
+      const modelName = model === AUTO_ENGINE ? 'Auto (provider policy)' : (info?.name ?? model)
       const marker = `— Switched to ${modelName} —`
       const result = await window.api.conversation.appendSystem(activeId, marker)
       if (result.success && result.data) {
         const msg = result.data as Message
         set((s) => ({ messages: [...s.messages, msg] }))
       }
-      await window.api.conversation.setModel(activeId, model)
-      await get().loadConversations()
     }
+    await get().loadConversations()
   },
 
   appendStreamChunk: (content: string, conversationId?: string) => {

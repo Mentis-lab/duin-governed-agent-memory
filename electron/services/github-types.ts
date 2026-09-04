@@ -140,3 +140,16 @@ export interface GitHubTokenProvider {
    */
   getScopes(): Promise<string[]>
 }
+
+/** The latest published release of DUIN's own repository, beside the running version. */
+export interface GitHubProjectRelease {
+  /** Tag of the latest published release, e.g. "v0.1.0". */
+  tag: string
+  name: string | null
+  /** ISO-8601, or null when GitHub did not say. */
+  publishedAt: string | null
+  /** The release page. */
+  htmlUrl: string
+  /** The running app's version (app.getVersion()), without a leading "v". */
+  current: string
+}

@@ -6,7 +6,7 @@
 
 **Every agent you run writes its own memory, grades its own judgment and asks for its own permissions. DUIN is a harness that makes it earn all three, in files you own.**
 
-DUIN is an open harness for personal agents: long-term memory, a working model of your world, and the rules for what an agent may do, kept as Markdown in a folder you own and governed at every step. Memory is earned: every fact is labelled as something you said or something a model inferred, proven over sessions before it becomes a rule, superseded with its history kept, and never revised by a model once you stated it. Autonomy is earned too: the agent asks before it acts outside your notes, background loops stay off until you turn them on, and any other agent, Claude Code included, mounts the same memory over MCP with exactly the grants you approve. Local, MIT, no account.
+DUIN is an open harness for personal agents: long-term memory, a working model of your world, and the rules for what an agent may do, kept as Markdown in a folder you own and governed at every step. Memory and autonomy are both earned: a fact is labelled at capture as yours or as inferred and proven over sessions before it becomes a rule, and the agent asks before it acts outside your notes. Local, MIT, no account.
 
 [Download](https://github.com/Mentis-lab/duin-governed-agent-memory/releases/latest) · [The harness](#the-harness) · [With Claude Code](#with-the-agents-you-already-run) · [Getting started](docs/getting-started.md) · [Architecture](docs/architecture.md) · [FAQ](docs/faq.md) · [Discussions](https://github.com/Mentis-lab/duin-governed-agent-memory/discussions) · [Security](SECURITY.md)
 
@@ -15,13 +15,40 @@ DUIN is an open harness for personal agents: long-term memory, a working model o
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 <p align="center">
-  <img src="docs/assets/hero.gif" alt="Open a note from the Explorer, ask in its context, and read the answer with the note it cites" width="100%" />
+  <img src="docs/assets/hero.gif" alt="Zoom the live brain map, pick a DUIN note from the Explorer, and ask a question in that note's context" width="100%" />
 </p>
-<p align="center"><sub>The author's own vault, about 1,200 notes: open a note from the Explorer, ask in its context, read the answer with the note it cites. Answered by DeepSeek V4 Flash; the citation comes from local search.</sub></p>
+<p align="center"><sub>The author's own vault, about 1,200 notes, recorded live: zoom the brain map in and out, filter the Explorer to a DUIN note, open it, and ask in its context — the composer says <em>asking in context</em> and the answer is grounded in that note. Answered by DeepSeek V4 Flash; map labels are off in this recording.</sub></p>
 
 **0.1, first public release.** The rough edges and the plan for each: [#10](https://github.com/Mentis-lab/duin-governed-agent-memory/issues/10). Next: signed installers with automatic updates, a custom Ollama endpoint, a per-turn spend ceiling.
 
 ---
+
+## What you get
+
+| Capability | What it does | Needs |
+|---|---|---|
+| **Memory that earns its place** | Every fact labelled as something you said or something a model inferred, proven over sessions, superseded with its history kept. Yours to ratify, veto or reinstate; a fact you stated is never overruled by a model. | Nothing |
+| **Answers you can check** | Grounded answers cite the notes they stood on, and refuse when the evidence is thin. | Nothing |
+| **Your files stay yours** | Plain Markdown in a folder you own; an Obsidian vault works as-is. DUIN never edits your existing notes. | Nothing |
+| **A map of what you are working on** | People, projects, decisions and open threads extracted into a graph you can explore, with open loops tracked over time. | A model |
+| **An agent with hands, on a leash** | Files, commands, MCP servers, skills, hooks and subagents. Anything outside your notes asks first, and background loops ship off. | A model |
+| **One memory, every agent** | Claude Code or any MCP client mounts the same memory and map, plane by plane. | Your grant |
+
+**Retrieval, all of it on your machine:** BM25 over a CJK-aware tokenizer, vectors in sqlite-vec with a multilingual-e5-small embedder, the two fused by weighted reciprocal-rank fusion, then a bge-reranker-base cross-encoder over the result. No key, no server, no GPU.
+
+**Nothing** means no key and no account: search, grounded answers and the memory itself work from the first launch. **A model** means one of OpenAI, Anthropic, Google Gemini, DeepSeek, Moonshot, Zhipu, DashScope (Qwen), xAI, Mistral, Groq, DeepInfra, GitHub Models or OpenRouter, or a local model through Ollama; with none connected, your own ratification replaces the jury. DUIN adds four Markdown files to your folder's root and keeps its own state in `.brain/`, `.duin/`, `.trash/` and `_agui_outputs/`, all text you can ignore in sync or git. Interface in English, Chinese and Japanese.
+
+<p align="center">
+  <img src="docs/assets/screenshot-app.png" alt="DUIN on a real vault of roughly 1,200 notes: the brain map, the chat composer and the Home surface" width="100%" />
+</p>
+<p align="center"><sub>DUIN on the author's own vault, roughly 1,200 notes. The right panel is <strong>Home</strong>, the surface that opens on launch.</sub></p>
+
+## What DUIN is, and is not
+
+- It is a harness that governs an agent's memory, judgment and autonomy, not a coding agent with a memory file. The agent shell is deliberately the thinner part; the governance is the product.
+- It reads a folder of Markdown you already have. Keep editing it with any editor; DUIN never edits your existing notes.
+- It is local-first, not offline-only. Search, grounded answers and the memory work with no key. Extraction, conversation and the jury need a model: a cloud key or a local Ollama.
+- It is single-user. No sync, no team space, no server mode, no SDK. Nothing listens beyond `127.0.0.1`.
 
 ## The harness
 
@@ -94,27 +121,12 @@ Windows shows a SmartScreen warning: choose **More info → Run anyway**. macOS:
 ## First run
 
 1. Install DUIN and launch it. When the welcome screen asks for a folder, choose the one that holds your Markdown notes. An Obsidian vault works as-is; so does an empty folder. Your notes are the memory it starts from.
-2. Tell it something: "Remember that I prefer replies that lead with the conclusion." Open **Learning**. The fact is there, labelled as something you said.
+2. Tell it something: "Remember that I prefer replies that lead with the conclusion." **Home** opens on launch; its **Details → Learning** row opens the Learning panel, where the fact is, labelled as something you said.
 3. Ask about something you know you wrote down. With nothing configured, the answer comes from your notes with the notes it stood on, or DUIN says the notes hold too little.
 4. Connect a model (Settings → API Keys, or a running Ollama). Facts now go through the jury instead of waiting for you, and **Brain** shows the people, projects and decisions in your notes as a map.
 5. Optional: mount it into Claude Code (below) so the agent you already use remembers you the same way.
 
 What lands on disk at each step: [docs/getting-started.md](docs/getting-started.md).
-
-## What you get
-
-- **Memory that earns its place.** Every fact labelled, proven over sessions, superseded with history, and yours to ratify, veto, un-veto or reinstate from the Learning panel or by editing the files in your vault. A fact you stated is never overruled by a model.
-- **A map of what you are working on.** People, projects, decisions and open threads, extracted into a graph you can explore in 2D and 3D, with open loops tracked over time. Needs a connected model.
-- **Answers you can check.** Grounded answers cite the notes they stood on and refuse when the evidence is thin. On-device search and reranking, no key.
-- **An agent with hands, on a leash.** Files, commands, MCP servers, skills, hooks and subagents, with approvals for anything outside your notes and loops off by default.
-- **One memory, every agent.** Claude Code or any MCP client mounts the same memory and map with the grants you approve.
-- **No key required.** Search, grounded answers and the memory itself work with nothing configured. For conversation, the jury and the graph, connect OpenAI, Anthropic, Google Gemini, DeepSeek, Moonshot, Zhipu, DashScope (Qwen), xAI, Mistral, Groq, DeepInfra, GitHub Models or OpenRouter, or a local model through Ollama.
-- **Your files stay yours.** Plain Markdown in a folder you own; an Obsidian vault works as-is. DUIN never edits your existing notes. It adds four Markdown files to the root and keeps its own state in `.brain/`, `.duin/`, `.trash/` and `_agui_outputs/`, all text you can ignore in sync or git. Interface in English, Chinese and Japanese.
-
-<p align="center">
-  <img src="docs/assets/screenshot-app.png" alt="DUIN on a real vault of roughly 1,200 notes: the Brain view, the chat composer and the Explorer surfaces" width="100%" />
-</p>
-<p align="center"><sub>DUIN on the author's own vault, roughly 1,200 notes.</sub></p>
 
 ## With the agents you already run
 
@@ -131,13 +143,6 @@ Claude Code and Codex are stronger agents, and each keeps a memory file of its o
 - **Editor plugins** (Copilot for Obsidian, Smart Connections): chat and related notes inside the editor, on mobile too, and lighter: Smart Connections runs local embeddings in a few megabytes where DUIN ships 412 MB of encoders. They keep no governed memory of you.
 - **Local RAG apps** (AnythingLLM, Khoj): documents into workspaces or a server, with web and mobile clients. DUIN reads your folder in place, needs no server, and answers with no key.
 - **Reor**: a notes app with AI search built in. DUIN is not an editor; it reads the notes you keep elsewhere.
-
-## What DUIN is, and is not
-
-- It is a harness that governs an agent's memory, judgment and autonomy, not a coding agent with a memory file. The agent shell is deliberately the thinner part; the governance is the product.
-- It reads a folder of Markdown you already have. Keep editing it with any editor; DUIN never edits your existing notes.
-- It is local-first, not offline-only. Search, grounded answers and the memory work with no key. Extraction, conversation and the jury need a model: a cloud key or a local Ollama.
-- It is single-user. No sync, no team space, no server mode, no SDK. Nothing listens beyond `127.0.0.1`.
 
 ## Known limitations in 0.1
 

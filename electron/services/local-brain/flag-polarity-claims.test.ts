@@ -186,10 +186,10 @@ const KNOWN_MISMATCHES: Record<string, string> = {
   // Reads `process.env.DUIN_TURN_RESUME !== '0'` in agui-run.ts turnResumeEnabled (default ON).
   'electron/services/local-brain/server.ts::DUIN_TURN_RESUME':
     'two comments say default OFF; turnResumeEnabled in agui-run.ts ships it ON',
-  // DEFAULT_RERANK_MODE = 'local-cross-encoder' in rag/rerank.ts, i.e. the stage FIRES on a stock
-  // install.
-  'electron/services/local-brain/server.ts::rag.rerankMode':
-    'says "Off by default"; DEFAULT_RERANK_MODE ships local-cross-encoder'
+  // server.ts::rag.rerankMode was here until 2026-09-04. Its comment said "Off by default" long
+  // after DEFAULT_RERANK_MODE flipped to 'local-cross-encoder'; the line now states the shipped
+  // polarity and dates the correction, so the entry left with it. This gate is what caught the
+  // fix — the allowlist went stale the moment the comment was true.
 }
 
 // KNOWN GAP, recorded rather than papered over. rag/rerank.ts contradicts ITSELF -- its mode list

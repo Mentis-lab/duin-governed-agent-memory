@@ -161,7 +161,19 @@ export function buildWholeNoteContext(
   query: string,
   notes: WNNote[],
   semantic: WNSemHit[],
-  opts: { topK?: number; charBudget?: number; perNoteBudget?: number; demote?: (id: string) => boolean } = {}
+  opts: {
+    topK?: number
+    charBudget?: number
+    perNoteBudget?: number
+    demote?: (id: string) => boolean
+    /** Ids hoisted to the FRONT of the fused ranking (stable among themselves and for the rest).
+     *  Used to guarantee that a note which SUPERSEDES a retrieved note is itself in context — the
+     *  ranking scores topical similarity, so a brief update loses to the long stale note it corrects
+     *  (measured on bench/stale: in 2 of 4 read failures the superseder never reached the top-8).
+     *  This is a targeted co-retrieval, NOT a reordering of general search: ids not already in the
+     *  fused list are ignored, and nothing is dropped. */
+    pin?: readonly string[]
+  } = {}
 ): WholeNoteContext {
   const byId = new Map(notes.map((n) => [n.id, n]))
   const lexOrder = bm25Rank(query, notes).map((r) => r.id)
@@ -172,6 +184,10 @@ export function buildWholeNoteContext(
     const keep = fused.filter((id) => !opts.demote!(id))
     const drop = fused.filter((id) => opts.demote!(id))
     fused = [...keep, ...drop]
+  }
+  if (opts.pin && opts.pin.length > 0) {
+    const pinned = new Set(opts.pin)
+    fused = [...fused.filter((id) => pinned.has(id)), ...fused.filter((id) => !pinned.has(id))]
   }
   // Hand the fused ranking to the shared assembler (factored out so an ALTERNATIVE ranker — e.g. the
   // model-free graph-expand retriever — assembles its context through the SAME budgeted concatenation

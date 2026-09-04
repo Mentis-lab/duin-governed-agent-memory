@@ -1,19 +1,31 @@
 import { t, tf } from '@/lib/i18n'
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useId, useState } from 'react'
 import { Button } from '@/components/ui/Button'
+import { Input } from '@/components/ui/Input'
+import { PanelState } from '@/components/ui/PanelState'
+import {
+  SettingsLink,
+  SettingsLoadError,
+  SettingsLoading,
+  SettingsPage,
+  SettingsRow,
+  SettingsSection
+} from '@/components/ui/settings'
+import { invoke, query } from '@/lib/ipc-client'
+import { describeError } from '@/lib/result'
+import { panelFromResult, panelLoading, type PanelStatus } from '@/lib/panel-state'
+import { useDirtyGuard } from '@/hooks/useDirtyGuard'
 import { toast } from '@/stores/toast-store'
-import { ensurePlaintextConsentIfNeeded } from '@/lib/keychain-consent'
 
-// Web-tools settings panel.
+// Web-tools settings panel: which search provider powers web search in chat.
 //
-// Lets the user pick a search provider (Brave, Tavily, SerpAPI, SearXNG),
-// store its API key (for the first three) or endpoint (for SearXNG), and
-// run a one-query smoke test. API keys are written to the keychain in main;
-// the renderer never sees raw key material — `hasKey` is the only signal we
-// get back. Settings are persisted to userData/settings.json under the
-// `webTools` key.
+// Keys are NOT entered here. Brave / Tavily / SerpAPI keys live on the API Keys page
+// (one home for keys); this page reads `hasKey` for each provider and links there.
+// SearXNG needs the address of an instance instead. Settings persist under the
+// `webTools` key of settings.json; the renderer never sees raw key material.
 
-type ProviderId = 'duckduckgo' | 'brave' | 'tavily' | 'serpapi' | 'searxng'
+// SOURCE-LOCK: mirrors WebSearchProviderId in electron/services/web-search-adapters.ts.
+type ProviderId = 'duckduckgo' | 'brave' | 'tavily' | 'serpapi' | 'searxng' | 'wikipedia'
 
 interface ProviderEntry {
   id: ProviderId
@@ -37,392 +49,287 @@ interface TestStatus {
   message: string
 }
 
-// Lightweight escape hatch: preload.ts is owned by the main integrator,
-// so until they wire window.api.webTools we read through ipcRenderer via
-// the structured-but-untyped surface. Once preload is updated this cast
-// becomes a no-op.
-type WebToolsApi = {
-  setProvider: (
-    provider: ProviderId,
-    opts: { apiKey?: string; endpoint?: string }
-  ) => Promise<{ success: boolean; error?: string }>
-  getProvider: () => Promise<{ success: boolean; data?: ProviderState; error?: string }>
-  testAdapter: () => Promise<{
-    success: boolean
-    data?: { ok: boolean; error?: string }
-    error?: string
-  }>
-  deleteKey?: (provider: ProviderId) => Promise<{ success: boolean; error?: string }>
-}
-
-function getApi(): WebToolsApi | null {
-  if (typeof window === 'undefined') return null
-  const api = (window as unknown as { api?: { webTools?: WebToolsApi } }).api
-  return api?.webTools ?? null
-}
-
 const DOC_LINKS: Record<ProviderId, string> = {
   duckduckgo: 'https://duckduckgo.com/',
   brave: 'https://api.search.brave.com/app/keys',
   tavily: 'https://app.tavily.com/home',
   serpapi: 'https://serpapi.com/manage-api-key',
-  searxng: 'https://docs.searxng.org/admin/installation.html'
+  searxng: 'https://docs.searxng.org/admin/installation.html',
+  wikipedia: 'https://www.wikipedia.org/'
+}
+
+/** Short names for the provider rows; main's labels carry their own key notes. */
+const PROVIDER_NAMES: Record<ProviderId, string> = {
+  duckduckgo: 'DuckDuckGo',
+  brave: 'Brave Search',
+  tavily: 'Tavily',
+  serpapi: 'SerpAPI',
+  searxng: 'SearXNG',
+  wikipedia: 'Wikipedia'
+}
+
+/** A SearXNG address must be a full http(s) URL, or the adapter builds requests against nothing. */
+export function isHttpUrl(value: string): boolean {
+  return /^https?:\/\/\S+$/i.test(value.trim())
 }
 
 export function WebToolsSettings() {
-  const [state, setState] = useState<ProviderState | null>(null)
-  const [drafts, setDrafts] = useState<Record<ProviderId, string>>({
-    duckduckgo: '',
-    brave: '',
-    tavily: '',
-    serpapi: '',
-    searxng: ''
-  })
-  const [showKey, setShowKey] = useState<Record<ProviderId, boolean>>({
-    duckduckgo: false,
-    brave: false,
-    tavily: false,
-    serpapi: false,
-    searxng: false
-  })
+  const [state, setState] = useState<PanelStatus<ProviderState>>(panelLoading())
   const [endpoint, setEndpoint] = useState<string>('')
+  const [endpointError, setEndpointError] = useState<string | null>(null)
   const [busy, setBusy] = useState<ProviderId | 'test' | null>(null)
   const [testStatus, setTestStatus] = useState<TestStatus | null>(null)
-  const [apiMissing, setApiMissing] = useState(false)
+  const endpointId = useId()
 
-  const refresh = async () => {
-    const api = getApi()
-    if (!api) {
-      setApiMissing(true)
-      return
-    }
-    setApiMissing(false)
-    try {
-      const result = await api.getProvider()
-      if (result.success && result.data) {
-        setState(result.data)
-        setEndpoint(result.data.searxngEndpoint ?? '')
-      }
-    } catch (err) {
-      console.error('[WebToolsSettings] refresh failed', err)
-    }
-  }
-
-  useEffect(() => {
-    refresh()
+  const refresh = useCallback(async () => {
+    const r = await query<ProviderState>('web tools settings', () => window.api.webTools.getProvider())
+    if (r.ok) setEndpoint(r.data.searxngEndpoint ?? '')
+    setState(panelFromResult(r))
   }, [])
 
-  const handleActivate = async (id: ProviderId) => {
-    const api = getApi()
-    if (!api) return
-    setBusy(id)
+  useEffect(() => {
+    setState(panelLoading())
+    void refresh()
+  }, [refresh])
+
+  const savedEndpoint = state.phase === 'ready' ? (state.data.searxngEndpoint ?? '') : ''
+  useDirtyGuard('settings:webTools:searxng', t('the SearXNG address'), endpoint.trim() !== savedEndpoint.trim())
+
+  const activate = async (p: ProviderEntry) => {
+    setBusy(p.id)
     try {
-      const r = await api.setProvider(id, {})
-      if (!r.success) {
-        toast.error(`Failed to activate ${id}: ${r.error}`)
-        return
-      }
-      toast.success(`Active provider: ${id}`)
+      // SearXNG: main REPLACES the stored address with what this call carries, so the
+      // saved one has to ride along or activating the provider would wipe it.
+      const opts = p.id === 'searxng' && savedEndpoint ? { endpoint: savedEndpoint } : {}
+      await invoke('activate the provider', () => window.api.webTools.setProvider(p.id, opts))
+      toast.success(tf('Web search now uses {name}', { name: PROVIDER_NAMES[p.id] }))
       await refresh()
+    } catch (e) {
+      toast.error(describeError(e, tf('Could not switch to {name}', { name: PROVIDER_NAMES[p.id] })))
     } finally {
       setBusy(null)
     }
   }
 
-  const handleSaveKey = async (id: ProviderId) => {
-    const api = getApi()
-    if (!api) return
-    const draft = drafts[id].trim()
-    if (!draft) return
-    // SEC-10: the key is persisted to the keychain via the main process;
-    // gate on the shared plaintext-consent prompt when encryption is off.
-    const consent = await ensurePlaintextConsentIfNeeded()
-    if (!consent) return
-    setBusy(id)
-    setTestStatus(null)
-    try {
-      const r = await api.setProvider(id, { apiKey: draft })
-      if (!r.success) {
-        toast.error(`Failed to save ${id} key: ${r.error}`)
-        return
-      }
-      toast.success(`${id} key saved`)
-      setDrafts((s) => ({ ...s, [id]: '' }))
-      await refresh()
-    } finally {
-      setBusy(null)
-    }
-  }
-
-  const handleSaveEndpoint = async () => {
-    const api = getApi()
-    if (!api) return
+  const saveEndpoint = async () => {
     const trimmed = endpoint.trim()
-    if (!trimmed) return
+    if (!isHttpUrl(trimmed)) {
+      setEndpointError(t('Enter the full address, starting with http:// or https://'))
+      return
+    }
+    setEndpointError(null)
     setBusy('searxng')
     try {
-      const r = await api.setProvider('searxng', { endpoint: trimmed })
-      if (!r.success) {
-        toast.error(`Failed to save SearXNG endpoint: ${r.error}`)
-        return
-      }
-      toast.success('SearXNG endpoint saved')
+      await invoke('save the SearXNG address', () => window.api.webTools.setProvider('searxng', { endpoint: trimmed }))
+      toast.success(t('SearXNG address saved'))
       await refresh()
+    } catch (e) {
+      toast.error(describeError(e, t('Could not save the SearXNG address')))
     } finally {
       setBusy(null)
     }
   }
 
-  const handleDeleteKey = async (id: ProviderId) => {
-    const api = getApi()
-    if (!api?.deleteKey) return
-    if (!confirm(`Delete stored ${id} API key?`)) return
-    setBusy(id)
-    try {
-      const r = await api.deleteKey(id)
-      if (!r.success) {
-        toast.error(`Failed to delete ${id} key: ${r.error}`)
-        return
-      }
-      toast.success(`${id} key deleted`)
-      await refresh()
-    } finally {
-      setBusy(null)
-    }
-  }
-
-  const handleTest = async () => {
-    const api = getApi()
-    if (!api) return
+  const runTest = async () => {
     setBusy('test')
     setTestStatus(null)
     try {
-      const result = await api.testAdapter()
-      if (!result.success) {
-        const msg = result.error ?? 'Test failed.'
-        setTestStatus({ ok: false, message: msg })
-        toast.error(`Web search test failed: ${msg}`)
+      const r = await query<{ ok: boolean; error?: string }>('the web search test', () => window.api.webTools.testAdapter())
+      if (!r.ok) {
+        setTestStatus({ ok: false, message: r.error })
+        toast.error(tf('Web search test failed: {message}', { message: r.error }))
         return
       }
-      if (result.data?.ok) {
-        setTestStatus({ ok: true, message: 'Adapter responded with at least one result.' })
-        toast.success('Web search test passed')
+      if (r.data.ok) {
+        setTestStatus({ ok: true, message: t('The provider answered with at least one result.') })
+        toast.success(t('Web search test passed'))
       } else {
-        const msg = result.data?.error ?? 'Adapter returned no results.'
+        const msg = r.data.error ?? t('The provider returned no results.')
         setTestStatus({ ok: false, message: msg })
-        toast.error(`Web search test failed: ${msg}`)
+        toast.error(tf('Web search test failed: {message}', { message: msg }))
       }
     } finally {
       setBusy(null)
     }
   }
 
-  if (apiMissing) {
-    return (
-      <div className="rounded border border-[var(--panel-border)] bg-[var(--bg-primary)] p-3 text-[12px] text-[var(--text-muted)]">
-        Web tools settings are unavailable — running outside Electron, or preload has not exposed
-        the <code>webTools</code> namespace yet.
-      </div>
-    )
-  }
-
-  if (!state) {
-    return (
-      <div className="text-[12px] text-[var(--text-muted)]">Loading web tools settings…</div>
-    )
-  }
-
-  // Older main processes do not send supportsImages. Treat "not sent by anyone"
-  // as unknown and stay quiet, rather than warning that every provider is
-  // broken because the field is missing.
-  const imageCapableProviders = state.providers.filter((p) => p.supportsImages).map((p) => p.id)
-  const activeSupportsImages =
-    state.providers.find((p) => p.active)?.supportsImages ?? true
-
   return (
-    <div className="space-y-5">
-      <div>
-        <h3 className="font-mono text-[16px] font-semibold text-[var(--text-primary)]">{t('Web tools')}</h3>
-        <p className="mt-1 text-[12px] leading-relaxed text-[var(--text-muted)]">
-          Pick the search provider that powers <code>web_search</code>, <code>web_open</code>,{' '}
-          <code>web_find</code>, and <code>image_search</code>. Brave / Tavily / SerpAPI need an
-          API key; SearXNG only needs the URL of a SearXNG instance you trust. Keys are encrypted
-          with safeStorage in your userData directory; only the configured provider ever sees them.
-        </p>
-      </div>
-
-      <div className="rounded border border-[var(--panel-border)] bg-[var(--bg-primary)] p-3 text-[12px]">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="font-mono text-[11px] uppercase tracking-wider text-[var(--text-muted)]">
-            {t('Active provider')}
-          </span>
-          <span className="font-mono text-[12px] font-semibold text-[var(--text-primary)]">
-            {state.provider}
-          </span>
-          <Button variant="secondary" className="ml-auto"
-            onClick={handleTest}
-            disabled={busy !== null}
-          >
-            {busy === 'test' ? 'Testing…' : 'Test active adapter'}
-          </Button>
-        </div>
-        {testStatus && (
-          <div
-            className={`mt-2 text-[12px] ${
-              testStatus.ok ? 'text-[var(--success)]' : 'text-[var(--error)]'
-            }`}
-          >
-            {testStatus.message}
-          </div>
-        )}
-        {/* The providers that need no key are exactly the ones with no image
-            endpoint, so a default install has image_search permanently dead.
-            Say it here rather than letting a conversation discover it. */}
-        {imageCapableProviders.length > 0 && !activeSupportsImages && (
-          <div className="mt-2 text-[12px] text-[var(--warning)]">
-            {tf(
-              '{provider} has no image endpoint, so image_search will fail. Providers that support it: {list}.',
-              { provider: state.provider, list: imageCapableProviders.join(', ') }
-            )}
-          </div>
-        )}
-      </div>
-
-      {state.providers.map((p) => {
-        const draft = drafts[p.id]
-        const visible = showKey[p.id]
-        const isActive = p.active
-        return (
-          <div
-            key={p.id}
-            className="space-y-2 rounded border border-[var(--panel-border)] bg-[var(--bg-primary)] p-3"
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="flex items-center gap-2">
-                  <span
-                    aria-hidden
-                    className={`inline-block h-2 w-2 rounded-full ${
-                      p.requiresKey
-                        ? p.hasKey
-                          ? 'bg-[var(--success)]'
-                          : 'bg-[var(--warning)]'
-                        : 'bg-[var(--accent)]'
-                    }`}
-                  />
-                  <span className="font-mono text-[12px] font-semibold text-[var(--text-primary)]">
-                    {p.label}
-                  </span>
-                  {isActive && (
-                    <span className="rounded bg-[var(--accent)]/15 px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-wider text-[var(--accent)]">
-                      {t('Active')}
-                    </span>
+    <SettingsPage
+      purpose={t(
+        'Which search engine powers web search in chat. Brave, Tavily and SerpAPI need a key from API Keys; SearXNG needs the address of an instance you trust.'
+      )}
+    >
+      <PanelState
+        state={state}
+        loading={<SettingsLoading what={t('web tools settings')} />}
+        error={(message, retry) => <SettingsLoadError what={t('web tools settings')} message={message} onRetry={retry} />}
+        empty={<p className="text-[12px] text-[var(--text-muted)]">{t('No search providers are available in this build.')}</p>}
+        isEmpty={(data) => data.providers.length === 0}
+        onRetry={() => void refresh()}
+      >
+        {(data) => {
+          // Older main processes do not send supportsImages. Treat "not sent by anyone"
+          // as unknown and stay quiet, rather than warning that every provider is broken.
+          const imageCapable = data.providers.filter((p) => p.supportsImages).map((p) => PROVIDER_NAMES[p.id] ?? p.id)
+          const activeEntry = data.providers.find((p) => p.active)
+          const activeSupportsImages = activeEntry?.supportsImages ?? true
+          const activeName = activeEntry ? PROVIDER_NAMES[activeEntry.id] ?? activeEntry.id : data.provider
+          return (
+            <>
+              <SettingsSection
+                label={t('Active provider')}
+                actions={
+                  <Button size="sm" onClick={() => void runTest()} disabled={busy !== null}>
+                    {busy === 'test' ? t('Testing…') : t('Test web search')}
+                  </Button>
+                }
+              >
+                <SettingsRow
+                  label={activeName}
+                  hint={
+                    imageCapable.length > 0 && !activeSupportsImages
+                      ? tf('{provider} cannot search images. Providers that can: {list}.', {
+                          provider: activeName,
+                          list: imageCapable.join(', ')
+                        })
+                      : t('Runs a one-query search to confirm the provider answers.')
+                  }
+                  tone={imageCapable.length > 0 && !activeSupportsImages ? 'warning' : 'default'}
+                >
+                  {testStatus && (
+                    <p className={`text-[12px] ${testStatus.ok ? 'text-[var(--success)]' : 'text-[var(--error)]'}`}>
+                      {testStatus.message}
+                    </p>
                   )}
-                  {p.requiresKey ? (
-                    <span className="font-mono text-[12px] text-[var(--text-muted)]">
-                      {p.hasKey ? 'Key stored' : 'No key'}
-                    </span>
+                </SettingsRow>
+              </SettingsSection>
+
+              <SettingsSection label={t('Providers')}>
+                {data.providers.map((p) => {
+                  const name = PROVIDER_NAMES[p.id] ?? p.label
+                  const endpointSaved = Boolean(data.searxngEndpoint?.trim())
+                  // "Use this provider" used to work with no key and the search tool then
+                  // went dead: the adapter builds nothing without one. Gate it on what is stored.
+                  const ready = p.requiresKey ? p.hasKey : p.requiresEndpoint ? endpointSaved : true
+                  const hint = p.requiresKey ? (
+                    p.hasKey ? (
+                      t('Key saved.')
+                    ) : (
+                      <>
+                        {t('No key yet. ')}
+                        <SettingsLink tab="api">{t('Add the key under API Keys')}</SettingsLink>
+                      </>
+                    )
+                  ) : p.requiresEndpoint ? (
+                    endpointSaved ? t('Address saved.') : t('Needs the address of an instance you trust.')
+                  ) : p.id === 'duckduckgo' ? (
+                    t('No key needed. Free, but it returns nothing some of the time.')
                   ) : (
-                    <span className="font-mono text-[12px] text-[var(--text-muted)]">
-                      {t('No key required')}
-                    </span>
-                  )}
-                </div>
-                <a
-                  href={DOC_LINKS[p.id]}
-                  onClick={(e) => {
-                    e.preventDefault()
-                    const win = window as unknown as {
-                      api?: { artifact?: { openExternal?: (u: string) => void } }
-                    }
-                    win.api?.artifact?.openExternal?.(DOC_LINKS[p.id])
-                  }}
-                  className="mt-1 inline-block font-mono text-[12px] text-[var(--accent)] hover:underline"
-                >
-                  {p.requiresKey
-                    ? 'Get a key →'
-                    : p.id === 'searxng'
-                      ? 'About SearXNG →'
-                      : 'About DuckDuckGo →'}
-                </a>
-              </div>
-              {!isActive && (
-                <Button variant="secondary"
-                  onClick={() => handleActivate(p.id)}
-                  disabled={busy !== null}
-                >
-                  {t('Use this provider')}
-                </Button>
-              )}
-            </div>
-
-            {p.requiresKey && (
-              <>
-                <div className="flex gap-2">
-                  <input
-                    type={visible ? 'text' : 'password'}
-                    value={draft}
-                    onChange={(e) =>
-                      setDrafts((s) => ({ ...s, [p.id]: e.target.value }))
-                    }
-                    placeholder={p.hasKey ? 'Replace key…' : 'Paste API key'}
-                    className="flex-1 rounded border border-[var(--panel-border)] bg-[var(--bg-secondary)] px-2 py-1.5 font-mono text-[12px] text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
-                  />
-                  <Button variant="secondary"
-                    onClick={() =>
-                      setShowKey((s) => ({ ...s, [p.id]: !visible }))
-                    }
-                  >
-                    {visible ? 'Hide' : 'Show'}
-                  </Button>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2 pt-1">
-                  <Button variant="primary"
-                    onClick={() => handleSaveKey(p.id)}
-                    disabled={busy !== null || !draft.trim()}
-                  >
-                    {t('Save key')}
-                  </Button>
-                  <Button variant="danger"
-                    onClick={() => handleDeleteKey(p.id)}
-                    disabled={busy !== null || !p.hasKey}
-                  >
-                    {t('Delete')}
-                  </Button>
-                </div>
-              </>
-            )}
-
-            {p.requiresEndpoint && (
-              <>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={endpoint}
-                    onChange={(e) => setEndpoint(e.target.value)}
-                    placeholder="https://searxng.example.com"
-                    className="flex-1 rounded border border-[var(--panel-border)] bg-[var(--bg-secondary)] px-2 py-1.5 font-mono text-[12px] text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
-                  />
-                </div>
-                <div className="flex flex-wrap items-center gap-2 pt-1">
-                  <Button variant="primary"
-                    onClick={handleSaveEndpoint}
-                    disabled={busy !== null || !endpoint.trim()}
-                  >
-                    {t('Save endpoint')}
-                  </Button>
-                  {state.searxngEndpoint && (
-                    <span className="font-mono text-[12px] text-[var(--text-muted)]">
-                      Current: {state.searxngEndpoint}
-                    </span>
-                  )}
-                </div>
-              </>
-            )}
-          </div>
-        )
-      })}
-    </div>
+                    t('No key needed.')
+                  )
+                  return (
+                    <SettingsRow
+                      key={p.id}
+                      label={
+                        <span className="flex items-center gap-2">
+                          <span
+                            aria-hidden
+                            className={`inline-block h-2 w-2 shrink-0 rounded-full ${
+                              ready ? 'bg-[var(--success)]' : 'bg-[var(--text-muted)]'
+                            }`}
+                          />
+                          {name}
+                          {p.active && (
+                            <span className="rounded bg-[var(--accent)]/15 px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-wider text-[var(--accent)]">
+                              {t('Active')}
+                            </span>
+                          )}
+                        </span>
+                      }
+                      hint={
+                        <>
+                          {hint}{' '}
+                          <a
+                            href={DOC_LINKS[p.id]}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-[var(--accent)] underline-offset-2 hover:underline"
+                          >
+                            {p.requiresKey ? t('Get a key') : tf('About {name}', { name })} →
+                          </a>
+                        </>
+                      }
+                      control={
+                        !p.active ? (
+                          <Button
+                            size="sm"
+                            onClick={() => void activate(p)}
+                            disabled={busy !== null || !ready}
+                            title={
+                              ready
+                                ? undefined
+                                : p.requiresEndpoint
+                                  ? t('Save the address first')
+                                  : t('Add the key first')
+                            }
+                          >
+                            {t('Use this provider')}
+                          </Button>
+                        ) : undefined
+                      }
+                    >
+                      {p.requiresEndpoint && (
+                        <div className="space-y-1">
+                          <label htmlFor={endpointId} className="text-[12px] text-[var(--text-secondary)]">
+                            {t('Instance address')}
+                          </label>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Input
+                              id={endpointId}
+                              type="url"
+                              inputMode="url"
+                              value={endpoint}
+                              onChange={(e) => {
+                                setEndpoint(e.target.value)
+                                if (endpointError) setEndpointError(null)
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault()
+                                  void saveEndpoint()
+                                }
+                              }}
+                              placeholder="https://searxng.example.com"
+                              aria-invalid={endpointError ? true : undefined}
+                              className="min-w-[240px] flex-1 font-mono"
+                            />
+                            <Button
+                              variant="primary"
+                              size="sm"
+                              onClick={() => void saveEndpoint()}
+                              disabled={busy !== null || !endpoint.trim() || endpoint.trim() === savedEndpoint.trim()}
+                            >
+                              {t('Save address')}
+                            </Button>
+                          </div>
+                          {endpointError && (
+                            <p role="alert" className="text-[12px] text-[var(--error)]">
+                              {endpointError}
+                            </p>
+                          )}
+                          <p className="text-[11px] text-[var(--text-muted)]">
+                            {t('Saving the address also makes SearXNG the active provider.')}
+                          </p>
+                        </div>
+                      )}
+                    </SettingsRow>
+                  )
+                })}
+              </SettingsSection>
+            </>
+          )
+        }}
+      </PanelState>
+    </SettingsPage>
   )
 }

@@ -99,3 +99,35 @@ export function applyFontScale(fontSize: number | undefined): void {
     root.style.removeProperty('zoom')
   }
 }
+
+/** Markdown DOCUMENT reading size in px — the note read view, a note in its own
+ *  window, the Library document reader and the artifact markdown viewer.
+ *
+ *  Third control, and the last of the three the Appearance panel needs:
+ *   • `fontSize`     — page zoom; scales chrome and content together.
+ *   • `chatFontSize` — the transcript.
+ *   • `docFontSize`  — a stored document being READ.
+ *
+ *  Documents had no control at all, and the four surfaces that render one had
+ *  drifted to three different hardcoded sizes (12px in the Explorer panel, 14px
+ *  in a detached window, 16px in Library/Artifacts) — so the same note changed
+ *  size depending on where you opened it, and the smallest of them was the one
+ *  you read most. One var now governs all four. */
+export const DEFAULT_DOC_FONT_SIZE = 16
+export const MIN_DOC_FONT_SIZE = 10
+export const MAX_DOC_FONT_SIZE = 28
+
+/** Clamp to the supported range, tolerating a missing/NaN input. Pure, for testing. */
+export function docFontSizePx(size: number | undefined): number {
+  const px =
+    typeof size === 'number' && Number.isFinite(size) ? size : DEFAULT_DOC_FONT_SIZE
+  return Math.min(MAX_DOC_FONT_SIZE, Math.max(MIN_DOC_FONT_SIZE, px))
+}
+
+/** Publish the document size as `--doc-font-size`, which markdown.css's `.doc-md`
+ *  reads. Headings, code, tables and quotes are all em-relative, so the whole
+ *  hierarchy scales with it instead of flattening. */
+export function applyDocFontSize(size: number | undefined): void {
+  if (typeof document === 'undefined') return
+  document.documentElement.style.setProperty('--doc-font-size', `${docFontSizePx(size)}px`)
+}

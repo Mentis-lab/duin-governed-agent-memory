@@ -274,7 +274,10 @@ describe('COHERENCE_MAP — seed integrity', () => {
   // checked. These assertions are that check: adding or re-scoring an entry now fails here until
   // the new total is acknowledged deliberately.
   it('COHERENCE_MAP census matches the asserted counts (update deliberately when adding an entry)', () => {
-    expect(COHERENCE_MAP.length).toBe(48)
+    // 48 → 52 on 2026-09-03: the P0 cohesion build's four boot-path mechanisms (role router +
+    // health probe, failure → notice watcher, main log + cost ledger, live-eval suite), each
+    // wiring-audited against the explicit call on the boot path, not against an export.
+    expect(COHERENCE_MAP.length).toBe(52)
 
     const byAxis: Record<string, number> = {}
     for (const e of COHERENCE_MAP) byAxis[e.axis] = (byAxis[e.axis] ?? 0) + 1
@@ -286,7 +289,10 @@ describe('COHERENCE_MAP — seed integrity', () => {
     // Review pass, same day: +1 wiring — the Connected Agents operator surface, SHADOW
     // (IPC + preload live, no renderer caller). Found by asking who consumes the API rather
     // than by trusting that a shipped IPC means a reachable feature.
-    expect(byAxis).toEqual({ wiring: 20, intent: 7, guarded: 10, liveness: 11 })
+    // P0 wiring audit (2026-09-03): +1 wiring (role router + health probe), +2 guarded (failure →
+    // notice watcher; main log + cost ledger — both are the observability infrastructure), +1
+    // intent (the live-eval suite measures the running app against the plan's acceptance probes).
+    expect(byAxis).toEqual({ wiring: 21, intent: 8, guarded: 12, liveness: 11 })
 
     // 8, not 9: the persistent entity-graph entry lost its exemption on 2026-08-03 when the
     // "DUIN_ENTITY_GRAPH defaults OFF" premise it rested on turned out to be inverted.
@@ -330,7 +336,9 @@ describe('COHERENCE_MAP — seed integrity', () => {
     // chat turn on a model-connected (live) install. Census unchanged; the fix is honesty in the
     // evidence, not a state flip (PARTIAL is not a scored state here).
     // 2026-09-02 (W3): seam projection COLD_BY_DESIGN → LIVE (default ON, provisional facts projected).
-    expect(byState).toEqual({ LIVE: 34, COLD_BY_DESIGN: 5, COLD: 6, DEAD: 3 })
+    // 2026-09-03 (P0 wiring audit): +4 LIVE — each proven by its boot-path call and an isolated
+    // boot on a keyless instance, not by the presence of an export.
+    expect(byState).toEqual({ LIVE: 38, COLD_BY_DESIGN: 5, COLD: 6, DEAD: 3 })
   })
 
   it('the seeded map computes a finite report over all 4 axes', () => {

@@ -1,6 +1,6 @@
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions'
 import { chatOnce } from '../providers/registry'
-import { readDeepResearchSettings } from './adapter-cascade'
+import { researchModel } from './adapter-cascade'
 import type { ClaimSet, ClaimCluster, DisputeGroup } from './corroborator'
 import type { CuratedSource } from './collector'
 import { slugify } from './slugify'
@@ -43,9 +43,6 @@ export interface SynthesizeDeps {
   accessedAt?: string
 }
 
-// deepseek-v3 (the pre-redo value) only resolved through RETIRED_MODEL_MAP;
-// name the live id directly so the default doesn't ride the migration shim.
-const DEFAULT_SYNTH_MODEL = 'deepseek-v4-flash'
 const MAX_RETRIES = 1
 
 export class FabricatedCitationError extends Error {
@@ -91,7 +88,8 @@ export async function synthesizeReport(
   input: SynthesisInput,
   deps: SynthesizeDeps = {}
 ): Promise<SynthesisOutput> {
-  const model = input.modelOverride ?? readDeepResearchSettings().synthesizerModel ?? DEFAULT_SYNTH_MODEL
+  const model = researchModel('synthesizer', input.modelOverride)
+  if (!model) throw new Error('Synthesizer has no usable model for the chat role (add a provider key or fix the provider order).')
   // R2: chatOnce returns {content, reasoning?}; synthesizer consumes body only.
   const call = deps.callLlm ?? ((m, mod) => chatOnce(m, mod).then((r) => r.content))
   const accessedAt = deps.accessedAt ?? input.accessedAt

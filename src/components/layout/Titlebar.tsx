@@ -11,6 +11,7 @@ import { PRODUCT_NAME, PRODUCT_REPO_URL } from '@/lib/brand'
 
 const TOOL_TITLES: Record<ToolId, string> = {
   files: 'Open file',
+  home: 'Home',
   homeStatus: 'Status',
   review: 'Review',
   terminal: 'Terminal',

@@ -1,0 +1,36 @@
+{
+  "threshold": 7,
+  "ports": { "brain": 8899, "cdp": 9444 },
+  "providerPolicy": {
+    "order": ["deepseek", "openai", "anthropic", "zhipu", "moonshot", "google", "dashscope", "openrouter", "xai"]
+  },
+  "engines": [
+    { "provider": "deepseek", "model": "deepseek-v4-flash" },
+    { "provider": "openai", "model": "gpt-5.5" },
+    { "provider": "anthropic", "model": "claude-haiku-4-5" },
+    { "provider": "zhipu", "model": "glm-5.3-flash" },
+    { "provider": "moonshot", "model": "kimi-k2.6" },
+    { "provider": "google", "model": "gemini-3.5-flash-lite" },
+    { "provider": "dashscope", "model": "qwen3.8-flash" }
+  ],
+  "failover": {
+    "bogusProviderCandidates": ["openai", "anthropic", "zhipu", "moonshot"],
+    "bogusModel": {
+      "openai": "gpt-5.5",
+      "anthropic": "claude-haiku-4-5",
+      "zhipu": "glm-5.3-flash",
+      "moonshot": "kimi-k2.6"
+    },
+    "bogusKey": "live-eval-deliberately-invalid-key-0000"
+  },
+  "turnTimeoutMs": 240000,
+  "approvalTimeoutMs": 60000,
+  "settingsSeed": {
+    "language": "en",
+    "backgroundAutonomy": false,
+    "loopsEnabled": false,
+    "fullComputerAccess": true
+  },
+  "observability": { "stallSampleMs": 60000, "stallPollMs": 5000, "noticeWaitMs": 90000 },
+  "readyTimeoutMs": 180000
+}

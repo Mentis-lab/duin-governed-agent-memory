@@ -32,6 +32,11 @@ const h = vi.hoisted(() => ({
 vi.mock('../providers/registry', () => ({
   routeModel: () => 'extractor-model',
   routeDistinctModels: () => ['juror-a'],
+  // P0 (W4): MIN_JURY_ANSWERS (2) — two jurors; both are answered by the literal juror below.
+  resolveJury: () => [
+    { task: 'jury', modelId: 'juror-a', provider: 'prov-juror-a', chain: ['juror-a'], source: 'policy' },
+    { task: 'jury', modelId: 'juror-b', provider: 'prov-juror-b', chain: ['juror-b'], source: 'policy' }
+  ],
   getProviderForModel: (m: string) => (m === 'extractor-model' ? 'zhipu' : `prov-${m}`),
   chatOnce: async (msgs: { role: string; content: string }[]) => {
     const user = msgs.find((m) => m.role === 'user')!.content
@@ -113,9 +118,12 @@ describe('defaultGovernJury — retired rules must not be presented as confirmed
   it('the retired rule never reaches the jury prompt; the live one still does', async () => {
     await defaultGovernJury(provisionalPool())
 
-    expect(h.prompts).toHaveLength(1)
-    expect(h.prompts[0]).toContain(LIVE_RULE)
-    expect(h.prompts[0]).not.toContain('VSCode') // the whole defect, in one assertion
+    // Two seated jurors (MIN_JURY_ANSWERS), one prompt each — the same context reaches both.
+    expect(h.prompts).toHaveLength(2)
+    for (const prompt of h.prompts) {
+      expect(prompt).toContain(LIVE_RULE)
+      expect(prompt).not.toContain('VSCode') // the whole defect, in one assertion
+    }
   })
 
   it('does not omit the replacement fact that superseded the retired rule', async () => {

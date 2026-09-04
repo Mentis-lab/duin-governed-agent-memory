@@ -5,6 +5,7 @@ import { useWorkflowsStore } from '@/stores/workflows-store'
 import { useRagStore } from '@/stores/rag-store'
 import { useChatStore } from '@/stores/chat-store'
 import { contextPercent, contextTone, type ContextTone } from '@/lib/context-meter'
+import { describeEngine, healthReasonLabel } from '@/lib/model-label'
 
 // H6 — Persistent status line at the bottom of the main window.
 //
@@ -72,7 +73,11 @@ export function StatusLine() {
   // to not need a dedicated IPC channel.
   const [currentBranch, setCurrentBranch] = useState<string | null>(null)
 
-  const activeModelId = useModelStore((s) => s.activeModel)
+  // ONE engine source: the active conversation's pin (chat-store) resolved by model-store —
+  // the same rows the composer chip renders, so the two can never disagree (L5 F6).
+  const enginePin = useChatStore((s) => s.activeModel)
+  const resolution = useModelStore((s) => s.resolution)
+  const providerHealth = useModelStore((s) => s.health)
   const models = useModelStore((s) => s.models)
   const runs = useWorkflowsStore((s) => s.runs)
   const ragCollections = useRagStore((s) => s.collections)
@@ -220,27 +225,38 @@ export function StatusLine() {
 
   const ragAttached = useMemo(() => ragCollections.length, [ragCollections])
 
-  const modelInfo = useMemo(
-    () => models.find((m) => m.id === activeModelId),
-    [models, activeModelId]
+  const engine = useMemo(
+    () => describeEngine(enginePin, resolution, models),
+    [enginePin, resolution, models]
   )
+  const modelInfo = useMemo(
+    () => (engine.modelId ? models.find((m) => m.id === engine.modelId) : undefined),
+    [models, engine.modelId]
+  )
+  // "3 providers healthy, 4 unhealthy" — computed from real probes, never from key presence.
+  const healthSummary = useMemo(() => {
+    if (providerHealth.length === 0) return ''
+    const healthy = providerHealth.filter((h) => h.healthy)
+    const unhealthy = providerHealth.filter((h) => !h.healthy)
+    const detail = unhealthy.map((h) => `${h.provider}: ${healthReasonLabel(h.reason)}`).join(', ')
+    return `${healthy.length} provider${pluralize(healthy.length)} healthy, ${unhealthy.length} unhealthy${detail ? ` (${detail})` : ''}`
+  }, [providerHealth])
 
   const renderSlot = (slot: SlotId) => {
     const fmt = config.formats[slot]
     switch (slot) {
       case 'model': {
-        if (!modelInfo) return null
         const text = applyFormat(fmt, {
-          name: modelInfo.name,
-          tier: modelInfo.tier ?? '',
-          id: modelInfo.id
+          name: engine.label,
+          tier: modelInfo?.tier ?? '',
+          id: engine.modelId ?? ''
         })
         return (
           <Slot
             key={slot}
             tone="model"
-            label={text || modelInfo.name}
-            title={`Active model: ${modelInfo.name}${modelInfo.tier ? ` (${modelInfo.tier})` : ''}`}
+            label={text || engine.label}
+            title={`Engine: ${engine.label}${modelInfo?.tier ? ` (${modelInfo.tier})` : ''}${healthSummary ? ` · ${healthSummary}` : ''}`}
           />
         )
       }

@@ -102,7 +102,7 @@ function makeSubagentPolicy(
     spawnDenied: `Error: tool "spawn_agent" is not available at this nesting depth`,
     // A subagent's child is ALWAYS read-only (execOk=false) and one level deeper.
     runSpawn: async (task, args) => {
-      const childCfg = resolveSubagentConfig(args, { defaultModelId: modelId })
+      const childCfg = resolveSubagentConfig(args, { parentModelId: modelId })
       const sub = await runSubagent(task, notesDir, modelId, signal, 6, false, childCfg, depth + 1, posture, conversationId, onProgress)
       return `Subagent result:\n${sub}`
     }

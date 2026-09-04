@@ -4,7 +4,7 @@ import {
   IMAGE_GEN_PROVIDER_IDS,
   PROVIDER_CANARY_MODEL,
   PROVIDER_MODELS,
-  defaultModelFor,
+  primaryModelFor,
   isImageGenProviderId,
   minimaxDimensions,
   parseArkImageResponse,
@@ -62,7 +62,7 @@ describe('resolveModel', () => {
   })
 
   it('falls back to the provider default for empty or unknown input', () => {
-    expect(resolveModel('openai', undefined)).toBe(defaultModelFor('openai'))
+    expect(resolveModel('openai', undefined)).toBe(primaryModelFor('openai'))
     expect(resolveModel('openai', '')).toBe('gpt-image-2')
     expect(resolveModel('minimax', 'nope')).toBe('image-01')
   })
@@ -184,7 +184,7 @@ describe('seedream', () => {
 
   it('lists dated model ids, because Ark has no floating alias', () => {
     for (const m of PROVIDER_MODELS.seedream) expect(m).toMatch(/^doubao-seedream-\d/)
-    expect(defaultModelFor('seedream')).toBe('doubao-seedream-5-0-260128')
+    expect(primaryModelFor('seedream')).toBe('doubao-seedream-5-0-260128')
   })
 
   it('decodes b64_json entries', async () => {

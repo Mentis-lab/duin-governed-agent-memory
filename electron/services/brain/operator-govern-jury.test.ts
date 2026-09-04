@@ -10,7 +10,14 @@ vi.mock('../providers/registry', () => ({
   routeModel: () => 'test-model',
   routeDistinctModel: () => null,
   routeDistinctModels: () => [],
-  getProviderForModel: () => 'deepseek',
+  // P0 model plane (W4): the panel is seated by resolveJury from distinct HEALTHY providers and
+  // needs MIN_JURY_ANSWERS (2) answers to stand. Two jurors, both returning the same reply, so
+  // these parse-guard assertions measure the reply handling and not the quorum.
+  resolveJury: () => [
+    { task: 'jury', modelId: 'jury-a', provider: 'openai', chain: ['jury-a'], source: 'policy' },
+    { task: 'jury', modelId: 'jury-b', provider: 'google', chain: ['jury-b'], source: 'policy' }
+  ],
+  getProviderForModel: (m: string) => (m === 'test-model' ? 'deepseek' : m === 'jury-a' ? 'openai' : 'google'),
   chatOnce: async () => ({ content: replyContent })
 }))
 
@@ -42,7 +49,8 @@ describe('defaultGovernJury — parse-miss guard (mass-revert bug)', () => {
     expect(r.pass).not.toBeNull()
     expect(r.pass!.has('a')).toBe(true)
     expect(r.pass!.has('b')).toBe(false)
-    expect(r.juryModelId).toBe('test-model') // item 15: provenance survives (mock: no distinct → fallback)
-    expect(r.crossModel).toBe(false)
+    expect(r.juryModelId).toBe('jury-a+jury-b') // item 15: provenance survives — the seated panel
+    expect(r.crossModel).toBe(true) // neither juror is the deepseek extractor
+    expect(r.jury).toBe(2) // W4: the count of jurors that ANSWERED, never the roster
   })
 })

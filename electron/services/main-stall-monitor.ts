@@ -131,6 +131,66 @@ export function instrumentIpcMain(ipc: import('electron').IpcMain): void {
     )) as import('electron').IpcMain['handle']
 }
 
+/**
+ * Wrap every setInterval CALLBACK registered afterwards in a scope named for the
+ * call site, so a recurring main-thread block says which timer it came from.
+ *
+ * WHY. 'unattributed' is the largest bucket by an order of magnitude — 41.4s across
+ * 29 samples in the first four minutes of a live session (2026-09-02), against 2.3s
+ * for the biggest named one — and while idle it recurs in 1.2-1.4s chunks every
+ * 40-46s. Idle recurrence at a fixed period is a TIMER; the module's own comment
+ * already says an unattributed stall is a TODO. There are ~28 setInterval sites in
+ * main across services owned by different lanes, so wrapping them individually is
+ * both a wide diff and a rule the next one added will not know about. This is the
+ * same trade instrumentIpcMain already makes for 381 handlers: one wrap site.
+ *
+ * INTERVALS ONLY, deliberately. setTimeout is called constantly (every promise
+ * delay, every debounce) and capturing a stack per call would cost more than it
+ * measures. Intervals are few, long-lived, and are what recurs.
+ *
+ * The name is resolved ONCE per timer, at creation, from the first stack frame
+ * outside this module — so the per-tick cost is the same withScope the IPC handlers
+ * already pay, with no stack work at all.
+ */
+export function instrumentIntervals(host: {
+  setInterval: typeof setInterval
+}): () => void {
+  const orig = host.setInterval
+  const patched = ((handler: unknown, ms?: number, ...args: unknown[]) => {
+    if (typeof handler !== 'function') {
+      return (orig as (...a: unknown[]) => unknown)(handler, ms, ...args)
+    }
+    const scope = `timer:${callSite()}`
+    const fn = handler as (...a: unknown[]) => unknown
+    const wrapped = function (this: unknown, ...a: unknown[]): unknown {
+      return withScope(scope, () => fn.apply(this, a))
+    }
+    return (orig as (...a: unknown[]) => unknown)(wrapped, ms, ...args)
+  }) as typeof setInterval
+  host.setInterval = patched
+  return () => {
+    // Only restore if nobody patched on top of us; clobbering a later wrapper
+    // would silently un-instrument whatever it was measuring.
+    if (host.setInterval === patched) host.setInterval = orig
+  }
+}
+
+/** First stack frame outside this module, as `file.ts:line`. Best-effort: an
+ *  unreadable stack yields 'unknown', which is still better than 'unattributed'. */
+function callSite(): string {
+  try {
+    const lines = (new Error().stack ?? '').split('\n').slice(1)
+    for (const line of lines) {
+      if (line.includes('main-stall-monitor')) continue
+      const m = /([^\\/(\s]+\.[cm]?[jt]s):(\d+)/.exec(line)
+      if (m) return `${m[1]}:${m[2]}`
+    }
+  } catch {
+    /* stacks are a debugging convenience, never a correctness dependency */
+  }
+  return 'unknown'
+}
+
 /** Start the heartbeat. Returns a stop function. Injectable clock for tests. */
 export function startMainStallMonitor(opts?: {
   now?: () => number

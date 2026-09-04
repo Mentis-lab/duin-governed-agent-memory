@@ -33,7 +33,7 @@ vi.mock('./construct', async (importOriginal) => {
 vi.mock('./graph-native', () => ({ readGraphNative: vi.fn() }))
 vi.mock('../settings-helper', () => ({ readSettings: vi.fn(() => ({ localBrainNotesDir: '' })) }))
 
-import { buildDuinGraph, topicFloorEnabled, mergeKey, mergeMechanicalDuplicates, linkSubtopicsToParents } from './build-duin-graph'
+import { buildDuinGraph, topicFloorEnabled, mergeKey, mergeMechanicalDuplicates, linkSubtopicsToParents, isStructuralNode, eventBase, foldEventFamilies, dropUnanchoredEntities, spansCompatible } from './build-duin-graph'
 import { applyConstruction } from './construct'
 import { liveGraph } from './retrieve-agent'
 import { deriveGraph } from '../local-brain/graph-derive'
@@ -288,6 +288,14 @@ describe('topic floor — a topic earns a node by carrying structure', () => {
     buildDuinGraph({ base: { nodes, edges }, dedup: 'undirected', pruneUnstructuredTopics: on })
   const ids = (g: { nodes: Record<string, unknown>[] }) => g.nodes.map((n) => String(n.id)).sort()
 
+  it('a synonym edge to a document is never provenance for the floor', () => {
+    const g = build(
+      [t('alias'), note('a.md'), note('b.md')],
+      [{ source: 'alias', target: 'a.md', type: 'mentions' }, { source: 'alias', target: 'b.md', type: 'synonym' }]
+    )
+    expect(ids(g)).toEqual(['a.md', 'b.md']) // one real note, one alias edge: not "recurs across documents"
+  })
+
   it('drops a topic that relates to nothing and lives in one note', () => {
     // The live shape: a design doc's glossary terms — one note, one `mentions` edge, nothing else.
     const g = build([t('术语'), note('a.md')], [{ source: '术语', target: 'a.md', type: 'mentions' }])
@@ -408,12 +416,93 @@ describe('mechanical duplicate fold', () => {
     expect(g.nodes.map((z) => z.label)).toEqual(['DUIN'])
   })
 
-  it('NEVER folds a file-backed node — a document is identified by its path', () => {
+  it('a document WINS its own name: the extracted entity folds INTO the note, the note is never folded', () => {
     const g = mergeMechanicalDuplicates({
-      nodes: [n('People/王鑫.md', 'person', '王鑫'), n('person:wang-xin', 'person', '王鑫')],
+      nodes: [n('People/王鑫.md', 'person', '王鑫'), n('person:wang-xin', 'person', '王鑫'), n('c', 'org', 'Acme')],
+      edges: [{ source: 'person:wang-xin', target: 'c', type: 'works-at' }]
+    })
+    expect(g.nodes.map((z) => z.id).sort()).toEqual(['People/王鑫.md', 'c'])
+    expect(g.edges).toEqual([{ source: 'People/王鑫.md', target: 'c', type: 'works-at' }]) // rewired onto the note
+  })
+
+  it('absorbing an entity into a document keeps its hard relations and drops its co-mention bookkeeping', () => {
+    // topic:duin (a hub) folds into DUIN.md. Its `affects` relation follows; its entity↔entity
+    // `mentions`/`synonym` edges do NOT become entity→note "provenance" for the floor to count.
+    const g = mergeMechanicalDuplicates({
+      nodes: [n('DUIN.md', 'note', 'DUIN'), n('topic:duin', 'topic', 'DUIN'), n('topic:x', 'topic', 'X'), n('topic:y', 'topic', 'Y')],
+      edges: [
+        { source: 'topic:x', target: 'topic:duin', type: 'mentions' },
+        { source: 'topic:y', target: 'topic:duin', type: 'synonym' },
+        { source: 'topic:y', target: 'topic:duin', type: 'affects' },
+        { source: 'topic:x', target: 'Other.md', type: 'mentions' }
+      ]
+    })
+    expect(g.nodes.map((z) => z.id).sort()).toEqual(['DUIN.md', 'topic:x', 'topic:y'])
+    expect(g.edges).toEqual([
+      { source: 'topic:y', target: 'DUIN.md', type: 'affects' },
+      { source: 'topic:x', target: 'Other.md', type: 'mentions' }
+    ])
+  })
+
+  it('two documents with one title stay two documents', () => {
+    const g = mergeMechanicalDuplicates({
+      nodes: [n('A/王鑫.md', 'note', '王鑫'), n('B/王鑫.md', 'note', '王鑫')],
       edges: []
     })
     expect(g.nodes).toHaveLength(2)
+  })
+
+  it('the key ignores punctuation, spacing and width, and still keeps different names apart', () => {
+    expect(mergeKey('Bilibili World 2026')).toBe(mergeKey('BilibiliWorld 2026'))
+    expect(mergeKey('上海差旅 2026-05-18')).toBe(mergeKey('上海差旅2026-05-18'))
+    expect(mergeKey('风信 AI 工业智能体平台（MES 2.0）')).toBe(mergeKey('风信 AI 工业智能体平台 (MES 2.0)'))
+    expect(mergeKey('方案一：定向增发回购')).toBe(mergeKey('方案一·定向增发回购'))
+    expect(mergeKey('ENACT_ENABLED = False')).toBe(mergeKey('ENACT_ENABLED=False'))
+    expect(mergeKey('上海差旅 2026-05-18')).not.toBe(mergeKey('上海差旅 2026-07-07'))
+    expect(mergeKey('云雀')).not.toBe(mergeKey('云雀 2.0'))
+  })
+
+  it('NEVER folds the skeleton: the core and a folder hub survive a same-label entity', () => {
+    // The live failure (2026-09-02): "DUIN core" the core vs "DUIN core" the extracted topic, and
+    // "DUIN" the folder vs "DUIN" the extracted person. KIND_RANK ranks person/topic above the
+    // unlisted core/folder kinds, so the skeleton lost and the map had no centre and no legend.
+    const g = mergeMechanicalDuplicates({
+      nodes: [
+        { id: '__core__', kind: 'core', label: 'DUIN core', layer: 'core' },
+        n('topic:duin-core', 'topic', 'DUIN core'),
+        { id: '__folder__DUIN', kind: 'folder', label: 'DUIN', layer: 'folder' },
+        n('person:duin', 'person', 'DUIN'),
+        { id: '__projidx__DUIN__Docs', kind: 'index', label: 'Docs' },
+        n('topic:docs', 'topic', 'Docs')
+      ],
+      edges: [
+        { source: '__core__', target: '__folder__DUIN', type: 'anchors' },
+        { source: 'person:duin', target: 'topic:duin-core', type: 'about' }
+      ]
+    })
+    expect(g.nodes.map((z) => z.id).sort()).toEqual(
+      ['__core__', '__folder__DUIN', '__projidx__DUIN__Docs', 'person:duin', 'topic:docs', 'topic:duin-core']
+    )
+    expect(g.edges).toHaveLength(2) // nothing rewired: the core still anchors its folder
+    expect(isStructuralNode({ id: '__core__' })).toBe(true)
+    expect(isStructuralNode({ id: 'x', kind: 'folder' })).toBe(true)
+    expect(isStructuralNode({ id: 'x', layer: 'folder' })).toBe(true)
+    expect(isStructuralNode({ id: 'person:duin', kind: 'person' })).toBe(false)
+  })
+
+  it('a product-store node WINS its fold, whatever kind the mention was extracted as', () => {
+    // Before: person (KIND_RANK 0) beat project (2), so the declared project folded into a
+    // stray extracted person and the roadmap lost a node.
+    const g = mergeMechanicalDuplicates({
+      nodes: [
+        { id: 'proj-1', kind: 'project', label: 'DUIN', layer: 'product' },
+        n('person:duin', 'person', 'DUIN'),
+        n('c', 'org', 'Acme')
+      ],
+      edges: [{ source: 'person:duin', target: 'c', type: 'owns' }]
+    })
+    expect(g.nodes.map((z) => z.id)).toEqual(['proj-1', 'c'])
+    expect(g.edges).toEqual([{ source: 'proj-1', target: 'c', type: 'owns' }])
   })
 
   it('a fold that would create a self-loop drops the edge instead', () => {
@@ -469,5 +558,75 @@ describe('sub-topic parent edges', () => {
       edges: hubEdges('p')
     })
     expect(g.edges.filter((e) => e.type === 'part-of')).toHaveLength(0)
+  })
+})
+
+describe('event families — one weekend, one node', () => {
+  const n = (id: string, label: string, kind = 'event') => ({ id, kind, label })
+
+  it('reads the base and the date off an event label', () => {
+    expect(eventBase('春分试玩会 2026-06-19')).toMatchObject({ base: '春分试玩会', year: '2026', monthDay: '6-19' })
+    expect(eventBase('2026春分试玩会').base).toBe('春分试玩会')
+    expect(eventBase('春分试玩会 2026-06-19/20').span).toEqual([170, 171])
+    expect(eventBase('试玩会 6/19-20')).toMatchObject({ base: '试玩会', monthDay: '6-19' })
+    expect(eventBase('8月二测')).toMatchObject({ base: '二测', year: null })
+    expect(eventBase('《云雀》春分试玩会 × 蓝湾专项').base).toBe('春分试玩会') // a leading 《project》 is a qualifier
+    expect(eventBase('Bilibili World 2026')).toMatchObject({ base: 'bilibiliworld', year: '2026', span: null })
+  })
+
+  it('overlapping day spans are one occasion; distant days are not', () => {
+    expect(spansCompatible([[170, 172], [170, 171], [171, 171]])).toBe(true) // 6/19-21, 6/19/20, 6/20
+    expect(spansCompatible([[170, 170], [171, 171]])).toBe(true) // one day of slack
+    expect(spansCompatible([[138, 138], [188, 188]])).toBe(false) // 5/18 vs 7/07
+    const g = foldEventFamilies({
+      nodes: [n('a', '春分试玩会 6/19-21'), n('b', '春分试玩会 2026-06-19/20'), n('c', '春分试玩会 6/20'), n('d', '《云雀》春分试玩会'), n('e', '春分试玩会筹备')],
+      edges: [{ source: 'a', target: 'b', type: 'depends' }]
+    })
+    expect(g.nodes.map((z) => z.id).sort()).toEqual(['b', 'e']) // one weekend (the dated, most specific name wins the tie) + the preparation, which is another thing
+  })
+
+  it('folds date-compatible variants onto the most connected member', () => {
+    const g = foldEventFamilies({
+      nodes: [n('e1', '春分试玩会'), n('e2', '春分试玩会 2026-06-19'), n('e3', '2026春分试玩会'), n('e4', '春分试玩会 2026-06-19/20'), n('p', 'X', 'person')],
+      edges: [
+        { source: 'p', target: 'e2', type: 'attends' }, { source: 'p', target: 'e1', type: 'attends' },
+        { source: 'e3', target: 'p', type: 'affects' }, { source: 'e2', target: 'e4', type: 'depends' }
+      ]
+    })
+    expect(g.nodes.map((z) => z.id).sort()).toEqual(['e2', 'p']) // e2 has 2 edges, the rest fold into it
+    expect(g.edges).toEqual([{ source: 'p', target: 'e2', type: 'attends' }, { source: 'e2', target: 'p', type: 'affects' }])
+  })
+
+  it('never folds two dates into one event', () => {
+    const g = foldEventFamilies({ nodes: [n('a', '上海差旅 2026-05-18'), n('b', '上海差旅 2026-07-07'), n('c', '上海差旅')], edges: [] })
+    expect(g.nodes).toHaveLength(3) // month-days conflict across the family: nothing folds
+    const h = foldEventFamilies({ nodes: [n('a', 'IPO期限2025-12-31'), n('b', 'IPO期限2026-12-31')], edges: [] })
+    expect(h.nodes).toHaveLength(2)
+  })
+
+  it('leaves non-events and documents alone', () => {
+    const g = foldEventFamilies({ nodes: [n('t1', 'Brain Unification', 'topic'), n('t2', 'Brain Unification 2026', 'topic'), n('Notes/e.md', '春分试玩会 2026'), n('e', '春分试玩会')], edges: [] })
+    expect(g.nodes).toHaveLength(4)
+  })
+})
+
+describe('unanchored entities — no document on the map behind them', () => {
+  const n = (id: string, kind: string, label: string, layer = 'construction') => ({ id, kind, label, layer, note: layer === 'construction' ? 'Gone/x.md' : undefined })
+
+  it('drops an extracted node with no edge to any document, keeps one that has', () => {
+    const g = dropUnanchoredEntities({
+      nodes: [n('t1', 'topic', 'Promoted operator fact'), n('t2', 'topic', 'Anchor'), n('Notes/a.md', 'note', 'a', 'vault'), n('t3', 'topic', 'Friend')],
+      edges: [{ source: 't2', target: 'Notes/a.md', type: 'about' }, { source: 't3', target: 't2', type: 'affects' }, { source: 't1', target: 't3', type: 'mentions' }]
+    })
+    expect(g.nodes.map((z) => z.id).sort()).toEqual(['Notes/a.md', 't2']) // t3 is related but anchored to nothing on the map
+    expect(g.edges).toEqual([{ source: 't2', target: 'Notes/a.md', type: 'about' }])
+  })
+
+  it('never touches documents, the skeleton or product nodes', () => {
+    const g = dropUnanchoredEntities({
+      nodes: [{ id: '__core__', kind: 'core', label: 'core' }, { id: 'proj', kind: 'project', label: 'P', layer: 'product' }, n('Notes/a.md', 'note', 'a', 'vault')],
+      edges: []
+    })
+    expect(g.nodes).toHaveLength(3)
   })
 })

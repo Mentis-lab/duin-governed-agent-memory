@@ -48,7 +48,7 @@ export function ChannelSetupSteps({
   const { setupSteps, docsUrl, needsPublicUrl, ingress } = definition
 
   return (
-    <div className="mt-3 space-y-2 border-t border-[var(--border)] pt-2">
+    <div className="mt-2 space-y-2">
       <p className="text-[11px] text-[var(--text-muted)]">{ingressLabel(ingress)}</p>
 
       {/* Prominent on purpose. A webhook channel with no reachable endpoint is the

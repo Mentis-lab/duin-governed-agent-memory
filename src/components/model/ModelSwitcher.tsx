@@ -4,7 +4,8 @@ import { useChatStore } from '@/stores/chat-store'
 import { Button } from '@/components/ui/Button'
 import { useModelStore } from '@/stores/model-store'
 import { useUiStore } from '@/stores/ui-store'
-import type { ModelInfo } from '@/lib/types'
+import { AUTO_ENGINE, type ModelInfo } from '@/lib/types'
+import { describeEngine } from '@/lib/model-label'
 
 function formatContext(n: number): string {
   if (n >= 1000) return `${Math.round(n / 1024)}K`
@@ -84,12 +85,15 @@ export function ModelSwitcher() {
   const activeModel = useChatStore((s) => s.activeModel)
   const setModel = useChatStore((s) => s.setModel)
   const models = useModelStore((s) => s.models)
+  const resolution = useModelStore((s) => s.resolution)
   const openSettings = useUiStore((s) => s.openSettings)
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
-  const active = models.find((m) => m.id === activeModel)
-  const activeName = active?.name ?? activeModel
+  // The same engine label the composer chip and the status line render (model-label.ts).
+  const engine = describeEngine(activeModel, resolution, models)
+  const active = engine.modelId ? models.find((m) => m.id === engine.modelId) : undefined
+  const activeName = engine.label
   const activeIsReasoner = !!active?.isReasoner
 
   useEffect(() => {
@@ -137,43 +141,24 @@ export function ModelSwitcher() {
             {t('Active model')}
           </div>
           <div className="max-h-80 overflow-y-auto">
-            {(models.length > 0
-              ? models
-              : [
-                  {
-                    id: 'deepseek-v4-pro',
-                    name: 'DeepSeek V4 Pro',
-                    provider: 'deepseek',
-                    contextWindow: 131072,
-                    supportsTools: true,
-                    supportsVision: false
-                  } as ModelInfo,
-                  {
-                    id: 'deepseek-v4-flash',
-                    name: 'DeepSeek V4 Flash',
-                    provider: 'deepseek',
-                    contextWindow: 131072,
-                    supportsTools: true,
-                    supportsVision: false
-                  } as ModelInfo,
-                  {
-                    id: 'gemma-3-27b-it',
-                    name: 'Gemma 3 27B',
-                    provider: 'google',
-                    contextWindow: 131072,
-                    supportsTools: true,
-                    supportsVision: true
-                  } as ModelInfo,
-                  {
-                    id: 'qwen3-coder-plus',
-                    name: 'Qwen3 Coder Plus',
-                    provider: 'dashscope',
-                    contextWindow: 1000000,
-                    supportsTools: true,
-                    supportsVision: false
-                  } as ModelInfo
-                ]
-            ).map((model) => (
+            {/* First entry: no pin — the chat role follows the provider policy. */}
+            <button
+              onClick={() => handleSelect(AUTO_ENGINE)}
+              className={`flex w-full items-start justify-between gap-3 px-3 py-2 text-left transition-colors ${
+                activeModel === AUTO_ENGINE ? 'bg-[var(--bg-tertiary)]' : 'hover:bg-[var(--bg-tertiary)]'
+              }`}
+            >
+              <div className="min-w-0 flex-1">
+                <span className="font-mono text-[12px] font-semibold text-[var(--text-primary)]">
+                  {t('Auto (provider policy)')}
+                </span>
+                <div className="mt-1 text-[12px] text-[var(--text-muted)]">
+                  {resolution && activeModel === AUTO_ENGINE ? `→ ${engine.label}` : t('Healthiest provider in your order')}
+                </div>
+              </div>
+            </button>
+            {/* Only the live catalog (model:list) — no hand-kept roster of ids. */}
+            {models.filter((m) => !m.internal).map((model) => (
               <ModelRow
                 key={model.id}
                 model={model}

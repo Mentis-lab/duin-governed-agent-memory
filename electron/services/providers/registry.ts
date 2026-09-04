@@ -14,17 +14,49 @@ import {
   sortToolsStable,
   type NormalizedUsage
 } from './usage-accounting'
-import { isBalanceError, isQuotaError } from './quota-error'
 import {
-  availableProviders,
+  isBalanceError,
+  isQuotaError,
+  classifyProviderError,
+  formatProviderError,
+  isFailoverClass
+} from './quota-error'
+// The health RECORD (leaf) — not the probe layer, which reads this module and must stay above it.
+import {
   isProviderCoolingDown,
   noteProviderRefusal,
-  noteProviderSuccess
-} from './provider-health'
+  noteProviderSuccess,
+  providerHealthState
+} from './provider-health-state'
+import {
+  resolveRoleCore,
+  resolveJuryCore,
+  normalizeProviderPolicy,
+  canonicalTask,
+  roleTierOrder,
+  DEFAULT_POLICY_SPEED,
+  type RoleResolverInput,
+  type ResolveRoleOpts,
+  type CanonicalTask
+} from './router'
+import type {
+  RouteTask as RoleTask,
+  ProviderPolicy,
+  PolicySpeed,
+  RoleResolution,
+  ModelFailurePayload,
+  ProviderHealthReason,
+  ClassifiedProviderError
+} from './roles'
+import { PROVIDER_POLICY_SETTING } from './roles'
 import { join } from 'path'
 import { randomUUID } from 'crypto'
 import { getKey } from '../keychain'
-import { readSettings } from '../settings-helper'
+import { readSettings, patchSettings } from '../settings-helper'
+import type { LegacyModelSettingsDeps } from '../settings-file'
+// Cost on the completed event (lane C's ledger): both are leaves (no registry import).
+import { toTokenUsage } from '../local-brain/agui-cost'
+import { costOfUsage } from '../longrun/cost-budget'
 import { boundedJsonPreview, recordEvent } from '../event-log'
 import { trace } from '../debug-trace'
 import { messageOf } from '../guarded'
@@ -137,6 +169,13 @@ function readCustomModels(): CustomModelRecord[] {
   } catch {
     return []
   }
+}
+
+/** The operator's custom/imported models (settings.customModels), for the probe layer and the
+ *  role binder — a provider with zero catalog entries (groq/mistral/…) is callable only through
+ *  these. Empty outside the main process. */
+export function listCustomModels(): CustomModelRecord[] {
+  return readCustomModels()
 }
 
 export function readStreamInactivityMs(): number {
@@ -1417,20 +1456,16 @@ export function resolveCompletionModel(preferred?: string): string | null {
 }
 
 // ── Native task-aware model routing ──
-// Match the model to the task for better performance: cheap/fast models for
-// structured or trivial work (extraction, titles), strong models for grounded
-// reasoning, a coder model for code. Deterministic + LOCAL — no remote router
-// (fugu et al. are hosted; this adds zero latency and respects keyless/Ollama).
-// Picks the first BYO-key catalog model in the task's preferred tier order,
-// falling back to a local Ollama model, then any usable model.
-export type RouteTask = 'chat' | 'extraction' | 'title' | 'code' | 'reason'
+// Every place that needs a language model asks for a ROLE (roles.ts) and the router resolves it
+// at call time from the operator's provider policy filtered by live provider health. Deterministic
+// + LOCAL — no remote router. `code` is a legacy alias (three brain callers type their own union)
+// and resolves as `agentic`.
+export type RouteTask = RoleTask | 'code'
 
-const TIER_POLICY: Record<RouteTask, ModelDescriptor['tier'][]> = {
-  extraction: ['flash', 'open', 'coder', 'pro', 'reasoner'], // structured JSON — cheap/fast is plenty
-  title: ['open', 'flash', 'coder', 'pro', 'reasoner'], // tiny classifications — cheapest wins
-  chat: ['pro', 'reasoner', 'flash', 'open'], // grounded answers — favour strong models
-  code: ['coder', 'pro', 'reasoner', 'flash'],
-  reason: ['reasoner', 'pro', 'flash']
+/** Tier order per task, for the SAME-provider hop (`routeWithinProvider`) — the role tables in
+ *  router.ts under the policy's speed; this only maps the legacy alias onto them. */
+function tierOrderFor(task: RouteTask): ModelDescriptor['tier'][] {
+  return roleTierOrder(canonicalTask(task), readProviderPolicy().speed ?? DEFAULT_POLICY_SPEED)
 }
 
 /** Per-provider designated model for structured extraction / titles: a non-reasoning model where the
@@ -1457,155 +1492,197 @@ const EXTRACTION_DEFAULT: Partial<Record<ProviderId, string>> = {
   oneai: 'gpt-5.5-oneai' // reasoner gateway; reasoning_effort capped low by modelSupportsReasoningEffort
 }
 
-/** Provider priority for extraction routing: the configured/default model's provider first (so a
- *  Claude user extracts with Claude, a GLM user with GLM), then the rest in a stable order. Only
- *  providers with a stored key yield a usable model, so single-provider operators always resolve
- *  to their own family regardless of the base order. */
-/** Is this model's account currently refusing? Keyed but drained is NOT usable for an automatic
- *  choice — that distinction is the whole point of provider-health. */
-function isParked(modelId: string): boolean {
-  const prov = MODEL_CATALOG.find((m) => m.id === modelId)?.provider
-  return prov ? isProviderCoolingDown(prov) : false
+// ── Provider policy (roles.ts) — the operator's ordered preference, read on every resolution ──
+
+/** Providers the router may pick on its own, in PROVIDERS table order ("catalog order"). Hidden
+ *  gateways (operator benchmark infrastructure) are reachable only through an explicit pin. */
+export function catalogProviderOrder(): ProviderId[] {
+  return (Object.keys(PROVIDERS) as ProviderId[]).filter((p) => !PROVIDERS[p].hidden)
 }
 
-function extractionProviderOrder(preferred?: string): ProviderId[] {
-  const base: ProviderId[] = ['zhipu', 'deepseek', 'moonshot', 'dashscope', 'openrouter', 'openai', 'xai', 'google', 'oneai']
-  const prefProv = preferred ? MODEL_CATALOG.find((m) => m.id === preferred)?.provider : undefined
-  const ordered = prefProv ? [prefProv, ...base.filter((p) => p !== prefProv)] : base
-  // This array IS the priority order; provider-health only removes the ones that are currently
-  // refusing, and returns the full list unchanged if that would leave nothing.
-  return availableProviders(ordered)
+/** "Keyed" = a key is stored; for the local runtime, at least one model was detected. */
+export function providerHasKey(provider: ProviderId): boolean {
+  if (provider === 'ollama') return ollamaModels.length > 0
+  return !!getKey(PROVIDERS[provider].keyEnv)
 }
 
-// ── Operator pins over automatic routing ──
-// Two ways an operator overrides the tier policy without naming a model per call: the
-// Background-model setting (Settings → Models) and the per-task DUIN_ROUTE_<TASK> env pin.
-// Both are PREFERENCES, not promises the account has money or the id still exists: a retired
-// id, a key-less provider, or a refusing account all fall through to the automatic pick rather
-// than hard-failing every background extraction. (deploy.cmd arms DUIN_ROUTE_EXTRACTION=
-// glm-4.7-flashx on the author's machine, and an empty Zhipu balance used to hard-pin every
-// background extraction onto a provider that refused 21 of 32 batches per build — stepping over
-// a refusing account while its cooldown runs is what fixed it.)
-
-/** Settings key for the operator's Background-model choice (Settings → Models). Read on every
- *  background route, so a change in Settings applies to the next extraction batch or title
- *  without a restart. */
-export const BACKGROUND_MODEL_SETTING = 'backgroundModel'
-/** The stored value that means "let DUIN decide" — same as '' or an absent key. */
-export const AUTO_BACKGROUND_MODEL = 'auto'
-/** The tasks the setting governs: DUIN's OWN structured work. Chat stays with the picker;
- *  code/reason are routed by callers that name what they need. */
-export const BACKGROUND_TASKS: ReadonlySet<RouteTask> = new Set<RouteTask>(['extraction', 'title'])
-
-/** The stored Background-model id, or null for Auto ('' / 'auto' / absent / non-string). A
- *  retired id follows RETIRED_MODEL_MAP to its successor — the same courtesy a saved
- *  conversation and the persisted default get. Never throws: a settings read on a hot path
- *  degrades to Auto. */
-export function backgroundModelSetting(): string | null {
+/** The stored provider policy, normalized (unknown providers dropped, role keys validated). Never
+ *  throws: a settings read on a hot path degrades to the empty policy, which means "every keyed
+ *  provider in catalog order". Read on every resolution so a change in Settings applies to the
+ *  next call without a restart. */
+export function readProviderPolicy(): ProviderPolicy {
   let raw: unknown
   try {
-    raw = readSettings()[BACKGROUND_MODEL_SETTING]
+    raw = readSettings()[PROVIDER_POLICY_SETTING]
   } catch {
-    return null
+    raw = undefined
   }
-  if (typeof raw !== 'string') return null
-  const id = raw.trim()
-  if (!id || id === AUTO_BACKGROUND_MODEL) return null
-  return RETIRED_MODEL_MAP[id] ?? id
+  return normalizeProviderPolicy(raw, Object.keys(PROVIDERS) as ProviderId[])
 }
 
-export type RoutePinSource = 'setting' | 'env'
-
-function envRoutePin(task: RouteTask): string | null {
-  const envPin = process.env[`DUIN_ROUTE_${task.toUpperCase()}`]
-  return envPin && isUsableModel(envPin) && !isParked(envPin) ? envPin : null
+/** Merge a partial policy into the stored one and persist it. Returns the normalized result —
+ *  what the router will actually use, which can differ from what was asked for (unknown provider
+ *  ids are dropped, duplicates removed). */
+export function writeProviderPolicy(patch: Partial<ProviderPolicy>): ProviderPolicy {
+  const current = readProviderPolicy()
+  const merged = normalizeProviderPolicy(
+    {
+      order: patch.order ?? current.order,
+      roles: patch.roles ?? current.roles,
+      localOnlyBackground: patch.localOnlyBackground ?? current.localOnlyBackground,
+      speed: patch.speed ?? current.speed
+    },
+    Object.keys(PROVIDERS) as ProviderId[]
+  )
+  patchSettings({ [PROVIDER_POLICY_SETTING]: merged })
+  return merged
 }
 
-/** The operator pin that beats the tier policy for `task`, if a usable one is in force: the
- *  stored Background-model choice (background tasks only), else the env pin. The setting sits
- *  ABOVE the env pin on purpose — the pin is deploy-time ops config, and a choice the operator
- *  made in the product must not be silently beaten by it. */
+/** A model id that can be called RIGHT NOW: a catalog model whose provider has a key, a custom or
+ *  `openrouter:` model whose provider has a key, or a detected local Ollama model. Wider than
+ *  `isUsableModel` (which is catalog-only by contract and locked by tests). Never the connector. */
+export function isCallableModel(id: string): boolean {
+  if (!id || id === 'duin-brain') return false
+  if (id.startsWith('ollama:')) return ollamaModels.includes(id.slice('ollama:'.length))
+  const known =
+    MODEL_CATALOG.some((m) => m.id === id) ||
+    id.startsWith('openrouter:') ||
+    readCustomModels().some((m) => m.id === id)
+  if (!known) return false
+  return providerHasKey(resolveModel(id).provider)
+}
+
+/** Model ids of `provider` for a role, best first. Catalog models by the role's tier order under
+ *  the policy's `speed` (chat/agentic only; the designated extractor first for the structured
+ *  roles — a thinking-on reasoner returns 0 JSON on batch construction, measured), then the
+ *  operator's custom models, then (ollama) the detected local models. Hidden and internal entries
+ *  never appear. */
+export function roleCandidates(provider: ProviderId, task: CanonicalTask, speed: PolicySpeed = DEFAULT_POLICY_SPEED): string[] {
+  const out: string[] = []
+  const push = (id: string): void => {
+    if (!out.includes(id)) out.push(id)
+  }
+  if (provider === 'ollama') {
+    for (const name of ollamaModels) push(`ollama:${name}`)
+    return out
+  }
+  const structured = task !== 'chat' && task !== 'agentic'
+  if (structured) {
+    const designated = EXTRACTION_DEFAULT[provider]
+    if (designated && MODEL_CATALOG.some((m) => m.id === designated && !m.hidden)) push(designated)
+  }
+  for (const tier of roleTierOrder(task, speed)) {
+    for (const m of MODEL_CATALOG) {
+      if (m.provider !== provider || m.tier !== tier || m.hidden || m.internal) continue
+      push(m.id)
+    }
+  }
+  for (const c of readCustomModels()) if (c.provider === provider) push(c.id)
+  return out
+}
+
+function roleResolverInput(): RoleResolverInput {
+  return {
+    policy: readProviderPolicy(),
+    catalogOrder: catalogProviderOrder(),
+    isKeyed: providerHasKey,
+    healthOf: (p) => providerHealthState(p),
+    candidates: roleCandidates,
+    pinInfo: (id) => {
+      const mapped = RETIRED_MODEL_MAP[id] ?? id
+      if (!isCallableModel(mapped)) return null
+      return { provider: resolveModel(mapped).provider, callable: true }
+    }
+  }
+}
+
+/**
+ * Resolve a ROLE to a model + ordered failover chain (the roles.ts contract). Keys, in order:
+ * an explicit callable pin that is not observed-unhealthy (`source: 'pin'`); the policy order;
+ * health (unhealthy providers to the END of the chain, never dropped); the role's tier order
+ * inside a provider. `reviewer` skips `avoidProviders` while another candidate exists; `jury` never
+ * includes them. A retired pin follows RETIRED_MODEL_MAP. Null = nothing callable at all.
+ * Limits: one model per provider in the chain; stale ids are the walker's within-provider hop.
+ */
+export function resolveRole(task: RouteTask, opts: ResolveRoleOpts = {}): RoleResolution | null {
+  const pin = opts.pin ? (RETIRED_MODEL_MAP[opts.pin] ?? opts.pin) : undefined
+  return resolveRoleCore(task, roleResolverInput(), { ...opts, pin })
+}
+
+/** Up to `n` DISTINCT providers, keyed and not observed-unhealthy — the govern jury / reviewer
+ *  panel. Returns fewer than `n` honestly (never one model wearing three hats). */
+export function resolveJury(n: number, opts: ResolveRoleOpts = {}): RoleResolution[] {
+  return resolveJuryCore(n, roleResolverInput(), opts)
+}
+
+// ── Operator pin over automatic routing ──
+// The per-task DUIN_ROUTE_<TASK> env pin is deploy-time ops config: a PREFERENCE, not a promise
+// the account has money or the id still exists. A retired id follows RETIRED_MODEL_MAP (S20:
+// duin-launch.bat still names glm-4.5-airx); an unusable or refusing pin falls through to the
+// policy rather than hard-failing every background extraction.
+
+export type RoutePinSource = 'env'
+
+/** The usable env pin for `task` after the retired-id map, or null. */
+export function envRoutePin(task: RouteTask): string | null {
+  const raw = process.env[`DUIN_ROUTE_${task.toUpperCase()}`]?.trim()
+  if (!raw) return null
+  const id = RETIRED_MODEL_MAP[raw] ?? raw
+  return isCallableModel(id) && providerHealthState(resolveModel(id).provider) !== 'unhealthy' ? id : null
+}
+
+/** The operator pin that beats the policy for `task`, if a usable one is in force. Kept as the
+ *  seam Settings → Models reads; the Background-model setting it used to consult is gone (it is a
+ *  provider preference in `providerPolicy.roles.extraction` now). */
 export function operatorRoutePin(task: RouteTask): { id: string; source: RoutePinSource } | null {
-  if (BACKGROUND_TASKS.has(task)) {
-    const chosen = backgroundModelSetting()
-    if (chosen && isUsableModel(chosen) && !isParked(chosen)) return { id: chosen, source: 'setting' }
-  }
   const env = envRoutePin(task)
   return env ? { id: env, source: 'env' } : null
 }
 
-/** Route to the best model for a task. Precedence: an explicit usable `preferred`
- *  (a caller/user naming a model) first; then the operator pins — the Background-model
- *  setting for background tasks, then the per-task env pin — which override only the
- *  AUTOMATIC selection; then the tier policy, then Ollama, then any. */
+/**
+ * Route to the best model for a task — the thin wrapper ~50 callers use. Precedence: an explicit
+ * `preferred` (a caller/user naming a model; wins when callable and not observed-unhealthy), then
+ * the DUIN_ROUTE_<TASK> env pin, then the provider policy filtered by health (`resolveRole`).
+ * Returns null only when nothing at all is callable.
+ */
 export function routeModel(task: RouteTask, preferred?: string): string | null {
-  // 1. An explicit, usable `preferred` wins — honouring the caller's named model is the whole point
-  //    of the argument. This MUST sit above the pins: a pin overrides AUTOMATIC selection, not an
-  //    explicit request. (Historically the env pin was checked first and silently beat an explicit
-  //    preferred — an unintended precedence, since the pin was only ever meant to beat the tier policy.)
-  if (preferred && isUsableModel(preferred)) return preferred
-  // 2. The operator's pins: Settings → Models → Background model, then DUIN_ROUTE_<TASK>. Either is
-  //    the deterministic way to force extraction onto a non-reasoning flash model when multiple
-  //    flash-tier keys exist (a reasoning/large-output model silently produces 0 JSON on batch
-  //    construction). Fall-through rules live in operatorRoutePin.
-  const pin = operatorRoutePin(task)
-  if (pin) return pin.id
-  return automaticRoute(task, preferred)
-}
-
-/** Steps 3–6 of routeModel, the automatic pick: each configured provider's designated extraction
- *  model, then the tier policy (serving providers first, then ignoring cooldowns), then local
- *  Ollama, then any usable model. Split out so Settings → Models can show what Auto WOULD pick
- *  while a pin is in force. */
-function automaticRoute(task: RouteTask, preferred?: string): string | null {
-  // Structured tasks (extraction/titles) want a fast NON-reasoning (or thinking-off) model. Prefer each
-  // configured provider's designated extraction model — so any operator gets a working extractor for
-  // whatever API they added, instead of the tier loop grabbing a throttled free model or a thinking-on
-  // reasoner. Falls through to the tier policy if no provider has a designated model with a key.
-  if (task === 'extraction' || task === 'title') {
-    for (const prov of extractionProviderOrder(preferred)) {
-      const id = EXTRACTION_DEFAULT[prov]
-      if (id && isUsableModel(id)) return id
-    }
-  }
-  for (const tier of TIER_POLICY[task]) {
-    for (const m of MODEL_CATALOG) {
-      if (m.id === 'duin-brain' || m.tier !== tier) continue
-      if (getKey(PROVIDERS[m.provider].keyEnv) && !isProviderCoolingDown(m.provider)) return m.id
-    }
-  }
-  // Nothing open — fall through the SAME order ignoring cooldowns rather than returning null. A
-  // degraded estate must still route somewhere; the caller's own error handling reports the refusal.
-  for (const tier of TIER_POLICY[task]) {
-    for (const m of MODEL_CATALOG) {
-      if (m.id === 'duin-brain' || m.tier !== tier) continue
-      if (getKey(PROVIDERS[m.provider].keyEnv)) return m.id
-    }
-  }
-  if (ollamaModels.length) return `ollama:${ollamaModels[0]}`
-  return resolveCompletionModel(preferred)
+  const pin = preferred && isCallableModel(RETIRED_MODEL_MAP[preferred] ?? preferred) ? preferred : envRoutePin(task)
+  return resolveRole(task, { pin: pin ?? undefined })?.modelId ?? null
 }
 
 export interface BackgroundModelStatus {
-  /** What Settings holds (after retired-id migration): a model id, or null for Auto. */
+  /** What the policy's extraction override resolves to (the first provider the operator ranked
+   *  for background work), or null when there is no override. */
   chosen: string | null
   /** What background work resolves to right now, or null when nothing is routable. */
   effective: string | null
-  /** What Auto resolves to — the env pin if one is in force, else the automatic pick. */
+  /** What the general policy alone resolves to — the env pin if one is in force, else the
+   *  policy pick without the extraction override. */
   automatic: string | null
   /** Why `effective` is what it is. */
-  source: RoutePinSource | 'auto' | 'none'
+  source: RoutePinSource | 'setting' | 'auto' | 'none'
 }
 
-/** For Settings → Models: what the Background model IS right now and why — so a pinned model
- *  whose key is missing, or whose account is refusing, reads as "falling back to Auto → X"
- *  instead of silently doing something other than what the operator picked. */
+/** For Settings → Models: what background work resolves to right now and why — so an override
+ *  whose provider is unkeyed or refusing reads as "falling back to Auto → X" instead of silently
+ *  doing something other than what the operator picked. */
 export function describeBackgroundModel(): BackgroundModelStatus {
-  const chosen = backgroundModelSetting()
-  const pin = operatorRoutePin('extraction')
-  const automatic = envRoutePin('extraction') ?? automaticRoute('extraction')
-  const effective = pin?.id ?? automatic
-  return { chosen, effective, automatic, source: pin?.source ?? (effective ? 'auto' : 'none') }
+  const policy = readProviderPolicy()
+  const override = policy.roles?.extraction ?? []
+  const input = roleResolverInput()
+  const automaticInput: RoleResolverInput = { ...input, policy: { ...policy, roles: { ...policy.roles, extraction: undefined } } }
+  const env = envRoutePin('extraction')
+  const automatic = env ?? resolveRoleCore('extraction', automaticInput)?.modelId ?? null
+  const effective = env ?? resolveRoleCore('extraction', input)?.modelId ?? null
+  const chosen = override.length ? (resolveRoleCore('extraction', input)?.provider === override[0] ? effective : null) : null
+  const source: BackgroundModelStatus['source'] = env
+    ? 'env'
+    : chosen
+      ? 'setting'
+      : effective
+        ? 'auto'
+        : 'none'
+  return { chosen, effective, automatic, source }
 }
 
 // ── Workflow symbolic tier ('cheap'/'pro') routing ──
@@ -1658,24 +1735,16 @@ export function routeDistinctModels(
   task: RouteTask,
   limit: number
 ): string[] {
-  const out: string[] = []
-  const used = new Set<ProviderId>(avoid)
-  if (limit <= 0) return out
-  for (const tier of TIER_POLICY[task]) {
-    for (const m of MODEL_CATALOG) {
-      if (out.length >= limit) return out
-      if (m.id === 'duin-brain' || m.tier !== tier || used.has(m.provider)) continue
-      if (!getKey(PROVIDERS[m.provider].keyEnv)) continue
-      used.add(m.provider)
-      out.push(m.id)
-    }
-  }
-  if (out.length < limit && ollamaModels.length && !used.has('ollama')) out.push(`ollama:${ollamaModels[0]}`)
-  return out
+  // Distinct HEALTHY providers, in policy order (S8: the old walk ignored provider health and
+  // handed the jury three doomed calls per tick). Fewer than `limit` is the honest answer.
+  const speed = readProviderPolicy().speed ?? DEFAULT_POLICY_SPEED
+  return resolveJury(limit, { avoidProviders: avoid }).map((r) =>
+    canonicalTask(task) === 'jury' ? r.modelId : (roleCandidates(r.provider, canonicalTask(task), speed)[0] ?? r.modelId)
+  )
 }
 
 export function routeDistinctModel(avoidProvider: ProviderId, task: RouteTask): string | null {
-  for (const tier of TIER_POLICY[task]) {
+  for (const tier of tierOrderFor(task)) {
     for (const m of MODEL_CATALOG) {
       if (m.id === 'duin-brain' || m.tier !== tier || m.provider === avoidProvider) continue
       if (getKey(PROVIDERS[m.provider].keyEnv)) return m.id
@@ -1698,7 +1767,7 @@ export function routeWithinProvider(
   if (!getKey(PROVIDERS[provider].keyEnv)) return null
   // Prefer the task's tier order so a chat failover still lands a chat-appropriate tier first,
   // then sweep any remaining same-provider models so we exhaust the provider before failing.
-  for (const tier of TIER_POLICY[task]) {
+  for (const tier of tierOrderFor(task)) {
     for (const m of MODEL_CATALOG) {
       if (m.id === 'duin-brain' || m.provider !== provider || m.tier !== tier) continue
       if (!avoid.has(m.id)) return m.id
@@ -2224,13 +2293,18 @@ export async function chatOnce(
     return { content, reasoning }
   } catch (err) {
     // Non-streaming is where the CN gateways actually return their 402 JSON, so this is the most
-    // reliable place a background pass (extraction, titles) learns an account is dry.
-    if (isQuotaError(messageOf(err))) noteProviderRefusal(desc.provider, messageOf(err) || 'quota')
+    // reliable place a background pass (extraction, titles) learns an account is dry. Classify
+    // ONCE; the health record, the event and the thrown message all carry the same verdict.
+    const classified = classifyProviderError(err, desc.provider, PROVIDERS[desc.provider].label)
+    if (isFailoverClass(classified.reason, classified.status)) {
+      noteProviderRefusal(desc.provider, classified.detail, Date.now(), classified.reason)
+    }
     trace('chatOnce.error', {
       traceId,
       durationMs: Date.now() - startedAt,
       errName: (err as { name?: string })?.name,
       errStatus: (err as { status?: number })?.status,
+      reason: classified.reason,
       errMessage: String(messageOf(err) ?? err).slice(0, 200),
       parentSignalAborted: signal?.aborted ?? null
     })
@@ -2240,9 +2314,30 @@ export async function chatOnce(
       retryCount: 0,
       durationMs: Date.now() - startedAt,
       cancelled: signal?.aborted ?? false,
-      error: err
+      error: err,
+      httpStatus: classified.status,
+      reason: classified.reason
     })
+    // A classified provider failure is rethrown as the ONE message shape every reader parses
+    // (`provider: reason (status) — detail`), with the status and verdict attached; anything
+    // else (a caller bug, an abort) is rethrown untouched.
+    if (isFailoverClass(classified.reason, classified.status) && !(signal?.aborted ?? false)) {
+      throw new ProviderRequestError(classified, err)
+    }
     throw err
+  }
+}
+
+/** A classified provider failure: message is `formatProviderError`, `status`/`classified` ride
+ *  along so a catch that reads `err.status` (the pre-classifier contract) keeps working. */
+export class ProviderRequestError extends Error {
+  readonly status?: number
+  readonly classified: ClassifiedProviderError
+  constructor(classified: ClassifiedProviderError, cause?: unknown) {
+    super(formatProviderError(classified), { cause })
+    this.name = 'ProviderRequestError'
+    this.status = classified.status
+    this.classified = classified
   }
 }
 
@@ -2882,8 +2977,14 @@ export async function chatStream(
       }
 
       if ((err as { status?: number })?.status === 401 || (err as { status?: number })?.status === 403) {
+        // S1 (2026-09-02): this branch used to synthesize `Invalid <Label> API key`, a string the
+        // failover classifier did not recognise, so every 401/403 hard-failed the turn one hop
+        // before the only funded provider. The message is now the classified shape — provider,
+        // reason (unauthorized vs model-access), status, bounded detail — and the account is parked.
+        const classified = classifyProviderError(err, desc.provider, PROVIDERS[desc.provider].label)
+        noteProviderRefusal(desc.provider, classified.detail, Date.now(), classified.reason)
         settleError(
-          `Invalid ${PROVIDERS[desc.provider].label} API key`,
+          formatProviderError(classified),
           { content: fullContent, reasoning: fullReasoning || undefined }
         )
         emitModelRequestFailed(desc, audit, {
@@ -2893,7 +2994,8 @@ export async function chatStream(
           durationMs: Date.now() - startedAt,
           cancelled: false,
           error: err,
-          httpStatus: (err as { status?: number })?.status
+          httpStatus: classified.status,
+          reason: classified.reason
         })
         return
       }
@@ -2959,12 +3061,19 @@ export async function chatStream(
           if (isQuotaError(probeMsg)) finalErrMsg = probeMsg
         }
       }
-      // Park the ACCOUNT, not the model: a quota/billing refusal says nothing about which model
-      // was asked, and everything about whether this provider can serve anything right now. Every
-      // later automatic route (extraction, titles, workflows) steps over it until it recovers.
-      if (isQuotaError(finalErrMsg)) noteProviderRefusal(desc.provider, finalErrMsg)
+      // Classify ONCE. Park the ACCOUNT, not the model, for every account-level verdict (the
+      // classifier's cooldown table decides the window; `not-found` never parks): every later
+      // automatic route steps over it until it recovers. A failover-class verdict surfaces as the
+      // formatted shape so the answer path walks its chain; anything else keeps the raw text.
+      const classified = classifyProviderError(
+        (err as { status?: number })?.status ? err : { ...(err as object), message: finalErrMsg },
+        desc.provider,
+        PROVIDERS[desc.provider].label
+      )
+      const failover = isFailoverClass(classified.reason, classified.status)
+      if (failover) noteProviderRefusal(desc.provider, classified.detail, Date.now(), classified.reason)
       settleError(
-        finalErrMsg,
+        failover ? formatProviderError(classified) : finalErrMsg,
         { content: fullContent, reasoning: fullReasoning || undefined }
       )
       emitModelRequestFailed(desc, audit, {
@@ -2974,7 +3083,8 @@ export async function chatStream(
         durationMs: Date.now() - startedAt,
         cancelled: false,
         error: err,
-        httpStatus: (err as { status?: number })?.status
+        httpStatus: classified.status,
+        reason: classified.reason
       })
       return
     }
@@ -3065,7 +3175,11 @@ function emitModelRequestCompleted(
         purpose: audit.purpose ?? 'main',
         // Disjoint buckets: uncached input + cacheRead (+cacheWrite) = billed
         // prompt. Absent when the provider returned no usage.
-        ...(opts.usage && { usage: opts.usage })
+        ...(opts.usage && { usage: opts.usage }),
+        // Estimated spend for THIS request (lane C's cost ledger): the same price walk the turn
+        // meter uses (agui-cost → longrun/cost-budget), i.e. the blended fallback rate when the
+        // model is not in the price table — an estimate, never a bill. Absent without usage.
+        ...(opts.usage && { costUsd: Number(costOfUsage(toTokenUsage(desc.id, opts.usage), {}).toFixed(6)) })
       }
     })
   } catch (err) {
@@ -3081,6 +3195,9 @@ interface ModelRequestFailedOptions {
   cancelled: boolean
   error: unknown
   httpStatus?: number
+  /** Classified verdict (roles.ts ProviderHealthReason). The failure → notice watcher reads this
+   *  rather than re-parsing `errorPreview`. */
+  reason?: ProviderHealthReason
 }
 
 function emitModelRequestFailed(
@@ -3102,6 +3219,7 @@ function emitModelRequestFailed(
       payload: {
         provider: desc.provider,
         model: desc.id,
+        modelId: desc.id,
         apiModelId: desc.apiModelId,
         streaming: opts.streaming,
         toolCount: opts.toolCount,
@@ -3111,6 +3229,10 @@ function emitModelRequestFailed(
         cancelled: opts.cancelled,
         errorClass: (err as { name?: string })?.name,
         errorPreview: boundedJsonPreview(messageOf(err)),
+        reason: opts.reason ?? 'unknown',
+        // A single request has no failover of its own; the walker emits its hops through
+        // emitRoleFailure with `recovered` set from what actually happened next.
+        recovered: false,
         role: audit.role,
         purpose: audit.purpose ?? 'main'
       }
@@ -3118,4 +3240,54 @@ function emitModelRequestFailed(
   } catch (e) {
     console.error('[providers] model.request.failed event failed:', e)
   }
+}
+
+/**
+ * One failover HOP on the event spine — emitted by the walker (server.ts) for every classified
+ * failure it acts on, with `recovered: true` when it moved to `nextModelId` and `false` when the
+ * chain was exhausted. Same type name as a single request's failure (`model.request.failed`) so
+ * one watcher sees both; the ModelFailurePayload fields are the contract (roles.ts). Never throws.
+ */
+export function emitRoleFailure(payload: ModelFailurePayload, audit?: ModelRequestAudit): void {
+  try {
+    recordEvent({
+      type: 'model.request.failed',
+      actorKind: 'model',
+      severity: 'error',
+      conversationId: audit?.conversationId,
+      correlationId: audit?.correlationId,
+      entityKind: 'model',
+      entityId: payload.modelId,
+      payload: {
+        ...payload,
+        model: payload.modelId,
+        detail: payload.detail ? boundedJsonPreview(payload.detail) : undefined,
+        purpose: audit?.purpose ?? 'main'
+      }
+    })
+  } catch (e) {
+    console.error('[providers] model.request.failed (hop) event failed:', e)
+  }
+}
+
+// ── Legacy model-key migration deps (settings-helper) ──
+// settings-helper.ts cannot import this module (it is imported BY it — `import-x/no-cycle`), so
+// the two catalog lookups the one-time defaultModel/backgroundModel/brainEngine → providerPolicy
+// migration needs are EXPORTED from here and registered by an explicit boot call in
+// electron/main.ts (app.whenReady, before the doctor path and the first settings read). They used
+// to be registered as a module-load side effect of this file, which tied "does the migration run"
+// to import order and hid the dependency from the boot path — the wiring class the P0 audit
+// removes (2026-09-03). Nothing here calls settings-helper at load, so the ~40 suites that mock
+// it with only readSettings/patchSettings are unaffected. main.ts is the only router entry point
+// (cli.ts and brain-mcp-server.ts do not route models), so one call covers every process.
+export const LEGACY_MODEL_SETTINGS_DEPS: LegacyModelSettingsDeps = {
+  providerOf: (modelId) => {
+    const id = RETIRED_MODEL_MAP[modelId] ?? modelId
+    if (!id || id === 'duin-brain') return null
+    if (id.startsWith('ollama:')) return 'ollama'
+    if (id.startsWith('openrouter:')) return 'openrouter'
+    const known = MODEL_CATALOG.some((m) => m.id === id) || readCustomModels().some((m) => m.id === id)
+    return known ? resolveModel(id).provider : null
+  },
+  keyedProviders: () => catalogProviderOrder().filter(providerHasKey)
 }

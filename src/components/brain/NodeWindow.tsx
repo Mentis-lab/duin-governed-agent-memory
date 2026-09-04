@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactElement } from 'react'
 import { BrainExplorerPanel } from '@/components/brain/BrainExplorerPanel'
 import { useBrainStore } from '@/stores/brain-store'
+import { useSettingsStore } from '@/stores/settings-store'
 import { fetchBrainGraph } from '@/duin/lib/state'
 
 // A note / entity in its own window. Mounted INSTEAD of <App/> when the renderer
@@ -17,6 +18,15 @@ import { fetchBrainGraph } from '@/duin/lib/state'
 
 export function NodeWindow({ nodeId }: { nodeId: string }): ReactElement {
   const [state, setState] = useState<'loading' | 'ready' | 'missing'>('loading')
+
+  // This is a FRESH renderer, and only App's init effect loads settings — so a detached
+  // window painted with the DEFAULT appearance no matter what the operator had chosen:
+  // wrong theme preset, no UI zoom, and (the reason this is here) no document reading
+  // size, which would have made the one surface most likely to be read the only one the
+  // new control could not reach. Fire-and-forget; the panel renders either way.
+  useEffect(() => {
+    void useSettingsStore.getState().loadSettings()
+  }, [])
 
   useEffect(() => {
     let alive = true

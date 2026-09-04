@@ -328,6 +328,9 @@ export interface ConstructedEntity {
   label: string
   /** The exact note id (relpath) the entity was found in. */
   note: string
+  /** How many consecutive runs re-extracted this entity's note without producing it. One miss is
+   *  tolerated (extraction is flaky); the second retires the entity. Absent = never missed. */
+  missed?: number
 }
 
 export interface ConstructedEdge {
@@ -351,6 +354,8 @@ export interface ConstructedClassification {
 /** An OPEN-VOCABULARY fact lifted from note prose — arbitrary subject/relation/object, not the
  *  fixed entity-edge relation set. The Graphiti-style S-R-O triple the metabolism judges as a claim. */
 export interface ConstructedTriple {
+  /** As on ConstructedEntity: consecutive covered runs that did not re-extract this triple. */
+  missed?: number
   subject: string
   /** A natural relation phrase — any verb/phrase ("has deadline", "prefers", "reports to"). */
   relation: string

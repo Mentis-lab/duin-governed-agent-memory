@@ -674,5 +674,74 @@ export const COHERENCE_MAP: CoherenceEntry[] = [
     byDesign: false,
     gap: "how-you-decide-card is never mounted; StyleFingerprint is fetched by no live surface. — FIX: In brain-shell.tsx add `import { HowYouDecideCard } from '@/duin/components/views/how-you-decide-card'` and render `<HowYouDecideCard />` in a mounted view/right-rail (endpoint + data path already live).",
     leverage: "med",
+  },
+  // ─────────── P0 cohesion build (PLANNING/DUIN_COHESION_BUILD_PLAN_2026-09.md), wiring-audited 2026-09-03 ───────────
+  // Each entry names the explicit BOOT-PATH call, not an export: the audit's failure class is a
+  // mechanism that exists, passes its tests and never runs on the live instance.
+  {
+    subsystem: 'Provider health probe + role router (P0 model plane, W1–W4)',
+    designIntent:
+      'DUIN is model-agnostic by construction: no stored default model. Every caller asks for a ROLE (chat/agentic/extraction/reviewer/jury/title/embed), resolved at call time from the operator’s provider policy filtered by live provider HEALTH — a real 1-token completion, not a key check — with a per-conversation pin as the only stored model id; failover walks the role’s chain across providers on any classified error; the jury seats distinct healthy families or honestly none.',
+    wiringState: 'LIVE',
+    evidence:
+      'roles.ts is the contract (RouteTask, ProviderPolicy, ProviderHealth, MODEL_IPC, BENCH_HEADER). Boot: main.ts registerLegacyModelSettingsDeps(LEGACY_MODEL_SETTINGS_DEPS) — explicit, top of app.whenReady — feeds settings-helper.ts migrateOnce (defaultModel/backgroundModel/brainEngine → providerPolicy, once per file, logged); server.ts startLocalBrain schedules provider-health.ts scheduleBootProbes (one 1-token completion per keyed provider, staggered, unref’d; the count is logged even when 0, and unkeyed providers read no-key without a call). Key save/delete: ipc/settings.ts refreshProviderHealth → provider-health-state.ts onProviderHealthChanged → ipc/model.ts pushes MODEL_IPC.healthChanged to every window → preload.ts onHealthChanged → model-store.ts subscribes at module load (imported by App.tsx, whose settleBootstrap awaits loadModels). Every turn: server.ts resolveAnswerEngine → registry.ts resolveRole → router.ts resolveRoleCore (pin → policy order → health to the end → tier); registry.ts routeModel is the wrapper the extraction/title callers use (construct.ts, operator-model.ts, chat.ts); operator-govern.ts resolveJury is the only jury source and action-reviewer.ts routeDistinctModels goes through resolveJury. Failover: server.ts nextFailoverHop walks the chain and registry.ts emitRoleFailure records every hop and hard fail as model.request.failed (ModelFailurePayload). Status: BrainStatusPanel.tsx loadEngine (resolve + healthList on mount; connected = engineConnected, health-derived). Boot-proven 2026-09-03 on an isolated keyless instance: healthList rows read no-key, resolve(chat) is null, settings.json carries providerPolicy and no legacy key.',
+    detectors: [
+      'roles.test',
+      'router.test',
+      'registry-route.test',
+      'provider-health-probe.test',
+      'settings-provider-policy-migration.test',
+      'server-failover-bench.test',
+      'model-store.test',
+      'BrainStatusPanel.engine.test'
+    ],
+    axis: 'wiring',
+    byDesign: false,
+    gap: 'The deprecated model:getActive/setActive IPC shims are still registered (ipc/model.ts) and exposed (preload.ts); their only renderer reference is the unused wrapper pair in ipc-client.ts. Remove both in the next phase.',
+    leverage: 'low'
+  },
+  {
+    subsystem: 'Model failure → Needs-you notice watcher (W12)',
+    designIntent:
+      'A classified model failure — a failover hop on a background role, or any hard fail — becomes a Needs-you notice naming the role, provider, reason and fix within one tick, with a 24 h fingerprint dedup, instead of a silent row in the event spine (2026-09-02 L7 F2: 23 failed cloud calls, empty inbox).',
+    wiringState: 'LIVE',
+    evidence:
+      'watchers.ts installModelFailureWatcher subscribes routeSpineEventToWatchers through event-log.ts onEventRecorded (listeners run after the row is persisted, inside their own try/catch). Installed by an EXPLICIT boot call — main.ts installModelFailureWatcher() right after setDebugTraceUserDataPath and before startLocalBrain, the first place a model call can fail; until 2026-09-03 a watchers.ts module-load side effect. Producers: registry.ts emitRoleFailure (every failover hop and hard fail, recovered true/false) and the per-request model.request.failed; failure_ledger.repeated from construct.ts through normalizeLedgerRepeatPayload. Gate: watchModelFailure — a hard fail notifies at once, a background role needs FAILURE_STREAK_THRESHOLD hops, 24 h fingerprint dedup — then dispatchNotice reads settings.watchers.jobFail (default true, default-app-settings.ts) and quietHours through readWatchersRuntime; the notice deep link duin://settings/models is in the deep-link.ts allowlist.',
+    detectors: ['watchers.test', 'deep-link.test'],
+    axis: 'guarded',
+    byDesign: false,
+    gap: 'Quiet hours record the notice and skip only the interruption, so a hard fail at night is in Needs-you but not pushed — by design of the watcher gate, noted here so the delay is not read as a miss.'
+  },
+  {
+    subsystem: 'Main-process log sink + cost ledger (W12 observability)',
+    designIntent:
+      'A rolling main-process file log at warn level on every install, readable without a terminal (GET /debug/log-tail), and a spend ledger per role and provider (GET /debug/cost) computed from usage counters the spine no longer redacts — the 2026-09-02 instance had no main-process log at all (L7 F3) and could not say what a week of calls cost (S9).',
+    wiringState: 'LIVE',
+    evidence:
+      'main-log.ts initMainLog + installConsoleMirror, both called unconditionally from debug-trace.ts setDebugTraceUserDataPath, which main.ts calls in app.whenReady — <userData>/logs/main.log, 2 MB × 5 generations, secrets masked; warn/error always, console.log/info mirrored at info and written only while settings.debugTrace is on (wired 2026-09-03: the verbose promise had no producer). Served by brain-native-routes-2.ts at GET /debug/log-tail (readLogTail, mainLogStatus, ?n= capped at MAX_TAIL_LINES) and GET /debug/cost (cost-ledger.ts buildCostLedger over model.request.completed costUsd — chatOnce and chatStream both emit it through emitModelRequestCompleted — plus the journal TURN_END.costUsd); both in control-plane-policy.ts CONTROLLED_GET_PATHS, admitted by control-plane-guard.ts with the control or exec token. Usage counters survive redaction: event-log.ts keeps costUsd and the token counters past its /token/i secret pattern. Boot-proven 2026-09-03: a verbose isolated instance’s log-tail shows the watcher, probe and migration lines; /debug/cost returns the empty ledger shape.',
+    detectors: ['main-log.test', 'cost-ledger.test', 'control-plane-policy.test', 'control-plane-guard.test'],
+    axis: 'guarded',
+    byDesign: false,
+    gap: 'Info lines need settings.debugTrace; a default install’s main.log carries warn/error only (plan §2.4: warn level always on). Boot milestones are therefore on stdout only unless verbose.'
+  },
+  {
+    subsystem: 'Live evaluation suite + nightly scorecard (W19)',
+    designIntent:
+      'The 2026-09-02 seven-lane evaluation as a repeatable gate: deterministic probes against an ISOLATED instance built from the tree, every turn learning-exempt, a computed scorecard per run — the number the README and Status show is computed, never typed; target = every probe passing on three consecutive nightly runs.',
+    wiringState: 'LIVE',
+    evidence:
+      'bench/live-eval/run.mjs runs the L1–L7 probes (x-duin-bench on every turn, scorecard.json + summary.md per run) over scripts/live-eval-launch.mjs (own userData and ports; assertIsolated refuses the owner’s 8799/9333 and %APPDATA%\\DUIN; stop() kills by exe + userData, never by name). Entry points: npm run bench:live, and the nightly wrapper scripts/live-eval-nightly.mjs — dist/win-unpacked/DUIN.exe when present, else electron + out/, else --exe; refuses to run with nothing built (exit 2); writes runs/nightly/<stamp>/scorecard.json, latest.json and history.jsonl; --dry-run resolves without launching. LIVE here means: the suite and the nightly entry point exist and run from this tree (--help and --dry-run proven 2026-09-03); the scheduled task that invokes the nightly script is created on the operator’s machine by the coordinator, not in this repo. Server side: server.ts isBenchRequest (exec token required) gates both learn sites, taste capture, the turn-beat and governTick; agui-journal.ts openTurnJournal carries bench into TURN_START/TURN_END and GET /debug/turns shows it.',
+    detectors: [
+      'bench/live-eval/test/launcher.test.mjs',
+      'bench/live-eval/test/run-help.test.mjs',
+      'scripts/live-eval-nightly.test.mjs',
+      'roles.test',
+      'server-failover-bench.test',
+      'agui-journal.test'
+    ],
+    axis: 'intent',
+    byDesign: false,
+    gap: 'No nightly has run yet: the scheduled task does not exist on the machine and history.jsonl has zero samples, so the plan’s gate (three consecutive runs at target) is unmeasured. Creating the task is the coordinator’s step; the first three nights are the evidence.',
+    leverage: 'high'
   }
 ]

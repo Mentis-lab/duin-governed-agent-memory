@@ -13,7 +13,9 @@ vi.mock('../providers/registry', () => ({
   chatOnce: async () => {
     throw new Error('chatOnce called without test override')
   },
-  resolveModel: () => ({ contextWindow: 128_000 })
+  resolveModel: () => ({ contextWindow: 128_000 }),
+  // The stage roles as the policy would resolve them; stages are stubbed and ignore the id.
+  routeModel: () => 'mock-model'
 }))
 
 vi.mock('electron', () => ({

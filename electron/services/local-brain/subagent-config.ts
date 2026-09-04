@@ -64,8 +64,13 @@ export interface ResolvedSubagentConfig {
 }
 
 export interface SubagentResolveCtx {
-  /** The parent turn's model — used when the caller doesn't override `model`. */
-  defaultModelId: string
+  /** The parent turn's RESOLVED engine (the brain already routed the chat role, or the
+   *  operator's explicit pin) — a child inherits it unless the spawn names `model`.
+   *  Never a stored default: the parent had to resolve one to be running at all. */
+  parentModelId?: string
+  /** @deprecated Same meaning as `parentModelId`; kept only for the server.ts spawn call
+   *  site (lane A file). Remove once that call site passes `parentModelId`. */
+  defaultModelId?: string
   defaultEffort?: ReasoningEffort
   defaultMaxRounds?: number
 }
@@ -110,7 +115,11 @@ export function resolveSubagentConfig(args: Record<string, unknown>, ctx: Subage
   // REQUESTED but doesn't resolve" (a capability-MISS: typo, or a scoped type the registry lacks).
   const requested = typeof args.agent_type === 'string' && args.agent_type.trim() ? args.agent_type.trim() : null
   const type = requested ? BUILT_IN_SUBAGENT_TYPES.find((t) => t.id === requested) : undefined
-  const model = typeof args.model === 'string' && args.model.trim() ? args.model.trim() : ctx.defaultModelId
+  const parentModel = ctx.parentModelId ?? ctx.defaultModelId
+  const model = typeof args.model === 'string' && args.model.trim() ? args.model.trim() : parentModel
+  // PURE by contract: this resolver never routes a role itself. A caller with no resolved
+  // parent engine is a wiring bug (the parent could not be running a turn without one).
+  if (!model) throw new Error('resolveSubagentConfig: no parent engine and no explicit model')
   const effort = isEffort(args.reasoning_effort) ? args.reasoning_effort : ctx.defaultEffort ?? 'low'
   // LEAST-PRIVILEGE, DEFAULT-DENY (frontier per-run minimal-toolset):
   //  - a requested type that resolves (researcher/coder) → its curated allow-list;

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, rmSync } from 'fs'
+import { mkdtempSync, rmSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import type { ChannelRef } from '../channel-dispatch'
@@ -25,6 +25,15 @@ import {
   readConsolidatedIds,
   writeConsolidatedIds,
   __resetWatchers,
+  watchModelFailure,
+  normalizeModelFailurePayload,
+  normalizeLedgerRepeatPayload,
+  installModelFailureWatcher,
+  routeSpineEventToWatchers,
+  formatModelFailureTitle,
+  formatModelFailureBody,
+  FAILURE_NOTICE_DEDUP_MS,
+  type ModelFailureInput,
   type WatchersConfig,
   type WatchDeps,
   type ConfidentMissDeps,
@@ -33,6 +42,8 @@ import {
 } from './watchers'
 
 import { __setDispatcher, listDeliveries } from './delivery-queue'
+import { listNotices, __resetNotices } from './notices-store'
+import { __forceMemoryFallback, __resetEventLog, recordEvent, type EventRecord } from '../event-log'
 
 const REF: ChannelRef = { kind: 'telegram', target: 'chat-1' }
 
@@ -500,5 +511,230 @@ describe('never throws', () => {
     const r = await watchJobFailed({ automationId: 'A1', error: 'x' }, deps(onConfig(), bad))
     expect(r.emitted).toBe(false)
     expect(r.skipped).toBe('error')
+  })
+})
+
+// ──────────────────── (g) model failure → notice (cohesion P0, lane C) ────────────────────
+
+const FAIL: ModelFailureInput = {
+  role: 'extraction',
+  provider: 'deepseek',
+  modelId: 'deepseek-v4-flash',
+  reason: 'no-credit',
+  detail: '402 Insufficient Balance',
+  recovered: false
+}
+const providerLabel = (id: string): string => (id === 'deepseek' ? 'DeepSeek' : id)
+
+describe('watchModelFailure — a classified failure becomes a Needs-you notice', () => {
+  beforeEach(() => __resetNotices())
+
+  it('a hard failure notifies at once, naming role, provider, reason and the fix', async () => {
+    const { calls, fn } = spyEnqueue()
+    const r = await watchModelFailure(FAIL, { ...deps(onConfig(), fn), providerLabel })
+    expect(r.emitted).toBe(true)
+    expect(r.text).toBe('Extraction failed on DeepSeek: no credit')
+    const n = listNotices()[0]
+    expect(n.title).toBe('Extraction failed on DeepSeek: no credit')
+    expect(n.body).toContain('402 Insufficient Balance')
+    expect(n.body).toContain('deepseek-v4-flash did not answer and nothing took over.')
+    expect(n.body).toContain('DeepSeek has no credit')
+    expect(n.deepLink).toBe('duin://settings/models')
+    expect(n.severity).toBe('warning')
+    expect(n.dedupKey).toBe('failure:extraction|deepseek|no-credit')
+    expect(calls[0].meta).toMatchObject({ source: 'watch', kind: 'failure' })
+  })
+
+  it('a recovered background failure notifies only on the third inside an hour', async () => {
+    const { fn } = spyEnqueue()
+    const recovered: ModelFailureInput = { ...FAIL, recovered: true, nextModelId: 'qwen3.8-flash' }
+    const d = { ...deps(onConfig(), fn, 1_000_000), providerLabel }
+    expect((await watchModelFailure(recovered, d)).skipped).toBe('nothing')
+    expect((await watchModelFailure(recovered, { ...d, now: 1_000_000 + 60_000 })).skipped).toBe('nothing')
+    expect(listNotices()).toHaveLength(0)
+    const third = await watchModelFailure(recovered, { ...d, now: 1_000_000 + 120_000 })
+    expect(third.emitted).toBe(true)
+    expect(listNotices()[0].body).toContain('3 failures of this kind in the last hour')
+    expect(listNotices()[0].body).toContain('fell back to qwen3.8-flash')
+  })
+
+  it('failures older than an hour do not count toward the streak', async () => {
+    const { fn } = spyEnqueue()
+    const recovered: ModelFailureInput = { ...FAIL, recovered: true }
+    const d = { ...deps(onConfig(), fn, 1_000_000), providerLabel }
+    await watchModelFailure(recovered, d)
+    await watchModelFailure(recovered, { ...d, now: 1_000_000 + 1_000 })
+    const late = await watchModelFailure(recovered, { ...d, now: 1_000_000 + 61 * 60_000 })
+    expect(late.skipped).toBe('nothing')
+    expect(listNotices()).toHaveLength(0)
+  })
+
+  it('a recovered CHAT failure is never a notice; a hard chat failure is', async () => {
+    const { fn } = spyEnqueue()
+    const d = { ...deps(onConfig(), fn), providerLabel }
+    const chat: ModelFailureInput = { ...FAIL, role: 'chat', recovered: true }
+    for (let i = 0; i < 5; i++) expect((await watchModelFailure(chat, { ...d, now: 1_000_000 + i })).skipped).toBe('nothing')
+    const hard = await watchModelFailure({ ...chat, recovered: false }, d)
+    expect(hard.emitted).toBe(true)
+    expect(hard.text).toBe('Chat failed on DeepSeek: no credit')
+  })
+
+  it('the same (role, provider, reason) notifies once per 24 h, then again', async () => {
+    const { fn } = spyEnqueue()
+    const d = { ...deps(onConfig(), fn, 1_000_000), providerLabel }
+    expect((await watchModelFailure(FAIL, d)).emitted).toBe(true)
+    expect((await watchModelFailure(FAIL, { ...d, now: 1_000_000 + 60 * 60_000 })).skipped).toBe('debounced')
+    // A DIFFERENT reason on the same provider is a different fact and is not deduped.
+    expect((await watchModelFailure({ ...FAIL, reason: 'network' }, { ...d, now: 1_000_000 + 1 })).emitted).toBe(true)
+    expect((await watchModelFailure(FAIL, { ...d, now: 1_000_000 + FAILURE_NOTICE_DEDUP_MS + 1 })).emitted).toBe(true)
+  })
+
+  it('quiet hours file the notice without interrupting, and it counts as surfaced', async () => {
+    const { calls, fn } = spyEnqueue()
+    const now = 1_000_000
+    const hour = new Date(now).getHours()
+    const cfg = onConfig({ quietHours: { start: hour, end: (hour + 1) % 24 } })
+    const r = await watchModelFailure(FAIL, { ...deps(cfg, fn, now), providerLabel })
+    expect(r.skipped).toBe('quiet')
+    expect(calls).toHaveLength(0)
+    expect(listNotices()).toHaveLength(1)
+    expect((await watchModelFailure(FAIL, { ...deps(onConfig(), fn, now + 60_000), providerLabel })).skipped).toBe('debounced')
+  })
+
+  it('honours watchers.jobFail = false', async () => {
+    const { fn } = spyEnqueue()
+    const r = await watchModelFailure(FAIL, { ...deps(onConfig({ jobFail: false }), fn), providerLabel })
+    expect(r.skipped).toBe('disabled')
+    expect(listNotices()).toHaveLength(0)
+  })
+
+  it('an unknown provider (construction fingerprint) reads "keeps failing" and carries no key hint', () => {
+    const input: ModelFailureInput = { role: 'extraction', provider: 'unknown', reason: 'no-credit', recovered: false }
+    expect(formatModelFailureTitle(input, 'the model provider')).toBe('Extraction keeps failing: no credit')
+    expect(formatModelFailureBody(input, 'the model provider', 1)).toBe('')
+  })
+
+  it('never throws on garbage input', async () => {
+    const r = await watchModelFailure({} as never, { ...deps(onConfig(), spyEnqueue().fn), providerLabel })
+    expect(typeof r.emitted).toBe('boolean')
+  })
+})
+
+describe('normalizeModelFailurePayload — contract and legacy payloads', () => {
+  it('reads a roles.ts ModelFailurePayload verbatim', () => {
+    const n = normalizeModelFailurePayload({
+      role: 'jury',
+      provider: 'anthropic',
+      modelId: 'claude-haiku-4-5',
+      reason: 'model-access',
+      detail: '403 does not have access',
+      recovered: true,
+      nextModelId: 'kimi-k2.6'
+    })
+    expect(n).toEqual({
+      role: 'jury',
+      provider: 'anthropic',
+      modelId: 'claude-haiku-4-5',
+      reason: 'model-access',
+      detail: '403 does not have access',
+      recovered: true,
+      nextModelId: 'kimi-k2.6',
+      legacy: false
+    })
+  })
+
+  it('maps a legacy background payload: job label + purpose other + 402 → extraction / no-credit / hard fail', () => {
+    const n = normalizeModelFailurePayload({
+      provider: 'deepseek',
+      model: 'deepseek-v4-flash',
+      role: 'operator-learning',
+      purpose: 'other',
+      httpStatus: 402,
+      errorPreview: '402 Insufficient Balance'
+    })
+    expect(n).toMatchObject({ role: 'extraction', provider: 'deepseek', modelId: 'deepseek-v4-flash', reason: 'no-credit', recovered: false, legacy: true })
+    expect(n.detail).toBe('402 Insufficient Balance')
+  })
+
+  it('maps legacy jury / title / main-turn payloads to their roles', () => {
+    expect(normalizeModelFailurePayload({ role: 'operator-govern-jury', purpose: 'other' }).role).toBe('jury')
+    expect(normalizeModelFailurePayload({ purpose: 'title' }).role).toBe('title')
+    expect(normalizeModelFailurePayload({ purpose: 'main' }).role).toBe('chat')
+    expect(normalizeModelFailurePayload(undefined)).toMatchObject({ role: 'chat', provider: 'unknown', reason: 'unknown', recovered: false })
+  })
+
+  it('maps failure_ledger.repeated construct fingerprints and ignores the rest', () => {
+    const n = normalizeLedgerRepeatPayload({ fingerprint: 'construct:extraction:quota', kind: 'runtime_failed', count: 4 })
+    expect(n).toMatchObject({ role: 'extraction', provider: 'unknown', reason: 'no-credit', recovered: false, legacy: true })
+    expect(n?.detail).toContain('4 times')
+    expect(normalizeLedgerRepeatPayload({ fingerprint: 'proof:abc', count: 2 })).toBeNull()
+    expect(normalizeLedgerRepeatPayload(undefined)).toBeNull()
+  })
+})
+
+describe('installModelFailureWatcher — the spine feeds the watcher', () => {
+  beforeEach(() => {
+    __resetEventLog()
+    __forceMemoryFallback()
+    __resetNotices()
+  })
+
+  it('a model.request.failed recorded on the spine is a notice in the same tick', async () => {
+    const { fn } = spyEnqueue()
+    installModelFailureWatcher({ ...deps(onConfig(), fn), providerLabel })
+    recordEvent({
+      type: 'model.request.failed',
+      actorKind: 'model',
+      payload: { role: 'jury', provider: 'anthropic', modelId: 'claude-haiku-4-5', reason: 'no-credit', recovered: false }
+    })
+    expect(listNotices()).toHaveLength(1)
+    expect(listNotices()[0].title).toBe('Jury failed on anthropic: no credit')
+    await new Promise((r) => setTimeout(r, 0))
+  })
+
+  it('installing twice keeps one subscription; reset detaches it', () => {
+    const { fn } = spyEnqueue()
+    const off1 = installModelFailureWatcher({ ...deps(onConfig(), fn), providerLabel })
+    const off2 = installModelFailureWatcher({ ...deps(onConfig(), fn), providerLabel })
+    expect(off1).toBe(off2)
+    __resetWatchers()
+    recordEvent({ type: 'model.request.failed', actorKind: 'model', payload: { role: 'jury', provider: 'x', reason: 'network', recovered: false } })
+    expect(listNotices()).toHaveLength(0)
+  })
+
+  it('routeSpineEventToWatchers ignores unrelated events', () => {
+    const ev: EventRecord = {
+      id: 'e1',
+      type: 'chat.error',
+      createdAt: 1,
+      severity: 'error',
+      actorKind: 'system',
+      payload: {},
+      redaction: 'metadata'
+    }
+    expect(routeSpineEventToWatchers(ev, {})).toBeNull()
+  })
+})
+
+// ── Boot wiring (P0 audit C1, 2026-09-03) ──
+// The subscription used to be a module-load side effect at the bottom of watchers.ts, so whether
+// the watcher was live depended on which module imported the file first. It is now an explicit
+// call in electron/main.ts. These lock that: the call exists, it precedes startLocalBrain (the
+// first place a model call can fail), and watchers.ts no longer installs itself.
+describe('installModelFailureWatcher — installed by an explicit boot call, not at module load', () => {
+  const mainSrc = readFileSync(join(__dirname, '..', '..', 'main.ts'), 'utf-8')
+  const selfSrc = readFileSync(join(__dirname, 'watchers.ts'), 'utf-8')
+
+  it('electron/main.ts imports and calls installModelFailureWatcher() before startLocalBrain()', () => {
+    expect(mainSrc).toMatch(/import \{ installModelFailureWatcher \} from '\.\/services\/proactive\/watchers'/)
+    const call = mainSrc.search(/^\s*installModelFailureWatcher\(\)/m)
+    const brain = mainSrc.indexOf('startLocalBrain().catch')
+    expect(call).toBeGreaterThan(-1)
+    expect(brain).toBeGreaterThan(-1)
+    expect(call).toBeLessThan(brain)
+  })
+
+  it('watchers.ts has no module-load self-install', () => {
+    expect(selfSrc).not.toMatch(/^\s*installModelFailureWatcher\(/m)
   })
 })

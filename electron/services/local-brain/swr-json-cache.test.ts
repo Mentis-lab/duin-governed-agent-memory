@@ -44,11 +44,13 @@ function makeCache(
     readDisk?: () => SwrEntry | null
     writeDisk?: (e: SwrEntry) => void
     deleteDisk?: () => void
+    minRebuildIntervalMs?: number
   } = {}
 ): { cache: SwrJsonCache; run: () => number; pending: () => number } {
   const sched = manualScheduler()
   const cache = new SwrJsonCache({
     revalidateAfterMs: REVALIDATE_MS,
+    minRebuildIntervalMs: opts.minRebuildIntervalMs,
     now: opts.now ?? ((): number => NOW),
     schedule: sched.schedule,
     readDisk: opts.readDisk,
@@ -295,5 +297,85 @@ describe('SwrJsonCache', () => {
       }).cache
       expect(exploding.get('k1', () => '{"v":1}').json).toBe('{"v":1}')
     })
+  })
+})
+
+// ── The rebuild floor ────────────────────────────────────────────────────────────
+//
+// What this guards: the brain-graph key folds in `.duin/_state`'s mtime, so any
+// channel-ingest write changes it and the next request rebuilds. Measured on the live
+// vault 2026-09-02: three rebuilds in 40 seconds, 2.8-3.5s of blocked main thread each.
+// Serving stale is the cache's whole purpose; rebuilding at the key's rate was not.
+//
+// POWER CONTROL: delete the `floor > 0 && ...` early return in rebuild() and
+// "a second key change inside the floor does not schedule another rebuild" fails.
+describe('SwrJsonCache — rebuild floor', () => {
+  const FLOOR = 60_000
+
+  it('a second key change inside the floor does not schedule another rebuild', () => {
+    let clock = NOW
+    const { cache, run, pending } = makeCache({
+      minRebuildIntervalMs: FLOOR,
+      now: () => clock
+    })
+    cache.get('k1', () => '{"v":1}') // blocking first build; starts the floor clock
+    expect(run()).toBe(0)
+
+    clock += 1_000
+    cache.get('k2', () => '{"v":2}')
+    expect(pending(), 'inside the floor, a key change must not schedule').toBe(0)
+
+    clock += 5_000
+    cache.get('k3', () => '{"v":3}')
+    expect(pending()).toBe(0)
+  })
+
+  it('serves the previous entry instantly while the floor holds — stale, never blocked', () => {
+    let clock = NOW
+    const { cache } = makeCache({ minRebuildIntervalMs: FLOOR, now: () => clock })
+    cache.get('k1', () => '{"v":1}')
+
+    clock += 1_000
+    const r = cache.get('k2', () => '{"v":2}')
+    expect(r.json, 'the point of the floor is that the request is still answered').toBe('{"v":1}')
+    expect(r.servedKey).toBe('k1')
+    expect(r.stale).toBe(true)
+    expect(r.blocked, 'a suppressed rebuild must never turn into a blocking build').toBe(false)
+  })
+
+  it('the first request after the floor lapses rebuilds — suppressed is not lost', () => {
+    let clock = NOW
+    const { cache, run } = makeCache({ minRebuildIntervalMs: FLOOR, now: () => clock })
+    cache.get('k1', () => '{"v":1}')
+
+    clock += 1_000
+    cache.get('k2', () => '{"v":2}')
+
+    clock += FLOOR
+    cache.get('k3', () => '{"v":3}')
+    expect(run(), 'content must still converge once the floor lapses').toBe(1)
+    expect(cache.get('k3', () => '{"v":9}').json).toBe('{"v":3}')
+  })
+
+  it('a scope change is not held off by a floor earned under the previous scope', () => {
+    // Ownership, not freshness: serving vault A's bytes to vault B is a correctness
+    // failure, so invalidate() must clear the floor along with the entry.
+    let clock = NOW
+    const { cache } = makeCache({ minRebuildIntervalMs: FLOOR, now: () => clock })
+    cache.get('k1', () => '{"v":1}', { scope: '/vault/a' })
+
+    clock += 1_000
+    const r = cache.get('k1', () => '{"v":2}', { scope: '/vault/b' })
+    expect(r.blocked, 'a new scope blocks on its own first build, floor or not').toBe(true)
+    expect(r.json).toBe('{"v":2}')
+  })
+
+  it('without the option every key change may still schedule — the floor is opt-in', () => {
+    let clock = NOW
+    const { cache, run } = makeCache({ now: () => clock })
+    cache.get('k1', () => '{"v":1}')
+    clock += 1_000
+    cache.get('k2', () => '{"v":2}')
+    expect(run(), 'omitting minRebuildIntervalMs must preserve the original behaviour').toBe(1)
   })
 })

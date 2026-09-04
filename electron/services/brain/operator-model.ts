@@ -181,6 +181,11 @@ export interface GovernProvenance {
    *  on rows recorded before the field existed. */
   earned?: number
   observed?: number
+  /** W4 (P0 model plane, 2026-09-02) — how many jurors ANSWERED: 'none' when the panel could not
+   *  be seated or nobody replied (juryModelId null, crossModel false), a count when a verdict
+   *  stands. Recorded from votes, never inferred from the roster (property 3). Absent on rows
+   *  recorded before the field existed. */
+  jury?: 'none' | number
 }
 
 /** A verified reasoning-trace DEPENDS_ON edge (Stage 1). A fold-rule depends_on its input claims; the

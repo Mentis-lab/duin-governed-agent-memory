@@ -188,3 +188,71 @@ export function focusNeighbourhood(
   }
   return seen
 }
+
+// ── SALIENCE BUDGET (T2) ──────────────────────────────────────────────────────────
+//
+// cullForLod is a FRACTION: it drops two link families and the degree-0/1 leaves, and on the
+// live map that kept 53% (3,376 of 6,320). The drawn set therefore still grew with the vault,
+// which is the growth trajectory the lag plan named. A budget is what every large-graph tool
+// converges on (Neo4j's default cap, Obsidian's filters, "filter early"): a fixed number of
+// nodes on screen, chosen by salience, with the operator able to overrule it ("Show all nodes").
+//
+// Salience is the caller's judgement (connectedness tempered by recency in the shell, the same
+// two signals the home digest ranks by); this function only spends the budget: the skeleton
+// first (never culled), then the most salient of the rest, then a one-hop rescue so nothing
+// kept is drawn unattached when the source graph had something to attach it to.
+
+export type BudgetOptions = {
+  /** Nodes to keep. The skeleton is kept even when it alone exceeds this. */
+  budget: number
+  /** Kept unconditionally: the structure the operator navigates by. */
+  isRoleKept: (n: LodNode) => boolean
+  /** Higher = kept first. Ties break by id, so the result is deterministic. */
+  salienceOf: (n: LodNode) => number
+}
+
+export function budgetBySalience<N extends LodNode, L extends LodLink>(
+  nodes: N[],
+  links: L[],
+  o: BudgetOptions
+): { nodes: N[]; links: L[] } {
+  if (nodes.length <= o.budget) return { nodes, links }
+  const keep = new Set<string>()
+  const rest: { n: N; s: number }[] = []
+  for (const n of nodes) {
+    if (o.isRoleKept(n)) keep.add(n.id)
+    else rest.push({ n, s: o.salienceOf(n) })
+  }
+  rest.sort((a, b) => b.s - a.s || (a.n.id < b.n.id ? -1 : a.n.id > b.n.id ? 1 : 0))
+  for (const r of rest) {
+    if (keep.size >= o.budget) break
+    keep.add(r.n.id)
+  }
+
+  // Rescue: a kept node whose every neighbour fell under the budget would be drawn floating.
+  // Re-admit its most salient neighbour and the edge to it. One hop, no cascade, and it is the
+  // only way the result exceeds the budget.
+  const salience = new Map<string, number>()
+  for (const n of nodes) salience.set(n.id, o.isRoleKept(n) ? Infinity : o.salienceOf(n))
+  const adj = new Map<string, { via: L; other: string }[]>()
+  for (const l of links) {
+    const a = idOf(l.source), b = idOf(l.target)
+    if (a === b) continue
+    let la = adj.get(a); if (!la) { la = []; adj.set(a, la) } la.push({ via: l, other: b })
+    let lb = adj.get(b); if (!lb) { lb = []; adj.set(b, lb) } lb.push({ via: l, other: a })
+  }
+  const rescued: L[] = []
+  for (const id of Array.from(keep)) {
+    const cands = adj.get(id)
+    if (!cands || cands.length === 0) continue
+    if (cands.some((c) => keep.has(c.other))) continue
+    let best = cands[0]
+    for (const c of cands) if ((salience.get(c.other) ?? 0) > (salience.get(best.other) ?? 0)) best = c
+    keep.add(best.other)
+    rescued.push(best.via)
+  }
+
+  const outLinks = links.filter((l) => keep.has(idOf(l.source)) && keep.has(idOf(l.target)))
+  for (const l of rescued) if (!outLinks.includes(l)) outLinks.push(l)
+  return { nodes: nodes.filter((n) => keep.has(n.id)), links: outLinks }
+}

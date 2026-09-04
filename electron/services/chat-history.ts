@@ -24,15 +24,22 @@ export interface StoredChatMessage {
   contentParts?: VisionContentPart[]
 }
 
-const DEEPSEEK_V4_MODELS = new Set(['deepseek-v4-pro', 'deepseek-v4-flash'])
-
 /** How many of the most recent image-bearing turns are replayed on the raw path.
  *  Mirrors HISTORY_MAX_IMAGE_MSGS on the brain path — same reasoning, same number. */
 const MAX_REPLAYED_IMAGE_TURNS = 2
 
+/** DeepSeek's chat API carries prior-turn thinking in a dedicated `reasoning_content`
+ *  field on assistant messages; every other provider gets it inline as `<think>`.
+ *  Derived from where the request is going (the resolved descriptor's provider), not
+ *  from a hand-kept id list — a retired alias or a custom DeepSeek model behaves like
+ *  the catalog rows it is sent as. */
 function modelNeedsReasoningContentField(modelId?: string): boolean {
   if (!modelId) return false
-  return DEEPSEEK_V4_MODELS.has(modelId)
+  try {
+    return resolveModel(modelId).provider === 'deepseek'
+  } catch {
+    return false
+  }
 }
 
 /** Reasoning Audit Phase R8 — read the `includePastReasoningInContext`

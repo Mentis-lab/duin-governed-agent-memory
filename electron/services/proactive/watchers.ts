@@ -22,6 +22,11 @@
 //   • Never throws. Every entry point is best-effort: a bad config, a formatting
 //     edge, or an enqueue failure resolves to {emitted:false} — a watcher can never
 //     crash the loop that called it.
+//   • (g) model failures come in from the EVENT SPINE, not a caller: the watcher subscribes
+//     to event-log's listener registry at module load (see the bottom of this file), so a
+//     `model.request.failed` for a background role, or a repeated construction failure, is a
+//     Needs-you notice within the same tick — the gap the 2026-09-02 evaluation found
+//     (L7 F2: 23 failed cloud calls in a week, inbox empty since 08-21).
 //
 // This module carries NO exec authority: it only forwards text through the delivery
 // queue, which forwards through channel-dispatch. It cannot approve, write, or run
@@ -35,8 +40,23 @@ import { enqueue, type DeliveryReceipt } from './delivery-queue'
 import { recordNotice } from './notices-store'
 import { readSettings } from '../settings-helper'
 import { messageOf } from '../guarded'
+import { onEventRecorded, type EventRecord } from '../event-log'
+import { providerFixHint, type ProviderHealthReason, type RouteTask } from '../providers/roles'
+import {
+  BACKGROUND_ROLES,
+  isContractRole,
+  reasonFromModelEventPayload,
+  roleFromModelEventPayload
+} from '../cost-ledger'
 
-export type WatchKind = 'forecast' | 'calibration' | 'task' | 'jobFail' | 'forecastOwed' | 'confidentMiss'
+export type WatchKind =
+  | 'forecast'
+  | 'calibration'
+  | 'task'
+  | 'jobFail'
+  | 'forecastOwed'
+  | 'confidentMiss'
+  | 'failure'
 
 /** Quiet-hours window in local-clock HOURS [0..23). start===end disables it. A
  *  window may wrap midnight (e.g. {start:22,end:7}). */
@@ -161,10 +181,14 @@ const lastEmit = new Map<string, number>()
  *  (a fresh process re-nudges once — the fail-safe direction), keyed by vault dir. */
 const lastOwedSig = new Map<string, string>()
 
-/** Test/introspection: clear the coalesce + owed-signature memory. */
+/** Test/introspection: clear the coalesce + owed-signature memory, the failure streaks and
+ *  the 24 h failure dedup, and detach the spine listener (tests re-install it explicitly). */
 export function __resetWatchers(): void {
   lastEmit.clear()
   lastOwedSig.clear()
+  failureStreaks.clear()
+  lastFailureNotice.clear()
+  __uninstallModelFailureWatcher()
 }
 
 /** True if a notice for `key` was emitted within `windowMs` before `now`. PURE-read. */
@@ -409,7 +433,8 @@ const NOTICE_SEVERITY: Record<WatchKind, 'info' | 'warning' | 'error'> = {
   task: 'warning',
   jobFail: 'error',
   forecastOwed: 'warning',
-  confidentMiss: 'warning'
+  confidentMiss: 'warning',
+  failure: 'warning'
 }
 
 /** What the desktop notification is titled. Every proactive message used to say only
@@ -420,7 +445,8 @@ const NOTICE_TITLE: Record<WatchKind, string> = {
   task: 'High-priority task',
   jobFail: 'A scheduled job failed',
   forecastOwed: 'Forecasts are waiting to be scored',
-  confidentMiss: 'A confident forecast missed'
+  confidentMiss: 'A confident forecast missed',
+  failure: 'A model call failed'
 }
 
 /** Where clicking the row should land. A notice that cannot be followed anywhere is
@@ -438,7 +464,9 @@ const NOTICE_DEEP_LINK: Record<WatchKind, string> = {
   task: 'duin://tool/homeStatus',
   jobFail: 'duin://tool/automations',
   forecastOwed: 'duin://tool/homeStatus',
-  confidentMiss: 'duin://tool/homeStatus'
+  confidentMiss: 'duin://tool/homeStatus',
+  // The provider order / keys live in Settings → Models; deep-link.ts allow-lists the tab.
+  failure: 'duin://settings/models'
 }
 
 /**
@@ -452,7 +480,8 @@ async function dispatchNotice(
   dedupKey: string,
   text: string | null,
   rt: WatchersRuntime,
-  deps: WatchDeps
+  deps: WatchDeps,
+  extra: { body?: string } = {}
 ): Promise<WatchResult> {
   try {
     if (!enabled) return { emitted: false, skipped: 'disabled' }
@@ -468,6 +497,7 @@ async function dispatchNotice(
       kind: 'watch',
       severity: NOTICE_SEVERITY[kind],
       title: text,
+      body: extra.body,
       deepLink: NOTICE_DEEP_LINK[kind],
       dedupKey: key,
       now
@@ -620,3 +650,264 @@ export async function watchConfidentMiss(
   }
   return res
 }
+
+// ──────────────────── (g) model failure → notice ────────────────────
+//
+// THE GAP. `watchJobFailed` had two producers (automation runs, the extraction breaker), so with
+// zero automations and construction frozen the only enabled watcher had no possible input while
+// the govern jury burned 12 doomed cloud calls a day and the default chat model died on every
+// send (2026-09-02: L7 F1/F2, L5 F2, synthesis S9). The router (lane A) now classifies every
+// provider error into `model.request.failed` with a `ModelFailurePayload` (roles.ts); this
+// watcher turns that event — and `failure_ledger.repeated` for construction fingerprints — into
+// ONE notice that names the role, the provider, the reason and the fix.
+//
+// RULES (all pure below, all tested):
+//   • A HARD failure (`recovered === false`: the turn or job died) notifies at once, for every
+//     role. A recovered failure (the router walked to another candidate) notifies only for a
+//     BACKGROUND role and only on the third occurrence of the same (role, provider, reason)
+//     inside an hour — one flaky call is not news, a provider that fails every tick is.
+//   • One notice per (role, provider, reason) per 24 h. Inside that window the same failure is
+//     silent here; the ledger and /debug/cost keep the count.
+//   • Then the ordinary gate: `watchers.jobFail` (default ON), quiet hours (recorded, not
+//     interrupted), the coalesce debounce.
+//   • Legacy payloads (written before the contract) are read through cost-ledger.ts's mapping:
+//     the job label / purpose picks the role, the HTTP status or error text picks the reason,
+//     and a missing `recovered` means the call hard-failed (no failover existed then).
+
+export const FAILURE_STREAK_WINDOW_MS = 60 * 60_000
+export const FAILURE_STREAK_THRESHOLD = 3
+export const FAILURE_NOTICE_DEDUP_MS = 24 * 60 * 60_000
+const DETAIL_MAX_CHARS = 240
+
+/** The watcher's normalized view of one failure — the contract payload, or a legacy one mapped. */
+export interface ModelFailureInput {
+  role: RouteTask
+  provider: string
+  modelId?: string
+  reason: ProviderHealthReason
+  detail?: string
+  /** true when the router fell back to another candidate; false when the turn/job hard-failed. */
+  recovered: boolean
+  nextModelId?: string
+  /** The payload predated the router contract and role/reason were inferred. */
+  legacy?: boolean
+}
+
+export interface ModelFailureDeps extends WatchDeps {
+  /** Provider id → display label. Default: the registry's PROVIDERS table, primed lazily. */
+  providerLabel?: (provider: string) => string
+}
+
+const REASON_LABEL: Record<ProviderHealthReason, string> = {
+  ok: 'ok',
+  'no-key': 'no API key',
+  'no-credit': 'no credit',
+  unauthorized: 'key rejected',
+  'model-access': 'no access to the model',
+  'rate-limit': 'rate-limited',
+  'not-found': 'model not found',
+  network: 'unreachable',
+  unknown: 'unclassified error'
+}
+
+/** PURE. The operator-facing word for a classified reason. */
+export function reasonLabel(reason: ProviderHealthReason): string {
+  return REASON_LABEL[reason] ?? REASON_LABEL.unknown
+}
+
+function roleLabel(role: RouteTask): string {
+  return role.charAt(0).toUpperCase() + role.slice(1)
+}
+
+/** PURE. The 24 h dedup / streak key. */
+export function failureFingerprint(input: Pick<ModelFailureInput, 'role' | 'provider' | 'reason'>): string {
+  return `${input.role}|${input.provider}|${input.reason}`
+}
+
+/** PURE. "Extraction failed on DeepSeek: no credit". An unknown provider (a construction
+ *  fingerprint carries none) reads "Extraction keeps failing: …" instead of naming a blank. */
+export function formatModelFailureTitle(input: ModelFailureInput, providerLabel: string): string {
+  const role = roleLabel(input.role)
+  if (input.provider === 'unknown') return `${role} keeps failing: ${reasonLabel(input.reason)}`
+  return `${role} failed on ${providerLabel}: ${reasonLabel(input.reason)}`
+}
+
+/** PURE. The detail line + what happened + the fix hint (roles.ts, one source for every surface). */
+export function formatModelFailureBody(input: ModelFailureInput, providerLabel: string, streak: number): string {
+  const parts: string[] = []
+  const detail = (input.detail ?? '').trim()
+  if (detail) parts.push(detail.length > DETAIL_MAX_CHARS ? detail.slice(0, DETAIL_MAX_CHARS) + '…' : detail)
+  if (input.recovered) {
+    parts.push(
+      `${streak} failures of this kind in the last hour; DUIN fell back to ${input.nextModelId ?? 'another model'} each time.`
+    )
+  } else if (input.modelId) {
+    parts.push(`${input.modelId} did not answer and nothing took over.`)
+  }
+  const hint = input.provider === 'unknown' ? '' : providerFixHint(input.reason, providerLabel)
+  if (hint) parts.push(hint)
+  return parts.join(' ')
+}
+
+// Provider labels come from the registry's PROVIDERS table — the one place they are defined —
+// but registry.ts is a 3,000-line module with provider clients behind it, so it is primed with
+// a dynamic import on the FIRST model event the spine carries (a failure is always preceded by
+// its own `model.request.started`) rather than imported statically here. If it cannot load
+// (a bare test runtime) the id is title-cased.
+let providerLabels: Record<string, string> | null = null
+let providerLabelPrime: Promise<void> | null = null
+
+export function primeProviderLabels(): Promise<void> {
+  if (!providerLabelPrime) {
+    providerLabelPrime = import('../providers/registry')
+      .then((m) => {
+        providerLabels = Object.fromEntries(Object.values(m.PROVIDERS).map((p) => [p.id, p.label]))
+      })
+      .catch(() => {
+        providerLabelPrime = null
+      })
+  }
+  return providerLabelPrime
+}
+
+function defaultProviderLabel(id: string): string {
+  const known = providerLabels?.[id]
+  if (known) return known
+  if (!id || id === 'unknown') return 'the model provider'
+  return id.charAt(0).toUpperCase() + id.slice(1)
+}
+
+async function resolvedProviderLabel(id: string): Promise<string> {
+  await primeProviderLabels()
+  return defaultProviderLabel(id)
+}
+
+const failureStreaks = new Map<string, number[]>()
+const lastFailureNotice = new Map<string, number>()
+
+function bounded(s: string | undefined): string | undefined {
+  if (!s) return undefined
+  const t = s.trim()
+  return t ? t : undefined
+}
+
+/** PURE. Read a `model.request.failed` payload — contract (roles.ts ModelFailurePayload) or legacy. */
+export function normalizeModelFailurePayload(payload: Record<string, unknown> | undefined): ModelFailureInput {
+  const p = payload ?? {}
+  const legacy = !isContractRole(p.role) || typeof p.recovered !== 'boolean'
+  const modelId = typeof p.modelId === 'string' ? p.modelId : typeof p.model === 'string' ? p.model : undefined
+  return {
+    role: roleFromModelEventPayload(p),
+    provider: typeof p.provider === 'string' && p.provider ? p.provider : 'unknown',
+    ...(modelId ? { modelId } : {}),
+    reason: reasonFromModelEventPayload(p),
+    detail: bounded(typeof p.detail === 'string' ? p.detail : typeof p.errorPreview === 'string' ? p.errorPreview : undefined),
+    recovered: p.recovered === true,
+    ...(typeof p.nextModelId === 'string' ? { nextModelId: p.nextModelId } : {}),
+    legacy
+  }
+}
+
+/** PURE. A `failure_ledger.repeated` payload whose fingerprint is `construct:<stage>:<reason>`
+ *  (brain/construct.ts) becomes an extraction hard-failure; any other fingerprint is null. */
+export function normalizeLedgerRepeatPayload(payload: Record<string, unknown> | undefined): ModelFailureInput | null {
+  const p = payload ?? {}
+  const fp = typeof p.fingerprint === 'string' ? p.fingerprint : ''
+  if (!fp.startsWith('construct:')) return null
+  const [, stage = 'extraction', ...rest] = fp.split(':')
+  const reasonToken = rest.join(':') || 'unknown'
+  const count = typeof p.count === 'number' && Number.isFinite(p.count) ? p.count : 0
+  return {
+    role: stage === 'extraction' ? 'extraction' : roleFromModelEventPayload({ role: stage, purpose: 'other' }),
+    provider: 'unknown',
+    reason: reasonFromModelEventPayload({ errorPreview: reasonToken }),
+    detail: `Brain construction batches keep failing (${reasonToken}${count ? `, ${count} times` : ''}). Background builds are paused until a build succeeds or you run Rebuild.`,
+    recovered: false,
+    legacy: true
+  }
+}
+
+/**
+ * (g) One classified model failure. Streak + 24 h dedup are decided here; everything after
+ * (enabled flag, quiet hours, coalesce, record, deliver) is the shared gate. Never throws.
+ */
+export async function watchModelFailure(
+  input: ModelFailureInput,
+  deps: ModelFailureDeps = {}
+): Promise<WatchResult> {
+  try {
+    const rt = resolveRuntime(deps)
+    const now = deps.now ?? Date.now()
+    const fp = failureFingerprint(input)
+    if (failureStreaks.size > 256) failureStreaks.clear()
+    const recent = (failureStreaks.get(fp) ?? []).filter((t) => now - t < FAILURE_STREAK_WINDOW_MS)
+    recent.push(now)
+    failureStreaks.set(fp, recent)
+    const hardFail = input.recovered === false
+    const eligible = hardFail || (BACKGROUND_ROLES.has(input.role) && recent.length >= FAILURE_STREAK_THRESHOLD)
+    if (!eligible) return { emitted: false, skipped: 'nothing' }
+    const last = lastFailureNotice.get(fp)
+    if (last !== undefined && now - last < FAILURE_NOTICE_DEDUP_MS) return { emitted: false, skipped: 'debounced' }
+    const label = deps.providerLabel ? deps.providerLabel(input.provider) : await resolvedProviderLabel(input.provider)
+    const res = await dispatchNotice(
+      'failure',
+      rt.config.jobFail,
+      fp,
+      formatModelFailureTitle(input, label),
+      rt,
+      deps,
+      { body: formatModelFailureBody(input, label, recent.length) }
+    )
+    // Quiet hours RECORD the notice and skip only the interruption, so it counts as surfaced.
+    if (res.emitted || res.skipped === 'quiet') lastFailureNotice.set(fp, now)
+    return res
+  } catch (e) {
+    console.debug('[watchers] model-failure best-effort:', messageOf(e))
+    return { emitted: false, skipped: 'error' }
+  }
+}
+
+/** The spine → watcher adapter. Returns null for every event type this file does not read. */
+export function routeSpineEventToWatchers(
+  ev: EventRecord,
+  deps: ModelFailureDeps = {}
+): Promise<WatchResult> | null {
+  if (ev.type.startsWith('model.request.') && !deps.providerLabel) void primeProviderLabels()
+  if (ev.type === 'model.request.failed') return watchModelFailure(normalizeModelFailurePayload(ev.payload), deps)
+  if (ev.type === 'failure_ledger.repeated') {
+    const input = normalizeLedgerRepeatPayload(ev.payload)
+    return input ? watchModelFailure(input, deps) : null
+  }
+  return null
+}
+
+let spineUnsubscribe: (() => void) | null = null
+
+/**
+ * Subscribe the failure watcher to the event spine. Idempotent: a second call returns the
+ * existing unsubscribe and keeps the first call's deps. Installed by an EXPLICIT call in
+ * electron/main.ts (app.whenReady, right after the log sink is wired and before startLocalBrain —
+ * the first place a model call can fail). Until 2026-09-03 this module installed itself at load,
+ * which made the wiring depend on which module happened to import the file first — the "built
+ * but not wired" class the P0 audit exists to remove. watchers.test.ts locks the boot call.
+ */
+export function installModelFailureWatcher(deps: ModelFailureDeps = {}): () => void {
+  if (!spineUnsubscribe) {
+    const off = onEventRecorded((ev) => {
+      void routeSpineEventToWatchers(ev, deps)
+    })
+    spineUnsubscribe = () => {
+      off()
+      spineUnsubscribe = null
+    }
+  }
+  return spineUnsubscribe
+}
+
+export function __uninstallModelFailureWatcher(): void {
+  spineUnsubscribe?.()
+}
+
+// No module-load side effects here: the spine subscription is an explicit boot call in
+// electron/main.ts (installModelFailureWatcher). The automations-runner suites that replace
+// ./event-log with a partial mock load this file without touching the listener registry.

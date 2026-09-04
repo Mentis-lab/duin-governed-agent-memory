@@ -1,6 +1,6 @@
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions'
 import { chatOnce } from '../providers/registry'
-import { readDeepResearchSettings } from './adapter-cascade'
+import { researchModel } from './adapter-cascade'
 import type { DepthTier } from './intent'
 
 // Query planner — expands a research question into 3–8 sub-queries that
@@ -20,8 +20,6 @@ export interface PlannedQuery {
 export interface PlanResult {
   queries: PlannedQuery[]
 }
-
-const DEFAULT_PLANNER_MODEL = 'deepseek-v4-flash'
 
 const DEPTH_TARGET_COUNT: Record<DepthTier, number> = {
   quick: 3,
@@ -66,7 +64,8 @@ export async function planQueries(
   deps: PlanQueriesDeps = {}
 ): Promise<PlanResult> {
   const target = DEPTH_TARGET_COUNT[depth]
-  const model = modelOverride ?? readDeepResearchSettings().classifierModel ?? DEFAULT_PLANNER_MODEL
+  const model = researchModel('classifier', modelOverride)
+  if (!model) throw new Error('Planner has no usable model for the extraction role (add a provider key or fix the provider order).')
   // R2: chatOnce returns {content, reasoning?}; planner consumes body only.
   const call = deps.callLlm ?? ((m, mod) => chatOnce(m, mod).then((r) => r.content))
 

@@ -1,12 +1,11 @@
 // Snip Phase K10: renderer-facing IPC for the SnipSettings dashboard
 // (K11) and the K12 Discover panel.
 //
-// Eight channels:
+// Six channels (the master switch is an ordinary settings key written through
+// settings:set; the verbose flag was removed because nothing ever read it):
 //   snip:stats           → SnipStats     (totals + sparkline + top-5)
 //   snip:recent          → recent rows
 //   snip:listFilters     → filter library with source + path
-//   snip:setEnabled      → flip the master switch (and update the cache)
-//   snip:setVerbose      → flip the verbose flag
 //   snip:reloadFilters   → force a YAML re-scan
 //   snip:discover        → top-K unfiltered commands (rtk discover)
 //   snip:clearHistory    → wipe both tracking tables
@@ -16,7 +15,7 @@
 // (`{success:true,data} | {success:false,error}`).
 
 import { ipcMain, shell } from 'electron'
-import { readSettings, patchSettings } from '../services/settings-helper'
+import { readSettings } from '../services/settings-helper'
 import {
   getStats,
   getRecent,
@@ -61,26 +60,6 @@ export function registerSnipHandlers(): void {
       }
     }
   )
-
-  ipcMain.handle('snip:setEnabled', async (_event, payload?: { enabled?: boolean }) => {
-    try {
-      const enabled = payload?.enabled === true
-      patchSettings({ snipEnabled: enabled })
-      return { success: true, data: { enabled } }
-    } catch (err) {
-      return { success: false, error: friendly(err, 'snip:setEnabled failed') }
-    }
-  })
-
-  ipcMain.handle('snip:setVerbose', async (_event, payload?: { verbose?: boolean }) => {
-    try {
-      const verbose = payload?.verbose === true
-      patchSettings({ snipVerbose: verbose })
-      return { success: true, data: { verbose } }
-    } catch (err) {
-      return { success: false, error: friendly(err, 'snip:setVerbose failed') }
-    }
-  })
 
   ipcMain.handle('snip:reloadFilters', async () => {
     try {

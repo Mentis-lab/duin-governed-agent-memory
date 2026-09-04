@@ -14,7 +14,7 @@
 // governDecision is PURE + unit-tested; runGovernPass applies it via an injected jury.
 import { readFileSync, existsSync } from 'fs'
 import { join } from 'path'
-import { chatOnce, routeModel, routeDistinctModels, getProviderForModel } from '../providers/registry'
+import { chatOnce, routeModel, resolveJury, getProviderForModel } from '../providers/registry'
 import { firewallClear } from '../governance/confidential-firewall'
 import { recordNotice, resolveByActionId } from '../proactive/notices-store'
 import {
@@ -25,6 +25,7 @@ import {
   parseOperatorFacts,
   recordGovernProvenance,
   type OperatorFact,
+  type GovernProvenance,
   getAwaitingRatify
 } from './operator-model'
 
@@ -188,6 +189,16 @@ export interface JuryResult {
   juryModelId: string | null
   juryProvider: string | null
   crossModel: boolean
+  /** How many jurors ANSWERED (W4, S8): 'none' when the panel could not be seated or nobody
+   *  replied; a count when a verdict stands. Provenance is recorded from votes, never inferred
+   *  from the roster (constitution property 3). */
+  jury?: 'none' | number
+}
+
+/** The jury's provenance columns (GovernProvenance, operator-model.ts) with `jury` required:
+ *  every row this loop writes states how many jurors answered. */
+type JuryMeta = Pick<GovernProvenance, 'juryModelId' | 'juryProvider' | 'crossModel'> & {
+  jury: NonNullable<GovernProvenance['jury']>
 }
 
 /** Verifier 2 provider: returns the passing fact-ID set, null when the jury couldn't run (no
@@ -195,14 +206,19 @@ export interface JuryResult {
 export type GovernJury = (provisional: OperatorFact[]) => Promise<Set<string> | null | JuryResult>
 
 /** Normalize any GovernJury return into {pass, meta}. Bare Set/null carry no provenance. */
-function normalizeJury(r: Set<string> | null | JuryResult): {
-  pass: Set<string> | null
-  meta: { juryModelId: string | null; juryProvider: string | null; crossModel: boolean }
-} {
+function normalizeJury(r: Set<string> | null | JuryResult): { pass: Set<string> | null; meta: JuryMeta } {
   if (r && typeof r === 'object' && !(r instanceof Set) && 'pass' in r) {
-    return { pass: r.pass, meta: { juryModelId: r.juryModelId, juryProvider: r.juryProvider, crossModel: r.crossModel } }
+    return {
+      pass: r.pass,
+      meta: {
+        juryModelId: r.juryModelId,
+        juryProvider: r.juryProvider,
+        crossModel: r.crossModel,
+        jury: r.jury ?? (r.pass === null ? 'none' : 1)
+      }
+    }
   }
-  return { pass: r as Set<string> | null, meta: { juryModelId: null, juryProvider: null, crossModel: false } }
+  return { pass: r as Set<string> | null, meta: { juryModelId: null, juryProvider: null, crossModel: false, jury: r === null ? 'none' : 1 } }
 }
 
 export interface GovernPassResult {
@@ -309,9 +325,13 @@ export async function runGovernPass(
     }
     // A confidential fact never reached the jury (firewall-abstained) — don't stamp it with the
     // clear-pool's jury model; that would overstate independence in the govern audit.
-    const prov = confidentialIds.has(f.id)
-      ? { juryModelId: null, juryProvider: null, crossModel: false }
-      : { juryModelId: juryMeta.juryModelId, juryProvider: juryMeta.juryProvider, crossModel: juryMeta.crossModel }
+    // W4 (S8): `crossModel` and the juror count come from ANSWERS, never from the roster. A
+    // panel that was seated but abstained stamps `jury: 'none'` and `crossModel: false`.
+    const prov: JuryMeta = confidentialIds.has(f.id)
+      ? { juryModelId: null, juryProvider: null, crossModel: false, jury: 'none' }
+      : juryPassIds === null
+        ? { juryModelId: null, juryProvider: null, crossModel: false, jury: 'none' }
+        : { juryModelId: juryMeta.juryModelId, juryProvider: juryMeta.juryProvider, crossModel: juryMeta.crossModel, jury: juryMeta.jury }
     recordGovernProvenance(f.id, {
       ...prov,
       verdict: effective,
@@ -341,6 +361,23 @@ export function refreshKeylessRatifyCard(): number {
  *  that finds the queue empty, so the card can never rot into a guilt pile (posture I4).
  *  Best-effort: the inbox is an affordance, never a precondition for governing. */
 function settleKeylessRatifyCard(pending: number): void {
+  // CLEARING IS NEVER GATED ON THE MEMO. The card is PERSISTED and `lastKeylessRatifyCount`
+  // is process-local, so after a restart the two disagree — and the equality guard below then
+  // compares 0 against 0 and skips the resolve forever. That is not hypothetical: a card
+  // raised on 2026-09-01 survived the operator ratifying its belief (the ratify path runs
+  // through refreshKeylessRatifyCard, which found pending 0 and a freshly-zeroed memo), and
+  // Home led with "a decision is waiting on you" pointing at a Learning panel that had
+  // nothing to decide. resolveByActionId is a no-op when nothing is owed, so running it on
+  // every empty pass costs nothing and cannot strand a card again.
+  if (pending === 0) {
+    try {
+      resolveByActionId('govern:keyless-review')
+    } catch {
+      /* inbox write is best-effort */
+    }
+    lastKeylessRatifyCount = 0
+    return
+  }
   if (pending === lastKeylessRatifyCount) return
   try {
     if (pending > 0) {
@@ -355,8 +392,6 @@ function settleKeylessRatifyCard(pending: number): void {
         // W5: the Learning panel has Ratify / Veto (and the card itself carries them in Needs-you).
         deepLink: 'duin://tool/learning'
       })
-    } else {
-      resolveByActionId('govern:keyless-review')
     }
   } catch {
     /* inbox write is best-effort */
@@ -439,27 +474,38 @@ async function runOneJuror(
 
 /** Default Verifier 2 — a PANEL of key-gated LLMs in an independent role, batched over the
  *  probation pool. No engine → null (the decision falls back to keyless survival). */
+/** Fewer answering jurors than this and the panel ABSTAINS (pass: null, jury: 'none'/count). One
+ *  juror is a single point of failure whose verdict is binding, and a verdict nobody seconded is
+ *  not a cross-model check — the keyless survival bar (→ ratify, a human) decides instead. */
+export const MIN_JURY_ANSWERS = 2
+
+const ABSTAIN: JuryResult = { pass: null, juryModelId: null, juryProvider: null, crossModel: false, jury: 'none' }
+
 export async function defaultGovernJury(provisional: OperatorFact[]): Promise<JuryResult> {
   const model = routeModel('extraction')
-  if (!model || provisional.length === 0) return { pass: null, juryModelId: null, juryProvider: null, crossModel: false }
+  if (!model || provisional.length === 0) return ABSTAIN
   // Cross-model jury (item 4): route the second opinion AROUND the extractor's provider so it's a
   // genuinely independent FAMILY, not one model wearing two hats.
   //
-  // It is now a PANEL rather than one model. A single juror is a single point of failure whose
+  // It is a PANEL rather than one model. A single juror is a single point of failure whose
   // verdict is binding — `governDecision` reverts instantly on juryPass === false — so its flakiness
   // is spent directly on the operator's facts. On the live brain that is not hypothetical: 89 of 197
   // facts sit reverted, and the campaign traced the verdicts behind them to one flaky model.
+  //
+  // W4 (S8, 2026-09-02): the panel is seated from DISTINCT providers that are keyed AND not
+  // observed-unhealthy (resolveJury) — the old walk ignored provider health and placed 12 doomed
+  // cloud calls a day. No doomed calls: an unhealthy provider is never seated. Fewer than
+  // MIN_JURY_ANSWERS answers → abstain, recorded honestly; never one model wearing three hats.
   const extractorProvider = getProviderForModel(model)
-  const panel = routeDistinctModels(new Set([extractorProvider]), 'extraction', JURY_PANEL_SIZE)
-  // Single-provider install: fall back to the extractor model, exactly as before. The same-model
-  // check is preserved, just not claimed independent.
-  if (panel.length === 0) panel.push(model)
-  const providers = panel.map((m) => getProviderForModel(m))
+  const seated = resolveJury(JURY_PANEL_SIZE, { avoidProviders: new Set([extractorProvider]) })
+  if (seated.length < MIN_JURY_ANSWERS) return ABSTAIN
+  const panel = seated.map((r) => r.modelId)
+  const providers = seated.map((r) => r.provider)
   const meta = {
     juryModelId: panel.join('+'),
     juryProvider: providers.join('+'),
-    // Independent iff no juror shares the extractor's family. A one-model panel that fell back to
-    // the extractor is the honest false here.
+    // Independent iff no juror shares the extractor's family — true by construction of resolveJury,
+    // asserted from the seated list rather than assumed.
     crossModel: providers.every((p) => p !== extractorProvider)
   }
   // Never send confidential confirmed rules as context to the external jury either.
@@ -487,9 +533,13 @@ export async function defaultGovernJury(provisional: OperatorFact[]): Promise<Ju
 
   const ballots = await Promise.all(panel.map((m) => runOneJuror(m, provisional, confirmed)))
   const responded = ballots.filter((b): b is Set<string> => b !== null)
-  // Every juror abstained → the panel could not run. Same as the old single-juror abstain: the
-  // decision falls through to the keyless survival bar rather than reverting anything.
-  if (responded.length === 0) return { pass: null, ...meta }
+  // Fewer than MIN_JURY_ANSWERS jurors ANSWERED → the panel could not run. Same as the old
+  // single-juror abstain: the decision falls through to the keyless survival bar rather than
+  // reverting anything — and the provenance says so (`jury: 'none'` / the count, crossModel false)
+  // instead of stamping the roster as if it had voted.
+  if (responded.length < MIN_JURY_ANSWERS) {
+    return { ...ABSTAIN, jury: responded.length === 0 ? 'none' : responded.length }
+  }
 
   // A fact is REVERTED only when a MAJORITY of responding jurors omit it; ties keep it.
   //
@@ -508,6 +558,8 @@ export async function defaultGovernJury(provisional: OperatorFact[]): Promise<Ju
   // The mass-revert guard again, on the COMBINED verdict: independent jurors can each pass their own
   // partial-reply check and still agree on a prefix, which looks identical to the panel rejecting
   // most of a human-endorsed pool.
-  if (provisional.length > 1 && pass.size * 2 < provisional.length) return { pass: null, ...meta }
-  return { pass, ...meta }
+  if (provisional.length > 1 && pass.size * 2 < provisional.length) {
+    return { ...ABSTAIN, jury: responded.length }
+  }
+  return { pass, ...meta, jury: responded.length }
 }

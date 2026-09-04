@@ -20,6 +20,7 @@
 import { runMeasurePass, localFirstMeasureDeps, localOnlyMeasureDeps } from './judgment-measure-live'
 import type { MeasureDeps } from './judgment-measure'
 import { readSettings } from '../settings-helper'
+import { runStalenessAccrual, accrualDeps } from './grounding-staleness-accrual'
 
 // 6h — this is a recurring MEASUREMENT (expensive model calls), not the day-grained loop tick, so it
 // runs far less often than calibration/metabolism. Override via DUIN_MEASURE_TICK_MS; 0 disables.
@@ -72,6 +73,41 @@ export function measureTick(deps?: MeasureDeps, limit: number = BATCH): void {
   void runMeasurePass(deps ?? activeMeasureDeps(), { limit }).catch((e) => {
     console.warn('[measure-tick] pass failed (non-fatal):', (e as Error)?.message)
   })
+  stalenessAccrualPass()
+}
+
+/** The grounding-staleness calibration accrual, on the same clock and the same cost rule as the
+ *  measure pass.
+ *
+ *  WHY IT LIVES HERE: agui-grounding only down-weights currency-stale facts once the
+ *  grounding-staleness domain's Wilson lower bound clears its floor, but nothing in production ever
+ *  wrote that domain — its only writer was the manual POST /debug/grounding-eval-live — so on every
+ *  real vault the trust stayed null and the gate never opened. Measured on the operator's own vault
+ *  2026-09-03: no grounding-staleness.jsonl at all. The STALE benchmark showed the behavioural cost:
+ *  DUIN flagged a fact as stale and then grounded its answer on it anyway.
+ *
+ *  Fire-and-forget + failure-isolated, exactly like the measure pass, and additive only: it appends
+ *  calibration evidence. Whether fusion actually engages stays shouldFuseStaleness's decision on that
+ *  evidence — this never forces it on. */
+function stalenessAccrualPass(): void {
+  try {
+    const vault = (() => {
+      try {
+        const d = readSettings().localBrainNotesDir
+        return typeof d === 'string' && d ? d : null
+      } catch {
+        return null
+      }
+    })()
+    void runStalenessAccrual(vault, accrualDeps(backgroundAutonomyOn())).then((r) => {
+      if (r.ran && r.recorded > 0) {
+        console.log(`[measure-tick] staleness accrual: ${r.recorded} calibration sample(s) from ${r.labeled} judged of ${r.scored} facts` +
+          (r.trust ? ` — trust n=${r.trust.n} wilson_lo=${r.trust.wilson_lo.toFixed(2)}${r.trust.gated ? ' (gated)' : ''}` : ''))
+      }
+    })
+  } catch (e) {
+    console.warn('[measure-tick] staleness accrual failed (non-fatal):', (e as Error)?.message)
+  }
 }
 
 /** Start the periodic measure pass: one settle-delayed pass, then every TICK_MS. No-op if already

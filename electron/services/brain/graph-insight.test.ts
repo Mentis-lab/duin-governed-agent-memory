@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { detectCommunities, analyzeGraph, renderGraphReport, communityAssignments, graphSnapshot } from './graph-insight'
+import { detectCommunities, analyzeGraph, renderGraphReport, communityAssignments, graphSnapshot, mapEdgeWeight, mapCommunityAssignments } from './graph-insight'
 import type { CausalGraph } from '../local-brain/graph-derive'
 
 /** Two fully-connected clusters (A*, B*) joined by a single bridge edge a1→b1 —
@@ -185,5 +185,55 @@ describe('graph-insight: report rendering', () => {
     expect(md).toContain('## Surprising connections')
     expect(md).toContain('## Questions to explore')
     expect(md).toMatch(/source: graph-insight/)
+  })
+})
+
+describe('communities on the MAP graph, with typed weights', () => {
+  const g = (nodes: string[], edges: [string, string, string][]) => ({
+    nodes: nodes.map((id) => ({ id, label: id, kind: 'note' })),
+    edges: edges.map(([source, target, type]) => ({ source, target, type }))
+  }) as unknown as Parameters<typeof detectCommunities>[0]
+
+  it('a zero-weight relation (synonym) does not connect anything', () => {
+    const graph = g(['a', 'b', 'c'], [['a', 'b', 'synonym'], ['b', 'c', 'synonym']])
+    const weighted = detectCommunities(graph, (e) => mapEdgeWeight(e.type))
+    expect(new Set(weighted.values()).size).toBe(3) // nothing joined
+    const unit = detectCommunities(graph)
+    expect(new Set(unit.values()).size).toBeLessThan(3) // unit weights would have chained them
+  })
+
+  it('weights: typed by the operator counts fully, structure and mentions a little, synonym nothing', () => {
+    expect(mapEdgeWeight('wiki')).toBe(1)
+    expect(mapEdgeWeight('about')).toBe(0.7)
+    expect(mapEdgeWeight('never-seen')).toBe(0.7)
+    expect(mapEdgeWeight('in')).toBeLessThan(mapEdgeWeight('mentions') + 0.01)
+    expect(mapEdgeWeight('synonym')).toBe(0)
+  })
+
+  it('a folder hub and its notes share a community and a colour; product nodes are assignable', () => {
+    const map = {
+      nodes: [
+        { id: '__folder__DUIN', label: 'DUIN', kind: 'folder' },
+        { id: 'DUIN/a.md', label: 'a', kind: 'note' },
+        { id: 'DUIN/b.md', label: 'b', kind: 'note' },
+        { id: 'proj-1', label: 'DUIN', kind: 'project' },
+        { id: 'Other/z.md', label: 'z', kind: 'note' },
+        { id: 'Other/y.md', label: 'y', kind: 'note' }
+      ],
+      links: [
+        { source: 'DUIN/a.md', target: '__folder__DUIN', type: 'in' },
+        { source: 'DUIN/b.md', target: '__folder__DUIN', type: 'in' },
+        { source: 'DUIN/a.md', target: 'DUIN/b.md', type: 'wiki' },
+        { source: 'proj-1', target: 'DUIN/a.md', type: 'about' },
+        { source: 'Other/z.md', target: 'Other/y.md', type: 'wiki' }
+      ]
+    }
+    const rows = mapCommunityAssignments(map)
+    const by = new Map(rows.map((r) => [r.id, r]))
+    expect(by.get('__folder__DUIN')?.community).toBe(by.get('DUIN/a.md')?.community)
+    expect(by.get('proj-1')?.community).toBe(by.get('DUIN/a.md')?.community)
+    expect(by.get('Other/z.md')?.community).not.toBe(by.get('DUIN/a.md')?.community)
+    expect(by.get('__folder__DUIN')?.color).toMatch(/^#[0-9a-f]{6}$/i)
+    expect(by.get('__folder__DUIN')?.label).not.toBe('isolated')
   })
 })

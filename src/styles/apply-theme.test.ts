@@ -7,7 +7,11 @@ import {
   chatFontSizePx,
   DEFAULT_CHAT_FONT_SIZE,
   MIN_CHAT_FONT_SIZE,
-  MAX_CHAT_FONT_SIZE
+  MAX_CHAT_FONT_SIZE,
+  docFontSizePx,
+  DEFAULT_DOC_FONT_SIZE,
+  MIN_DOC_FONT_SIZE,
+  MAX_DOC_FONT_SIZE
 } from './apply-theme'
 
 describe('fontScaleRatio', () => {
@@ -56,5 +60,38 @@ describe('chatFontSizePx', () => {
     // 12px was the constant in markdown.css, so an install that has never touched the
     // new control renders exactly as before.
     expect(DEFAULT_CHAT_FONT_SIZE).toBe(12)
+  })
+})
+
+describe('docFontSizePx', () => {
+  // Documents are the third size, distinct from both page zoom and the transcript:
+  // a note read in the Explorer panel, in its own window, in Library, or as an
+  // artifact. Before this control they were three different hardcoded numbers.
+  it('passes a supported size through', () => {
+    expect(docFontSizePx(18)).toBe(18)
+  })
+
+  it('falls back to the default for missing / NaN input', () => {
+    expect(docFontSizePx(undefined)).toBe(DEFAULT_DOC_FONT_SIZE)
+    expect(docFontSizePx(Number.NaN)).toBe(DEFAULT_DOC_FONT_SIZE)
+  })
+
+  it('clamps out-of-range values rather than rendering an unreadable document', () => {
+    expect(docFontSizePx(1)).toBe(MIN_DOC_FONT_SIZE)
+    expect(docFontSizePx(900)).toBe(MAX_DOC_FONT_SIZE)
+  })
+
+  it("defaults to .markdown-body's own reading base", () => {
+    // 16px is what Library and the artifact viewer already rendered at; the Explorer
+    // panel (12px) and a detached window (14px) are the two that were out of step.
+    expect(DEFAULT_DOC_FONT_SIZE).toBe(16)
+  })
+
+  it('is a separate control from the transcript size', () => {
+    // Same input, different setting — a regression that collapsed one into the other
+    // would make the chat and document toggles move together. Their defaults differ
+    // (16 vs 12) and so do their upper bounds (28 vs 24).
+    expect(docFontSizePx(undefined)).not.toBe(chatFontSizePx(undefined))
+    expect(docFontSizePx(999)).not.toBe(chatFontSizePx(999))
   })
 })

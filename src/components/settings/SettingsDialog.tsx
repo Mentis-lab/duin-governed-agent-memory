@@ -41,7 +41,7 @@ interface SettingsDialogProps {
 // Grouped for non-coders: plain-language essentials + workspace first;
 // developer tooling tucked under a collapsed "Advanced" disclosure so the
 // 20-odd panels don't read as a wall of jargon on day one.
-const GROUPS = [
+const GROUPS: ReadonlyArray<{ title: string; tabs: ReadonlyArray<{ id: SettingsTabId; label: string }> }> = [
   {
     title: 'Essentials',
     tabs: [
@@ -71,7 +71,7 @@ const GROUPS = [
     tabs: [
       { id: 'appearance', label: 'Appearance' },
       { id: 'shortcuts', label: 'Shortcuts' },
-      { id: 'workflows', label: 'Workflows' },
+      { id: 'workflows', label: 'Automations' },
       { id: 'permissions', label: 'Permissions' }
     ]
   },
@@ -92,15 +92,22 @@ const GROUPS = [
       { id: 'persistence', label: 'Persistence' }
     ]
   }
-] as const
+]
 
-// GROUPS is `as const`, so each `g.tabs` is a distinct readonly tuple; spreading
-// them into a single array gives flatMap a shared element type to infer from.
 const TABS = GROUPS.flatMap((g) => [...g.tabs])
-// The active tab can be any panel id in GROUPS, plus the legacy deep-link
-// aliases ('automations' / 'loops') that the ui-store may pass in as the
-// initial tab — both resolve to the Workflows panel below.
-type TabId = (typeof TABS)[number]['id'] | SettingsTabId
+// Every id GROUPS renders is a SettingsTabId (typed above, so a tab the union does not
+// name is a compile error, and openSettings('brain') is once again something a page can
+// say). The legacy deep-link aliases below resolve into a rendered tab.
+type TabId = SettingsTabId
+const ALIAS: Partial<Record<SettingsTabId, SettingsTabId>> = {
+  automations: 'workflows',
+  loops: 'workflows',
+  timeouts: 'engine',
+  seedBudget: 'engine'
+}
+// The sidebar highlight and the page title both go through this, so an alias never reads
+// as "no tab selected".
+const canonicalTab = (id: TabId): SettingsTabId => ALIAS[id] ?? id
 const ADVANCED_IDS = new Set<string>([
   ...GROUPS.flatMap((g) => (g.title === 'Advanced' ? g.tabs.map((t) => t.id) : [])),
   // Legacy deep-link ids that now resolve into the Advanced "Engine" tab.
@@ -133,6 +140,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   const [showAdvanced, setShowAdvanced] = useState<boolean>(
     initialTab ? ADVANCED_IDS.has(initialTab) : false
   )
+  const activeLabel = TABS.find((tab) => tab.id === canonicalTab(activeTab))?.label
 
   return (
     // Full-screen view matching the Customize surface (fixed inset-0,
@@ -193,7 +201,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                       key={tab.id}
                       onClick={() => selectTab(tab.id)}
                       className={`block w-full px-4 py-2 text-left font-mono text-[12px] transition-colors ${
-                        activeTab === tab.id
+                        canonicalTab(activeTab) === tab.id
                           ? 'bg-[var(--bg-tertiary)] text-[var(--text-primary)]'
                           : 'text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)]'
                       }`}
@@ -209,6 +217,12 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
         {/* Content */}
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="mx-auto w-full max-w-4xl flex-1 overflow-y-auto px-6 py-6">
+            {/* The page title IS the tab label, drawn here rather than by each page, so a
+                page and its tab cannot disagree (eight of them did). Pages start with
+                <SettingsPage purpose="…"> from the settings kit and draw no title of their own. */}
+            {activeLabel && (
+              <h2 className="mb-4 text-[16px] font-semibold text-[var(--text-primary)]">{t(activeLabel)}</h2>
+            )}
             {/* Settings pages are code-split; each loads when its tab is opened. */}
             <Suspense fallback={<div className="text-[12px] text-[var(--text-muted)]">Loading…</div>}>
             {activeTab === 'general' && <GeneralSettings />}

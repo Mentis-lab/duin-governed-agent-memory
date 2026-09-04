@@ -8,9 +8,9 @@ export type HookEvent =
   | 'postToolUse'
   | 'agentStop'
   // F3 (Harmonized Harness) — autonomy lifecycle so user hooks see ALL activity,
-  // not just interactive chat: loops, automations, and workflows.
-  | 'loopStarted'
-  | 'loopIterationDone'
+  // not just interactive chat: automations and workflows. (loopStarted /
+  // loopIterationDone were declared here for months and offered in Settings, but
+  // loop-controller never fired them; a hook on them could not run. Removed 2026-09-03.)
   | 'automationStarted'
   | 'automationDone'
   | 'workflowStarted'

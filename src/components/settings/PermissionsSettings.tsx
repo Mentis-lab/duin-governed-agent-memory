@@ -1,22 +1,31 @@
-import { t } from '@/lib/i18n'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { query } from '@/lib/ipc-client'
+import { t, tf } from '@/lib/i18n'
+import { Button } from '@/components/ui/Button'
+import { PanelState } from '@/components/ui/PanelState'
+import {
+  SettingsLink,
+  SettingsLoadError,
+  SettingsLoading,
+  SettingsPage,
+  SettingsRow,
+  SettingsSection
+} from '@/components/ui/settings'
+import { invoke, query } from '@/lib/ipc-client'
+import { panelFromResult, panelLoading, type PanelStatus } from '@/lib/panel-state'
+import { describeError } from '@/lib/result'
 import { toast } from '@/stores/toast-store'
-import type {
-  PermissionPolicy,
-  PolicyScope,
-  PolicyUsage
-} from '@/lib/types'
+import type { PermissionPolicy, PolicyScope, PolicyUsage } from '@/lib/types'
 
-// Persistent approval policies. Lists every persisted policy, grouped by
-// scope. The user can delete a single row or clear an entire scope. New
-// policies are written via the approval modal during normal use — this
-// surface is the inspect/cleanup side of the same store.
+// Persistent approval policies. Lists every persisted policy, grouped by scope. The user can
+// delete a single row or clear an entire scope. New policies are written via the approval
+// modal during normal use — this surface is the inspect/cleanup side of the same store.
 //
-// When the main process cannot reach its DB (corrupt userData, denied
-// filesystem permissions, etc.) it falls back to an in-memory layer. We
-// surface that fallback with a banner so the user knows their answers
-// will reset on next launch and can investigate.
+// When the main process cannot reach its DB (corrupt userData, denied filesystem permissions,
+// etc.) it falls back to an in-memory layer. We surface that fallback with a banner so the
+// user knows their answers will reset on next launch and can investigate.
+//
+// Full computer access — the permission a first-timer comes here looking for — is a General
+// setting, so the page points there instead of pretending it is not a permission.
 
 type PolicyListData = {
   policies: PermissionPolicy[]
@@ -46,31 +55,33 @@ function getApi(): PermissionsApi | null {
   return api?.permissions ?? null
 }
 
-const SCOPE_LABEL: Record<PolicyScope, string> = {
-  conversation: 'Conversation',
-  workspace: 'Workspace',
-  global: 'Global'
+const SCOPES: PolicyScope[] = ['conversation', 'workspace', 'global']
+
+function scopeLabel(scope: PolicyScope): string {
+  if (scope === 'conversation') return t('Conversation')
+  if (scope === 'workspace') return t('Workspace')
+  return t('Global')
 }
 
-const SCOPE_DESCRIPTION: Record<PolicyScope, string> = {
-  conversation:
-    'Sticky for a single chat thread. Cleared when you delete the thread.',
-  workspace: 'Sticky for one folder. Cleared when you remove the policy here.',
-  global: 'Sticky across every folder. The broadest scope.'
+function scopeDescription(scope: PolicyScope): string {
+  if (scope === 'conversation') return t('Sticky for a single chat thread. Cleared when you delete the thread.')
+  if (scope === 'workspace') return t('Sticky for one folder. Cleared when you remove the policy here.')
+  return t('Sticky across every folder. The broadest scope.')
 }
 
 function formatDecision(decision: 'allow' | 'deny'): string {
-  return decision === 'allow' ? 'Allow' : 'Deny'
+  return decision === 'allow' ? t('Allow') : t('Deny')
 }
 
 function formatSubject(p: PermissionPolicy): string {
-  const prefix = p.subjectKind === 'tool' ? 'Tool' : 'Risk'
-  return `${prefix}: ${p.subject}`
+  return p.subjectKind === 'tool'
+    ? tf('Tool: {subject}', { subject: p.subject })
+    : tf('Risk: {subject}', { subject: p.subject })
 }
 
 function formatScopeMeta(p: PermissionPolicy): string | null {
   if (p.scope === 'conversation' && p.conversationId) {
-    return `Conversation ${p.conversationId.slice(0, 8)}…`
+    return tf('Conversation {id}…', { id: p.conversationId.slice(0, 8) })
   }
   if (p.scope === 'workspace' && p.workspacePath) {
     return p.workspacePath
@@ -89,14 +100,14 @@ function formatLastUsed(epochMs: number): string {
   const minute = 60_000
   const hour = 3_600_000
   const day = 86_400_000
-  if (delta < minute) return 'just now'
+  if (delta < minute) return t('just now')
   if (delta < hour) {
     const m = Math.floor(delta / minute)
-    return m === 1 ? '1 minute ago' : `${m} minutes ago`
+    return m === 1 ? t('1 minute ago') : tf('{n} minutes ago', { n: m })
   }
   if (delta < day) {
     const h = Math.floor(delta / hour)
-    return h === 1 ? '1 hour ago' : `${h} hours ago`
+    return h === 1 ? t('1 hour ago') : tf('{n} hours ago', { n: h })
   }
   return formatAge(epochMs)
 }
@@ -105,27 +116,27 @@ function formatLastUsed(epochMs: number): string {
  * The line that turns a grant into something you can judge. A standing policy
  * is a decision you delegated; this is what it has decided since.
  *
- * `undefined` usage means the main process did not report any (older build) —
- * render nothing rather than assert "never used", which is a claim about a
- * security surface we cannot make from a missing field.
+ * `undefined` usage with a KNOWN index means the policy has never fired.
  */
 export function formatUsage(usage: PolicyUsage | undefined): string | null {
-  if (!usage) return 'Never used'
-  const calls = usage.n === 1 ? '1 call' : `${usage.n} calls`
-  const denied = usage.denied > 0 ? `, ${usage.denied} denied` : ''
-  return `Decided ${calls}${denied} on its own · last ${formatLastUsed(usage.lastAt)}`
+  if (!usage) return t('Never used')
+  const calls = usage.n === 1 ? t('1 call') : tf('{n} calls', { n: usage.n })
+  const when = formatLastUsed(usage.lastAt)
+  return usage.denied > 0
+    ? tf('Decided {calls}, {denied} denied, on its own · last {when}', { calls, denied: usage.denied, when })
+    : tf('Decided {calls} on its own · last {when}', { calls, when })
 }
 
 function formatAge(epochMs: number): string {
   const delta = Date.now() - epochMs
   const day = 86_400_000
-  if (delta < day) return 'today'
+  if (delta < day) return t('today')
   const days = Math.floor(delta / day)
-  if (days === 1) return '1 day ago'
-  if (days < 30) return `${days} days ago`
+  if (days === 1) return t('1 day ago')
+  if (days < 30) return tf('{n} days ago', { n: days })
   const months = Math.floor(days / 30)
-  if (months === 1) return '1 month ago'
-  return `${months} months ago`
+  if (months === 1) return t('1 month ago')
+  return tf('{n} months ago', { n: months })
 }
 
 /**
@@ -147,272 +158,210 @@ export function buildUsageIndex(data: PolicyListData): Map<string, PolicyUsage> 
   return new Map(data.usage.map((u) => [u.policyId, u]))
 }
 
-export function PermissionsSettings() {
-  const [policies, setPolicies] = useState<PermissionPolicy[]>([])
-  // `null` = the main process reported no usage at all (older build): rows omit
-  // the line. A Map that is present but lacks a policy id = genuinely zero calls.
-  const [usage, setUsage] = useState<Map<string, PolicyUsage> | null>(null)
-  const [usageError, setUsageError] = useState<string | null>(null)
-  const [memoryFallback, setMemoryFallback] = useState(false)
-  const [loading, setLoading] = useState(true)
+function DecisionChip({ decision }: { decision: 'allow' | 'deny' }): React.ReactElement {
+  const tone =
+    decision === 'allow'
+      ? 'border-[var(--success)]/40 text-[var(--success)]'
+      : 'border-[var(--error)]/40 text-[var(--error)]'
+  return (
+    <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium uppercase tracking-wide ${tone}`}>
+      {formatDecision(decision)}
+    </span>
+  )
+}
+
+export function PermissionsSettings(): React.ReactElement {
+  // U1. A failed read used to leave `policies` at [] and render "No conversation policies." —
+  // an authoritative claim, on a SECURITY surface, that the operator has granted nothing.
+  // PanelState makes the failed read its own branch.
+  const [state, setState] = useState<PanelStatus<PolicyListData>>(panelLoading())
   const [busy, setBusy] = useState<string | null>(null)
-  // U1. A failed read used to leave `policies` at [] and render "No conversation
-  // policies." — an authoritative claim, on a SECURITY surface, that the operator
-  // has granted nothing. The toast scrolled away; the false claim stayed on screen.
-  const [loadError, setLoadError] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
-    setLoading(true)
-    try {
-      const r = await query<PolicyListData>('tool permissions', getApi()?.listPolicies)
-      if (!r.ok) {
-        setLoadError(r.error)
-        toast.error(`Failed to load policies: ${r.error}`)
-        return
-      }
-      setLoadError(null)
-      setPolicies(r.data.policies)
-      setMemoryFallback(Boolean(r.data.memoryFallback))
-      setUsageError(r.data.usageError ?? null)
-      setUsage(buildUsageIndex(r.data))
-    } finally {
-      setLoading(false)
-    }
+    setState(panelFromResult(await query<PolicyListData>(t('tool permissions'), getApi()?.listPolicies)))
   }, [])
 
   useEffect(() => {
-    refresh()
+    void refresh()
   }, [refresh])
 
-  const grouped = useMemo(() => {
-    const result: Record<PolicyScope, PermissionPolicy[]> = {
-      conversation: [],
-      workspace: [],
-      global: []
-    }
-    for (const p of policies) {
-      result[p.scope].push(p)
-    }
-    for (const scope of Object.keys(result) as PolicyScope[]) {
-      result[scope].sort((a, b) => b.updatedAt - a.updatedAt)
-    }
-    return result
-  }, [policies])
+  const data = state.phase === 'ready' ? state.data : null
+  // `null` = unknown (older build, or the aggregate failed): rows omit the line. A Map that
+  // is present but lacks a policy id = genuinely zero calls.
+  const usage = useMemo(() => (data ? buildUsageIndex(data) : null), [data])
 
-  const handleDelete = async (id: string) => {
+  const grouped = useMemo(() => {
+    const result: Record<PolicyScope, PermissionPolicy[]> = { conversation: [], workspace: [], global: [] }
+    for (const p of data?.policies ?? []) result[p.scope].push(p)
+    for (const scope of SCOPES) result[scope].sort((a, b) => b.updatedAt - a.updatedAt)
+    return result
+  }, [data])
+
+  const handleDelete = async (id: string): Promise<void> => {
     const api = getApi()
     if (!api) return
     setBusy(id)
     try {
-      const response = await api.deletePolicy(id)
-      if (!response.success) {
-        toast.error(`Failed to delete policy: ${response.error ?? 'unknown error'}`)
-        return
-      }
+      await invoke(t('delete policy'), () => api.deletePolicy(id))
       await refresh()
+    } catch (e) {
+      toast.error(describeError(e, t('Could not delete that policy.')))
     } finally {
       setBusy(null)
     }
   }
 
-  const handleClearScope = async (scope: PolicyScope) => {
+  const handleClearScope = async (scope: PolicyScope): Promise<void> => {
     const api = getApi()
     if (!api) return
     const count = grouped[scope].length
     if (count === 0) return
-    if (
-      !window.confirm(
-        `Remove all ${count} ${SCOPE_LABEL[scope].toLowerCase()} ${
-          count === 1 ? 'policy' : 'policies'
-        }? You'll be prompted again the next time the model uses these tools.`
-      )
-    ) {
-      return
-    }
+    const name = scopeLabel(scope).toLowerCase()
+    const question =
+      count === 1
+        ? tf('Remove the one {scope} policy? DUIN will ask again the next time it uses that tool.', { scope: name })
+        : tf('Remove all {n} {scope} policies? DUIN will ask again the next time it uses these tools.', {
+            n: count,
+            scope: name
+          })
+    if (!window.confirm(question)) return
     setBusy(`scope:${scope}`)
     try {
-      const response = await api.clearScope(scope)
-      if (!response.success) {
-        toast.error(`Failed to clear scope: ${response.error ?? 'unknown error'}`)
-        return
-      }
+      await invoke(t('clear policies'), () => api.clearScope(scope))
       await refresh()
+    } catch (e) {
+      toast.error(describeError(e, t('Could not clear those policies.')))
     } finally {
       setBusy(null)
     }
   }
 
   return (
-    <div className="space-y-6 text-[16px] text-[var(--text-primary)]">
-      <div>
-        <h2 className="text-[20px] font-semibold">{t('Tool permissions')}</h2>
-        <p className="mt-1 text-[12px] text-[var(--text-muted)]">
-          Approval decisions you've made stick to this list. Pick "Just this
-          once" in the approval dialog to avoid persisting; pick "This
-          conversation", "This workspace", or "Always" to add a row here.
-        </p>
-      </div>
+    <SettingsPage
+      purpose={t('Answers you chose to keep from the approval dialog: which tools DUIN may use without asking, and where. Delete a row and DUIN asks again.')}
+    >
+      <p className="text-[12px] text-[var(--text-muted)]">
+        {t('Looking for Full computer access? That switch is on the General tab.')}{' '}
+        <SettingsLink tab="general">{t('Open General')}</SettingsLink>
+      </p>
 
-      {memoryFallback && (
-        <div className="rounded border border-amber-500/40 bg-amber-500/10 p-3 text-[12px] text-amber-200">
-          <strong className="font-semibold">{t('Persistence unavailable.')}</strong>{' '}
-          Policies are being held in memory only and will reset on the next app
-          launch. Check the main process log for the underlying error.
-        </div>
+      {data?.memoryFallback && (
+        <SettingsRow
+          tone="warning"
+          label={t('Persistence unavailable.')}
+          hint={t('Policies are held in memory only and reset on the next launch. Check the main process log for the underlying error.')}
+        />
+      )}
+      {data?.usageError && (
+        <SettingsRow
+          tone="warning"
+          label={t('Activity unavailable.')}
+          hint={tf(
+            'The policies below are correct and in effect, but their usage counts could not be read ({error}). A row showing no activity is not evidence that the policy is unused.',
+            { error: data.usageError }
+          )}
+        />
       )}
 
-      {usageError && (
-        <div className="rounded border border-amber-500/40 bg-amber-500/10 p-3 text-[12px] text-amber-200">
-          <strong className="font-semibold">{t('Activity unavailable.')}</strong> The
-          policies below are correct and in effect, but their usage counts could not be
-          read ({usageError}). A row showing no activity here is not evidence that the
-          policy is unused.
-        </div>
-      )}
-
-      {loading && (
-        <div className="text-[12px] text-[var(--text-muted)]">Loading policies…</div>
-      )}
-
-      {!loading && loadError && (
-        <div
-          role="alert"
-          className="rounded border border-red-500/40 bg-red-500/10 p-3 text-[12px] text-red-200"
-        >
-          <strong className="font-semibold">Couldn&apos;t read your permission policies.</strong>{' '}
-          {loadError}
-          <p className="mt-1 opacity-90">
-            This list is showing nothing because the read FAILED — not because you have granted
-            nothing. Any policies you have saved are still in effect.
-          </p>
-          <button
-            type="button"
-            onClick={() => void refresh()}
-            className="mt-2 rounded border border-red-500/40 px-2 py-1 font-mono text-[11px] uppercase hover:bg-red-500/10"
-          >
-            {t('Retry')}
-          </button>
-        </div>
-      )}
-
-      {!loading &&
-        !loadError &&
-        (Object.keys(SCOPE_LABEL) as PolicyScope[]).map((scope) => {
-          const rows = grouped[scope]
-          const clearing = busy === `scope:${scope}`
-          return (
-            <section
-              key={scope}
-              className="rounded-lg border border-[var(--panel-border)] bg-[var(--bg-primary)] p-3"
-            >
-              <div className="mb-3 flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <h3 className="text-[16px] font-semibold text-[var(--text-primary)]">
-                    {SCOPE_LABEL[scope]}{' '}
-                    <span className="ml-1 font-mono text-[12px] text-[var(--text-muted)]">
-                      ({rows.length})
-                    </span>
-                  </h3>
-                  <p className="mt-0.5 text-[12px] text-[var(--text-muted)]">
-                    {SCOPE_DESCRIPTION[scope]}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  disabled={rows.length === 0 || clearing}
-                  onClick={() => handleClearScope(scope)}
-                  className="shrink-0 rounded border border-[var(--panel-border)] bg-[var(--bg-tertiary)] px-2 py-1 font-mono text-[11px] uppercase text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-secondary)] disabled:cursor-not-allowed disabled:opacity-50"
+      <PanelState
+        state={state}
+        loading={<SettingsLoading what={t('your permission policies')} />}
+        error={(message, retry) => (
+          <SettingsLoadError
+            what={t('your permission policies')}
+            message={`${message} ${t('Any policies you saved are still in effect.')}`}
+            onRetry={retry}
+          />
+        )}
+        empty={
+          <SettingsRow
+            label={t('No saved policies yet.')}
+            hint={t('Pick "This conversation", "This workspace", or "Always" in the approval dialog to add one.')}
+          />
+        }
+        isEmpty={(d) => d.policies.length === 0}
+        onRetry={() => void refresh()}
+      >
+        {() => (
+          <>
+            {SCOPES.map((scope) => {
+              const rows = grouped[scope]
+              const clearing = busy === `scope:${scope}`
+              return (
+                <SettingsSection
+                  key={scope}
+                  label={scopeLabel(scope)}
+                  description={scopeDescription(scope)}
+                  actions={
+                    <>
+                      <span className="font-mono text-[11px] text-[var(--text-muted)]">{rows.length}</span>
+                      <Button size="sm" disabled={rows.length === 0 || clearing} onClick={() => void handleClearScope(scope)}>
+                        {clearing ? t('Clearing…') : t('Clear all')}
+                      </Button>
+                    </>
+                  }
                 >
-                  {clearing ? 'Clearing…' : 'Clear all'}
-                </button>
-              </div>
-
-              {rows.length === 0 ? (
-                <div className="rounded border border-dashed border-[var(--panel-border)] px-3 py-4 text-center text-[12px] text-[var(--text-muted)]">
-                  No {SCOPE_LABEL[scope].toLowerCase()} policies.
-                </div>
-              ) : (
-                <ul className="space-y-1.5">
-                  {rows.map((policy) => {
-                    const scopeMeta = formatScopeMeta(policy)
-                    const isBusy = busy === policy.id
-                    return (
-                      <li
-                        key={policy.id}
-                        className="flex items-start justify-between gap-3 rounded border border-[var(--panel-border)] bg-[var(--bg-secondary)] px-3 py-2"
-                      >
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
-                            <span
-                              className={`rounded-full border px-2 py-0.5 text-[11px] font-medium uppercase tracking-wide ${
-                                policy.decision === 'allow'
-                                  ? 'border-emerald-500/30 text-emerald-300'
-                                  : 'border-red-500/40 text-red-300'
-                              }`}
-                            >
-                              {formatDecision(policy.decision)}
+                  {rows.length === 0 ? (
+                    <p className="text-[12px] text-[var(--text-muted)]">{t('No policies at this scope.')}</p>
+                  ) : (
+                    rows.map((policy) => {
+                      const scopeMeta = formatScopeMeta(policy)
+                      const isBusy = busy === policy.id
+                      const u = usage?.get(policy.id)
+                      const usageLine = usage ? formatUsage(u) : null
+                      return (
+                        <SettingsRow
+                          key={policy.id}
+                          label={
+                            <span className="flex items-center gap-2">
+                              <DecisionChip decision={policy.decision} />
+                              <span className="truncate font-mono text-[12px]">{formatSubject(policy)}</span>
                             </span>
-                            <span className="truncate font-mono text-[12px] text-[var(--text-primary)]">
-                              {formatSubject(policy)}
-                            </span>
-                          </div>
-                          {scopeMeta && (
-                            <div className="mt-1 truncate font-mono text-[11px] text-[var(--text-muted)]">
-                              {scopeMeta}
-                            </div>
-                          )}
-                          <div className="mt-1 text-[11px] text-[var(--text-muted)]">
-                            Updated {formatAge(policy.updatedAt)}
-                          </div>
-                          {usage !== null &&
-                            (() => {
-                              const u = usage.get(policy.id)
-                              const line = formatUsage(u)
-                              if (!line) return null
-                              return (
-                                <div
-                                  className={`mt-1 text-[11px] ${
-                                    u && u.denied > 0
-                                      ? 'text-amber-300/90'
+                          }
+                          hint={
+                            <>
+                              {scopeMeta && <span className="block truncate font-mono text-[11px]">{scopeMeta}</span>}
+                              <span className="block">{tf('Updated {when}', { when: formatAge(policy.updatedAt) })}</span>
+                              {usageLine && (
+                                <span
+                                  className={
+                                    'block ' +
+                                    (u && u.denied > 0
+                                      ? 'text-[var(--warning)]'
                                       : u
                                         ? 'text-[var(--text-secondary)]'
-                                        : 'text-[var(--text-muted)] italic'
-                                  }`}
+                                        : 'italic')
+                                  }
                                 >
-                                  {line}
-                                </div>
-                              )
-                            })()}
-                        </div>
-                        <button
-                          type="button"
-                          disabled={isBusy}
-                          onClick={() => handleDelete(policy.id)}
-                          className="shrink-0 rounded border border-[var(--panel-border)] bg-[var(--bg-tertiary)] px-2 py-1 font-mono text-[11px] uppercase text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-primary)] disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          {isBusy ? 'Removing…' : 'Delete'}
-                        </button>
-                      </li>
-                    )
-                  })}
-                </ul>
-              )}
-            </section>
-          )
-        })}
+                                  {usageLine}
+                                </span>
+                              )}
+                            </>
+                          }
+                          control={
+                            <Button size="sm" variant="danger" disabled={isBusy} onClick={() => void handleDelete(policy.id)}>
+                              {isBusy ? t('Removing…') : t('Delete')}
+                            </Button>
+                          }
+                        />
+                      )
+                    })
+                  )}
+                </SettingsSection>
+              )
+            })}
+          </>
+        )}
+      </PanelState>
 
-      <div className="rounded border border-[var(--panel-border)] bg-[var(--bg-primary)] p-3 text-[11px] text-[var(--text-muted)]">
-        Policies are matched in order: conversation, workspace, then global —
-        and within a level a Deny beats an Allow. Risk policies (Network,
-        Destructive, Secret) match every tool that carries the same risk, so
-        one row can silence prompts across several tools.
-        <br />
-        <br />
-        The activity line counts only calls this policy decided <em>without
-        asking you</em> — that is the whole point of granting it. A row reading
-        &quot;Never used&quot; costs nothing to delete. Individual decisions are
-        in Automations → Activity.
-      </div>
-    </div>
+      <SettingsSection label={t('How policies apply')}>
+        <p className="text-[12px] leading-relaxed text-[var(--text-muted)]">
+          {t('Policies are matched in order: conversation, workspace, then global. Within a level, a Deny beats an Allow. A Risk policy (Network, Destructive, Secret) covers every tool with that risk, so one row can silence prompts across several tools.')}
+        </p>
+        <p className="text-[12px] leading-relaxed text-[var(--text-muted)]">
+          {t('The activity line counts only the calls a policy decided without asking you. A row reading "Never used" costs nothing to delete. Individual decisions are in the Activity tab of the Automations hub.')}
+        </p>
+      </SettingsSection>
+    </SettingsPage>
   )
 }

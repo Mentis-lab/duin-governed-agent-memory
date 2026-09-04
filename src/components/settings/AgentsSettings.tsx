@@ -1,14 +1,23 @@
-import { t } from '@/lib/i18n'
-import { useEffect, useState } from 'react'
+import { t, tf } from '@/lib/i18n'
+import { useCallback, useEffect, useId, useState } from 'react'
+import { Button } from '@/components/ui/Button'
+import { Input } from '@/components/ui/Input'
+import { Select } from '@/components/ui/Select'
+import { PanelState } from '@/components/ui/PanelState'
+import {
+  SettingsLoadError,
+  SettingsLoading,
+  SettingsPage,
+  SettingsRow,
+  SettingsSection
+} from '@/components/ui/settings'
+import { useDirtyGuard } from '@/hooks/useDirtyGuard'
+import { invoke, query } from '@/lib/ipc-client'
+import { panelError, panelLoading, panelReady, type PanelStatus } from '@/lib/panel-state'
+import { describeError } from '@/lib/result'
+import { toast } from '@/stores/toast-store'
 
-// Agents — the OPERATOR's side of the Brain API membrane.
-//
-// Why this pane exists, in the same shape as ChannelsSettings next door: the main-process IPC
-// (executive:pairings:approve and five siblings) and its preload bindings were both fully
-// written and had ZERO renderer callers. The pairing notice told the operator to "approve in
-// Connected Agents" — a screen that had never been built — so the only way to admit an agent
-// was to call approvePairing() against the store by hand. The approval path was not obscure,
-// it was unreachable.
+// Agents — the operator's side of the Brain API: which OTHER tools may connect to DUIN.
 //
 // THREE THINGS THIS SURFACE DECIDES, and the copy has to keep them apart:
 //   1. ADMISSION — approve or deny a pairing request, trimming the planes it asked for.
@@ -17,9 +26,12 @@ import { useEffect, useState } from 'react'
 //   2. STANDING — pause, revoke, or reissue a credential that already exists. Revocation is
 //      permanent by policy: the old token is still sitting in the agent's config, so
 //      "un-revoking" would resurrect a credential you already declared dead.
-//   3. BOUNDS — the read scope, write scope and hourly quota a grant carries. These were
-//      enforced on every call from the day they shipped, but had no editor at all, so the
-//      only way to scope an agent was to hand-edit executive-principals.json.
+//   3. BOUNDS — the read scope, write scope and hourly quota a grant carries. Enforced on
+//      every call from the day they shipped; this is their only editor.
+//
+// Revoked principals stay listed: the preload exposes no remove/forget call for a principal
+// (executive.principals has list / create / setStatus / reissue / updateGrant only), so a
+// "Forget" button would have nothing to call. Recorded as a cross-lane request.
 
 export type ExecutivePlane = string
 
@@ -54,6 +66,12 @@ interface Envelope<T> {
   error?: string
 }
 
+type GrantPatch = {
+  scope?: string[] | null
+  writeScope?: string | null
+  quota?: { callsPerHour: number; charsPerHour: number } | null
+}
+
 interface ExecutiveApi {
   pairings: {
     list: () => Promise<Envelope<{ pairings: PairingRequestView[] }>>
@@ -67,14 +85,7 @@ interface ExecutiveApi {
     >
     setStatus: (id: string, status: 'active' | 'paused' | 'revoked') => Promise<Envelope<unknown>>
     reissue: (id: string) => Promise<Envelope<{ token: string }>>
-    updateGrant: (
-      id: string,
-      patch: {
-        scope?: string[] | null
-        writeScope?: string | null
-        quota?: { callsPerHour: number; charsPerHour: number } | null
-      }
-    ) => Promise<Envelope<unknown>>
+    updateGrant: (id: string, patch: GrantPatch) => Promise<Envelope<unknown>>
   }
 }
 
@@ -82,33 +93,71 @@ function execApi(): ExecutiveApi | null {
   return (window as unknown as { api?: { executive?: ExecutiveApi } }).api?.executive ?? null
 }
 
-/** What each plane actually buys, in the operator's words rather than the vocabulary's.
- *  An approval card that lists `beliefs.read` without saying what it hands over is asking
- *  for consent to a string. */
-const PLANE_COPY: Record<string, { label: string; detail: string; write?: boolean }> = {
-  'context.read': { label: 'Read context', detail: 'Salience brief and grounded search across your vault.' },
-  'beliefs.read': { label: 'Read beliefs', detail: 'Your promoted operator model — what DUIN has learned about how you decide.' },
-  'goals.read': { label: 'Read goals', detail: 'Shared fleet goal state.' },
-  'goals.write': { label: 'Write goals', detail: 'Register and update goals. Completing one still needs you.', write: true },
-  'judgment.precheck': { label: 'Precheck judgment', detail: 'Advisory forecasts. Reads only.' },
-  'learning.submit': { label: 'Teach', detail: 'Offer beliefs about you. They stay quarantined until you promote them.', write: true },
-  'memory.write': { label: 'Write notes', detail: 'Leave notes in a bounded folder. Kept out of retrieval.', write: true }
+/** Bind an optional preload method for query()/invoke(); `undefined` makes them report the missing handler. */
+function bound<A extends unknown[], R>(
+  fn: ((...args: A) => Promise<R>) | undefined,
+  ...args: A
+): (() => Promise<R>) | undefined {
+  return fn ? () => fn(...args) : undefined
 }
 
-export function planeCopy(p: string): { label: string; detail: string; write?: boolean } {
+/** The exec MCP mount of the in-process brain, quoted in the token box. The port follows
+ *  DUIN_BRAIN_PORT in main, but the preload exposes neither the port nor the URL to the
+ *  renderer, so this literal is the default port until it does. */
+const EXEC_MCP_URL = 'http://127.0.0.1:8799/exec/mcp'
+
+/** The env var the plugin's .mcp.json reads. Kept next to the snippet that quotes it so the
+ *  two cannot drift into naming different variables. */
+const TOKEN_ENV = 'DUIN_BRAIN_TOKEN'
+
+export type PlaneCopy = { label: string; detail: string; write?: boolean }
+
+/** What each plane actually buys, in the operator's words rather than the vocabulary's. An
+ *  approval card that lists `beliefs.read` without saying what it hands over is asking for
+ *  consent to a string. t() runs at CALL time (planeCopy) so a language switch re-renders the
+ *  labels; the keys stay literal for the coverage scan. */
+const PLANE_COPY: Record<string, { label: () => string; detail: () => string; write?: boolean }> = {
+  'context.read': {
+    label: () => t('Read context'),
+    detail: () => t('Salience brief and grounded search across your vault.')
+  },
+  'beliefs.read': {
+    label: () => t('Read beliefs'),
+    detail: () => t('Your promoted operator model — what DUIN has learned about how you decide.')
+  },
+  'goals.read': { label: () => t('Read goals'), detail: () => t('Shared fleet goal state.') },
+  'goals.write': {
+    label: () => t('Write goals'),
+    detail: () => t('Register and update goals. Completing one still needs you.'),
+    write: true
+  },
+  'judgment.precheck': { label: () => t('Precheck judgment'), detail: () => t('Advisory forecasts. Reads only.') },
+  'learning.submit': {
+    label: () => t('Teach'),
+    detail: () => t('Offer beliefs about you. They stay quarantined until you promote them.'),
+    write: true
+  },
+  'memory.write': {
+    label: () => t('Write notes'),
+    detail: () => t('Leave notes in a bounded folder. Kept out of retrieval.'),
+    write: true
+  }
+}
+
+export function planeCopy(p: string): PlaneCopy {
   // An unknown plane still renders as itself rather than vanishing: a grant the UI cannot
   // describe must still be visible, because the alternative is an agent holding authority
   // that no screen shows.
-  return PLANE_COPY[p] ?? { label: p, detail: '' }
+  const entry = PLANE_COPY[p]
+  if (!entry) return { label: p, detail: '' }
+  return { label: entry.label(), detail: entry.detail(), ...(entry.write ? { write: true } : {}) }
 }
 
 /** Everything an operator can grant here, and what a fresh form ticks.
  *
  *  Both DERIVED from PLANE_COPY rather than re-typed. The default is "the planes that are not
  *  writes", which is the same rule the store's DEFAULT_PLANES encodes — so a new plane added
- *  above joins the form automatically, and joins it unticked if it writes. A hand-kept second
- *  list here would be the third copy of the vocabulary in this codebase; the first two already
- *  drifted (a plane was grantable but not requestable for three days). */
+ *  above joins the form automatically, and joins it unticked if it writes. */
 export const GRANTABLE: string[] = Object.keys(PLANE_COPY)
 export const DEFAULT_GRANT: string[] = GRANTABLE.filter((p) => !PLANE_COPY[p].write)
 
@@ -117,21 +166,36 @@ export function byLiveliness(
   a: Pick<PrincipalView, 'status'>,
   b: Pick<PrincipalView, 'status'>
 ): number {
-  const rank = (s: PrincipalView['status']): number =>
-    s === 'active' ? 0 : s === 'paused' ? 1 : 2
+  const rank = (s: PrincipalView['status']): number => (s === 'active' ? 0 : s === 'paused' ? 1 : 2)
   return rank(a.status) - rank(b.status)
 }
 
+/** The stored status as a word — the raw enum never reaches the row. */
+export function principalStatusLabel(status: PrincipalView['status']): string {
+  switch (status) {
+    case 'active':
+      return t('Active')
+    case 'paused':
+      return t('Paused')
+    case 'revoked':
+      return t('Revoked')
+    default: {
+      const unhandled: never = status
+      return String(unhandled)
+    }
+  }
+}
+
 export function ago(iso: string | null, now: number = Date.now()): string {
-  if (!iso) return 'never'
-  const t = Date.parse(iso)
-  if (Number.isNaN(t)) return 'unknown'
-  const mins = Math.floor((now - t) / 60000)
-  if (mins < 1) return 'just now'
-  if (mins < 60) return `${mins}m ago`
+  if (!iso) return t('never')
+  const parsed = Date.parse(iso)
+  if (Number.isNaN(parsed)) return t('unknown')
+  const mins = Math.floor((now - parsed) / 60000)
+  if (mins < 1) return t('just now')
+  if (mins < 60) return tf('{n}m ago', { n: mins })
   const hrs = Math.floor(mins / 60)
-  if (hrs < 24) return `${hrs}h ago`
-  return `${Math.floor(hrs / 24)}d ago`
+  if (hrs < 24) return tf('{n}h ago', { n: hrs })
+  return tf('{n}d ago', { n: Math.floor(hrs / 24) })
 }
 
 export type QuotaFormResult =
@@ -139,7 +203,7 @@ export type QuotaFormResult =
   | { ok: false; reason: string }
 
 /**
- * Map the two budget fields to a quota patch. THE load-bearing decision in this pane.
+ * Map the two budget fields to a quota patch. THE decision in this pane.
  *
  * Blank means "use the default", and 0 means "let it make no calls at all". Those are
  * opposite intentions, and a form that collapsed them — the natural `Number('') === 0` —
@@ -149,21 +213,20 @@ export type QuotaFormResult =
  * Non-numeric input is rejected HERE rather than at the store. `inputMode="numeric"` is a
  * keyboard hint, not a constraint, so "abc" is typeable on a desktop; `Number('abc')` is NaN,
  * and NaN survives the IPC layer's `typeof === 'number'` check to be refused deep in
- * updatePrincipalGrant as "out of range" — a confusing error for a typo. Catch it at the form,
- * where the field that caused it is visible.
+ * updatePrincipalGrant as "out of range" — a confusing error for a typo.
  */
 export function quotaPatchFromForm(calls: string, chars: string): QuotaFormResult {
   const c = calls.trim()
   const ch = chars.trim()
   if (c === '' && ch === '') return { ok: true, quota: null }
-  for (const [label, raw] of [
-    ['Calls / hour', c],
-    ['Characters / hour', ch]
+  for (const [field, raw] of [
+    [t('Calls / hour'), c],
+    [t('Characters / hour'), ch]
   ] as const) {
     if (raw === '') continue
     const n = Number(raw)
-    if (!Number.isFinite(n)) return { ok: false, reason: `${label} must be a number.` }
-    if (n < 0) return { ok: false, reason: `${label} cannot be negative.` }
+    if (!Number.isFinite(n)) return { ok: false, reason: tf('{field} must be a number.', { field }) }
+    if (n < 0) return { ok: false, reason: tf('{field} cannot be negative.', { field }) }
   }
   // One field filled and one blank still means "I am setting a budget"; the blank half falls
   // back to 0 rather than to the default, because a half-set budget with an unbounded half is
@@ -181,7 +244,7 @@ export function quotaPatchFromForm(calls: string, chars: string): QuotaFormResul
 export function usageLine(p: Pick<PrincipalView, 'usage' | 'quota'>): string {
   if (!p.usage || (p.usage.calls === 0 && p.usage.chars === 0)) return ''
   const ceiling = p.quota ? `/${p.quota.callsPerHour}` : ''
-  return `${p.usage.calls}${ceiling} calls used this hour`
+  return tf('{used} calls used this hour', { used: `${p.usage.calls}${ceiling}` })
 }
 
 /** The one-line "what can this agent actually do" summary. Absent scope/quota are DEFAULTS,
@@ -192,79 +255,66 @@ export function grantSummary(p: Pick<PrincipalView, 'scope' | 'quota'>): {
   budget: string
 } {
   return {
-    reads: p.scope?.length ? p.scope.join(', ') : 'your whole vault',
+    reads: p.scope?.length ? p.scope.join(', ') : t('your whole vault'),
     budget: p.quota
-      ? `${p.quota.callsPerHour} calls / ${p.quota.charsPerHour.toLocaleString()} chars per hour`
-      : 'the default hourly budget'
+      ? tf('{calls} calls / {chars} chars per hour', {
+          calls: p.quota.callsPerHour,
+          chars: p.quota.charsPerHour.toLocaleString()
+        })
+      : t('the default hourly budget')
   }
 }
 
 export function AgentsSettings(): React.ReactElement | null {
-  const [pairings, setPairings] = useState<PairingRequestView[] | null>(null)
-  const [principals, setPrincipals] = useState<PrincipalView[] | null>(null)
-  // TWO error lifetimes, and they must not share a slot. An ACTION error ("could not approve")
-  // has to stay until the operator acts again; a READ error ("could not list agents") should
-  // clear the moment a later poll succeeds. Conflating them was a live bug: run() refreshes in
-  // its finally, so a successful refresh wiped the failure message a few milliseconds after it
-  // appeared, and the action looked like it had worked.
-  const [actionErr, setActionErr] = useState<string | null>(null)
-  const [loadErr, setLoadErr] = useState<string | null>(null)
+  // TWO reads, TWO states. They used to share one error slot, so a persistent
+  // principals.list failure was wiped by every successful pairings.list poll and the
+  // Connected list sat empty with the error flickering in and out.
+  const [pairings, setPairings] = useState<PanelStatus<PairingRequestView[]>>(panelLoading())
+  const [principals, setPrincipals] = useState<PanelStatus<PrincipalView[]>>(panelLoading())
   const [busy, setBusy] = useState<string | null>(null)
   const [trim, setTrim] = useState<Record<string, string[]>>({})
   const [freshToken, setFreshToken] = useState<{ id: string; token: string } | null>(null)
   const [editing, setEditing] = useState<string | null>(null)
 
-  const load = (): void => {
-    const api = execApi()
-    if (!api) return
-    void api.pairings
-      .list()
-      .then((r) => {
-        if (r.success && r.data) {
-          setPairings(r.data.pairings)
-          // Clear on success. This pane re-reads every 10s, so a sticky read error would sit
-          // there forever after one transient failure — training the operator to ignore the
-          // one place errors appear.
-          setLoadErr(null)
-        } else setLoadErr(r.error ?? 'Could not read pairing requests')
-      })
-      .catch((e) => setLoadErr(e instanceof Error ? e.message : String(e)))
-    void api.principals
-      .list()
-      .then((r) => {
-        if (r.success && r.data) setPrincipals(r.data.principals)
-        else setLoadErr(r.error ?? 'Could not read connected agents')
-      })
-      .catch((e) => setLoadErr(e instanceof Error ? e.message : String(e)))
-  }
+  const loadPairings = useCallback(async (): Promise<void> => {
+    const r = await query('pairing requests', bound(execApi()?.pairings.list))
+    setPairings(r.ok ? panelReady(r.data.pairings) : panelError(r.error, r.cause))
+  }, [])
+  const loadPrincipals = useCallback(async (): Promise<void> => {
+    const r = await query('connected agents', bound(execApi()?.principals.list))
+    setPrincipals(r.ok ? panelReady(r.data.principals) : panelError(r.error, r.cause))
+  }, [])
+  const load = useCallback((): void => {
+    void loadPairings()
+    void loadPrincipals()
+  }, [loadPairings, loadPrincipals])
 
   useEffect(() => {
     load()
     // Requests arrive from an agent process, not from this window, and they expire in 15
     // minutes — so a pane that only loaded once would show a stale or empty list exactly
     // when someone is standing by waiting to be let in.
-    const t = setInterval(load, 10_000)
-    return () => clearInterval(t)
-  }, [])
+    const timer = setInterval(load, 10_000)
+    return () => clearInterval(timer)
+  }, [load])
 
   if (!execApi()) return null // desktop-only surface
 
   /** Returns whether the call actually landed. Callers that change the UI on completion —
    *  closing the limits editor, for one — need to distinguish "saved" from "failed", or a
-   *  rejected save looks exactly like a successful one and the operator walks away believing
-   *  a bound is in place that is not. */
-  const run = async (key: string, fn: () => Promise<Envelope<unknown>>): Promise<boolean> => {
+   *  rejected save looks exactly like a successful one. */
+  const run = async (
+    key: string,
+    label: string,
+    call: (() => Promise<Envelope<unknown>>) | undefined,
+    fallback: string
+  ): Promise<boolean> => {
     setBusy(key)
-    setActionErr(null)
     try {
-      const r = await fn()
-      if (!r.success) {
-        setActionErr(r.error ?? 'That did not work')
-        return false
-      }
+      await invoke(label, call)
       return true
     } catch (e) {
-      setActionErr(e instanceof Error ? e.message : String(e))
+      toast.error(describeError(e, fallback))
       return false
     } finally {
       setBusy(null)
@@ -272,208 +322,229 @@ export function AgentsSettings(): React.ReactElement | null {
     }
   }
 
-  const pendingCount = pairings?.length ?? 0
+  const pendingCount = pairings.phase === 'ready' ? pairings.data.length : 0
 
   return (
-    <div className="space-y-5">
-      <h3 className="font-mono text-[16px] font-semibold text-[var(--text-primary)]">{t('Agents')}</h3>
-      <p className="text-[12px] leading-relaxed text-[var(--text-muted)]">
-        Other agents — Claude Code, Codex, a bridge — can mount DUIN and borrow its judgment:
-        your context, your beliefs, your goals. Nobody is admitted by default. Each one
-        authenticates as its own{' '}
-        <span className="font-medium text-[var(--text-secondary)]">principal</span> with a
-        revocable token, and can only do what the{' '}
-        <span className="font-medium text-[var(--text-secondary)]">planes</span> you grant allow.
-        Everything they read is logged and counted against an hourly budget.
-      </p>
-
-      {actionErr && (
-        <p className="text-[11px] text-[var(--text-danger,#e5484d)]">{actionErr}</p>
-      )}
-      {loadErr && (
-        <p className="text-[11px] text-[var(--text-muted)]">
-          Could not refresh: {loadErr}. Showing the last good read.
-        </p>
-      )}
-
+    <SettingsPage
+      purpose={t('Other tools — Codex, a bridge, another agent — can connect to DUIN and use what it knows about you. Nobody is admitted by default: each gets its own token and only the access you grant, and everything it reads is logged and rate-limited.')}
+    >
       {/* ── 0 · ADD ───────────────────────────────────────────────────── */}
-      <AddAgent
-        busy={busy === '__new'}
-        onCreate={async (input) => {
-          setBusy('__new')
-          setActionErr(null)
-          try {
-            const r = await execApi()!.principals.create(input)
-            if (r.success && r.data) return r.data.token
-            setActionErr(r.error ?? 'Could not create the agent')
-            return null
-          } catch (e) {
-            setActionErr(e instanceof Error ? e.message : String(e))
-            return null
-          } finally {
-            setBusy(null)
-            load()
-          }
-        }}
-      />
+      <SettingsSection label={t('Add an agent')}>
+        <AddAgent
+          busy={busy === '__new'}
+          onCreate={async (input) => {
+            setBusy('__new')
+            try {
+              const r = await invoke('create agent', bound(execApi()?.principals.create, input))
+              return r.token
+            } catch (e) {
+              toast.error(describeError(e, t('Could not create the agent')))
+              return null
+            } finally {
+              setBusy(null)
+              load()
+            }
+          }}
+        />
+      </SettingsSection>
 
       {/* ── 1 · ADMISSION ─────────────────────────────────────────────── */}
-      <section className="space-y-3">
-        <h4 className="text-[13px] font-semibold text-[var(--text-primary)]">
-          Waiting for you{pendingCount > 0 ? ` (${pendingCount})` : ''}
-        </h4>
-        {pairings === null && <p className="text-[11px] text-[var(--text-muted)]">Loading…</p>}
-        {pairings?.length === 0 && (
-          <p className="text-[11px] text-[var(--text-muted)]">
-            No agent is asking for access. Requests appear here and expire after 15 minutes —
-            ignoring one is a safe way to decline, since asking again is cheap.
-          </p>
-        )}
-        {pairings?.map((p) => {
-          const granted = trim[p.pairingId] ?? p.requestedPlanes
-          return (
-            <div
-              key={p.pairingId}
-              className="space-y-3 rounded-md border border-[var(--border-strong,var(--border))] p-3"
-            >
-              <div>
-                <p className="text-[13px] font-medium text-[var(--text-primary)]">
-                  {p.name}{' '}
-                  <span className="font-normal text-[var(--text-muted)]">({p.kind})</span>
-                </p>
-                <p className="text-[11px] text-[var(--text-muted)]">
-                  Asked {ago(p.createdAt)}. It can read nothing until you approve.
-                </p>
-                {p.observedExe && (
-                  <p className="mt-1 break-all font-mono text-[10px] text-[var(--text-muted)]">
-                    {p.observedExe}
+      <SettingsSection label={pendingCount > 0 ? tf('Waiting for you ({n})', { n: pendingCount }) : t('Waiting for you')}>
+        <PanelState
+          state={pairings}
+          loading={<SettingsLoading what={t('pairing requests')} />}
+          error={(message, retry) => (
+            <SettingsLoadError what={t('pairing requests')} message={message} onRetry={retry} />
+          )}
+          onRetry={() => void loadPairings()}
+          empty={
+            <p className="text-[12px] text-[var(--text-muted)]">
+              {t('No agent is asking for access. Requests appear here and expire after 15 minutes — ignoring one is a safe way to decline, since asking again is cheap.')}
+            </p>
+          }
+        >
+          {(list) =>
+            list.map((p) => {
+              const granted = trim[p.pairingId] ?? p.requestedPlanes
+              const rowBusy = busy === p.pairingId
+              return (
+                <SettingsRow
+                  key={p.pairingId}
+                  label={
+                    <>
+                      {p.name} <span className="font-normal text-[var(--text-muted)]">({p.kind})</span>
+                    </>
+                  }
+                  hint={
+                    <>
+                      {tf('Asked {when}. It can read nothing until you approve.', { when: ago(p.createdAt) })}
+                      {p.observedExe && (
+                        <span className="mt-1 block break-all font-mono text-[10px]">{p.observedExe}</span>
+                      )}
+                    </>
+                  }
+                  control={
+                    <div className="flex gap-2">
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        disabled={rowBusy || granted.length === 0}
+                        onClick={() =>
+                          void run(
+                            p.pairingId,
+                            'approve pairing',
+                            bound(execApi()?.pairings.approve, p.pairingId, granted),
+                            t('Could not approve that request')
+                          )
+                        }
+                      >
+                        {t('Approve')}
+                      </Button>
+                      <Button
+                        size="sm"
+                        disabled={rowBusy}
+                        onClick={() =>
+                          void run(
+                            p.pairingId,
+                            'deny pairing',
+                            bound(execApi()?.pairings.deny, p.pairingId),
+                            t('Could not deny that request')
+                          )
+                        }
+                      >
+                        {t('Deny')}
+                      </Button>
+                    </div>
+                  }
+                >
+                  <p className="text-[12px] text-[var(--text-muted)]">
+                    {t('It asked for these. Untick anything you would rather not hand over — you can give less than was asked for, never more.')}
                   </p>
-                )}
-              </div>
-
-              <div className="space-y-1.5">
-                <p className="text-[11px] text-[var(--text-muted)]">
-                  It asked for these. Untick anything you would rather not hand over — you can
-                  give less than was asked for, never more.
-                </p>
-                {p.requestedPlanes.map((plane) => {
-                  const copy = planeCopy(plane)
-                  const on = granted.includes(plane)
-                  return (
-                    <label key={plane} className="flex items-start gap-2 text-[12px]">
-                      <input
-                        type="checkbox"
-                        checked={on}
-                        aria-label={copy.label}
-                        onChange={() =>
-                          setTrim((t) => ({
-                            ...t,
-                            [p.pairingId]: on
+                  <div className="mt-1.5 space-y-1.5">
+                    {p.requestedPlanes.map((plane) => (
+                      <PlaneCheckbox
+                        key={plane}
+                        plane={plane}
+                        checked={granted.includes(plane)}
+                        showId
+                        onToggle={() =>
+                          setTrim((prev) => ({
+                            ...prev,
+                            [p.pairingId]: granted.includes(plane)
                               ? granted.filter((g) => g !== plane)
                               : [...granted, plane]
                           }))
                         }
-                        className="mt-0.5"
                       />
-                      <span>
-                        <span className="text-[var(--text-primary)]">{copy.label}</span>
-                        {copy.write && (
-                          <span className="ml-1.5 rounded bg-[var(--bg-warning,#7a5b00)] px-1 py-px text-[10px] text-[var(--text-primary)]">
-                            writes
-                          </span>
-                        )}
-                        <span className="ml-1 font-mono text-[10px] text-[var(--text-muted)]">
-                          {plane}
-                        </span>
-                        {copy.detail && (
-                          <span className="block text-[11px] text-[var(--text-muted)]">
-                            {copy.detail}
-                          </span>
-                        )}
-                      </span>
-                    </label>
-                  )
-                })}
-              </div>
-
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  disabled={busy === p.pairingId || granted.length === 0}
-                  onClick={() =>
-                    void run(p.pairingId, () =>
-                      execApi()!.pairings.approve(p.pairingId, granted)
-                    )
-                  }
-                  className="rounded border border-[var(--border)] px-2.5 py-1 text-[12px] text-[var(--text-primary)] disabled:opacity-40"
-                >
-                  {t('Approve')}
-                </button>
-                <button
-                  type="button"
-                  disabled={busy === p.pairingId}
-                  onClick={() => void run(p.pairingId, () => execApi()!.pairings.deny(p.pairingId))}
-                  className="rounded border border-[var(--border)] px-2.5 py-1 text-[12px] text-[var(--text-muted)] disabled:opacity-40"
-                >
-                  {t('Deny')}
-                </button>
-                {granted.length === 0 && (
-                  <span className="text-[11px] text-[var(--text-muted)]">
-                    {t('Nothing ticked — that is a denial, not an approval.')}
-                  </span>
-                )}
-              </div>
-            </div>
-          )
-        })}
-      </section>
+                    ))}
+                  </div>
+                  {granted.length === 0 && (
+                    <p className="mt-1.5 text-[11px] text-[var(--text-muted)]">
+                      {t('Nothing ticked — that is a denial, not an approval.')}
+                    </p>
+                  )}
+                </SettingsRow>
+              )
+            })
+          }
+        </PanelState>
+      </SettingsSection>
 
       {/* ── 2 · STANDING + 3 · BOUNDS ─────────────────────────────────── */}
-      <section className="space-y-3">
-        <h4 className="text-[13px] font-semibold text-[var(--text-primary)]">{t('Connected')}</h4>
-        {principals === null && <p className="text-[11px] text-[var(--text-muted)]">Loading…</p>}
-        {principals?.length === 0 && (
-          <p className="text-[11px] text-[var(--text-muted)]">
-            {t('No agent has been admitted yet.')}
-          </p>
+      <SettingsSection label={t('Connected')}>
+        <PanelState
+          state={principals}
+          loading={<SettingsLoading what={t('connected agents')} />}
+          error={(message, retry) => (
+            <SettingsLoadError what={t('connected agents')} message={message} onRetry={retry} />
+          )}
+          onRetry={() => void loadPrincipals()}
+          empty={<p className="text-[12px] text-[var(--text-muted)]">{t('No agent has been admitted yet.')}</p>}
+        >
+          {(list) =>
+            // Revocation is permanent by policy, so revoked rows accumulate forever and can
+            // only ever outnumber the live ones. Sink them to the bottom rather than letting
+            // the list decay into mostly-dead entries the operator has to read past.
+            list
+              .slice()
+              .sort(byLiveliness)
+              .map((pr) => (
+                <PrincipalRow
+                  key={pr.id}
+                  principal={pr}
+                  busy={busy === pr.id}
+                  editing={editing === pr.id}
+                  onToggleEdit={() => setEditing(editing === pr.id ? null : pr.id)}
+                  freshToken={freshToken?.id === pr.id ? freshToken.token : null}
+                  onDismissToken={() => setFreshToken(null)}
+                  onSetStatus={(s) =>
+                    void run(
+                      pr.id,
+                      'change agent status',
+                      bound(execApi()?.principals.setStatus, pr.id, s),
+                      t('Could not change that agent')
+                    )
+                  }
+                  onReissue={async () => {
+                    setBusy(pr.id)
+                    try {
+                      const r = await invoke('reissue token', bound(execApi()?.principals.reissue, pr.id))
+                      setFreshToken({ id: pr.id, token: r.token })
+                    } catch (e) {
+                      toast.error(describeError(e, t('Could not reissue the token')))
+                    } finally {
+                      setBusy(null)
+                      load()
+                    }
+                  }}
+                  onSaveGrant={(patch) => {
+                    void run(
+                      pr.id,
+                      'update agent limits',
+                      bound(execApi()?.principals.updateGrant, pr.id, patch),
+                      t('Could not save those limits')
+                    ).then((ok) => {
+                      // Only on success. Closing regardless would hide the failure behind a
+                      // collapsed editor and lose what the operator typed.
+                      if (ok) setEditing(null)
+                    })
+                  }}
+                />
+              ))
+          }
+        </PanelState>
+      </SettingsSection>
+    </SettingsPage>
+  )
+}
+
+/** One grantable plane as a labelled checkbox: the label, a "writes" mark, the plane id. */
+function PlaneCheckbox({
+  plane,
+  checked,
+  onToggle,
+  showId = false
+}: {
+  plane: string
+  checked: boolean
+  onToggle: () => void
+  showId?: boolean
+}): React.ReactElement {
+  const copy = planeCopy(plane)
+  const id = useId()
+  return (
+    <div className="flex items-start gap-2 text-[12px]">
+      <input id={id} type="checkbox" checked={checked} onChange={onToggle} className="mt-0.5" />
+      <label htmlFor={id}>
+        <span className="text-[var(--text-primary)]">{copy.label}</span>
+        {copy.write && (
+          <span className="ml-1.5 rounded bg-[var(--warning)]/20 px-1 py-px text-[10px] text-[var(--text-primary)]">
+            {t('writes')}
+          </span>
         )}
-        {/* Revocation is permanent by policy, so revoked rows accumulate forever and can only
-            ever outnumber the live ones. Sink them to the bottom rather than letting the list
-            decay into mostly-dead entries the operator has to read past. */}
-        {principals?.slice().sort(byLiveliness).map((pr) => (
-          <PrincipalRow
-            key={pr.id}
-            principal={pr}
-            busy={busy === pr.id}
-            editing={editing === pr.id}
-            onToggleEdit={() => setEditing(editing === pr.id ? null : pr.id)}
-            freshToken={freshToken?.id === pr.id ? freshToken.token : null}
-            onDismissToken={() => setFreshToken(null)}
-            onSetStatus={(s) => void run(pr.id, () => execApi()!.principals.setStatus(pr.id, s))}
-            onReissue={async () => {
-              setBusy(pr.id)
-              setActionErr(null)
-              try {
-                const r = await execApi()!.principals.reissue(pr.id)
-                if (r.success && r.data) setFreshToken({ id: pr.id, token: r.data.token })
-                else setActionErr(r.error ?? 'Could not reissue')
-              } catch (e) {
-                setActionErr(e instanceof Error ? e.message : String(e))
-              } finally {
-                setBusy(null)
-                load()
-              }
-            }}
-            onSaveGrant={(patch) => {
-              void run(pr.id, () => execApi()!.principals.updateGrant(pr.id, patch)).then((ok) => {
-                // Only on success. Closing regardless would hide the error banner behind a
-                // collapsed editor and lose what the operator typed.
-                if (ok) setEditing(null)
-              })
-            }}
-          />
-        ))}
-      </section>
+        {showId && <span className="ml-1 font-mono text-[10px] text-[var(--text-muted)]">{plane}</span>}
+        {copy.detail && <span className="block text-[11px] text-[var(--text-muted)]">{copy.detail}</span>}
+      </label>
     </div>
   )
 }
@@ -497,11 +568,7 @@ function PrincipalRow({
   onDismissToken: () => void
   onSetStatus: (s: 'active' | 'paused' | 'revoked') => void
   onReissue: () => void
-  onSaveGrant: (patch: {
-    scope?: string[] | null
-    writeScope?: string | null
-    quota?: { callsPerHour: number; charsPerHour: number } | null
-  }) => void
+  onSaveGrant: (patch: GrantPatch) => void
 }): React.ReactElement {
   const [confirmRevoke, setConfirmRevoke] = useState(false)
   const revoked = principal.status === 'revoked'
@@ -513,121 +580,97 @@ function PrincipalRow({
     setConfirmRevoke(false)
   }, [editing, principal.status, principal.id])
 
+  const summary = grantSummary(principal)
+  const usage = usageLine(principal)
+  const body = (confirmRevoke && !revoked) || freshToken !== null || (editing && !revoked)
+
   return (
-    <div className="space-y-2 rounded-md border border-[var(--border)] p-3">
-      <div className="flex flex-wrap items-baseline gap-x-2">
-        <span className="text-[13px] font-medium text-[var(--text-primary)]">{principal.name}</span>
-        <span className="text-[11px] text-[var(--text-muted)]">({principal.kind})</span>
-        <span
-          className={
-            principal.status === 'active'
-              ? 'text-[11px] text-[var(--text-success,#30a46c)]'
-              : 'text-[11px] text-[var(--text-muted)]'
-          }
-        >
-          {principal.status}
+    <SettingsRow
+      label={
+        <span className="flex flex-wrap items-baseline gap-x-2">
+          <span>{principal.name}</span>
+          <span className="text-[11px] font-normal text-[var(--text-muted)]">({principal.kind})</span>
+          <span
+            className={
+              principal.status === 'active'
+                ? 'text-[11px] font-normal text-[var(--success)]'
+                : 'text-[11px] font-normal text-[var(--text-muted)]'
+            }
+          >
+            {principalStatusLabel(principal.status)}
+          </span>
+          <span className="font-mono text-[10px] font-normal text-[var(--text-muted)]">{principal.tokenId}</span>
         </span>
-        <span className="ml-auto font-mono text-[10px] text-[var(--text-muted)]">
-          {principal.tokenId}
-        </span>
-      </div>
-
-      <p className="text-[11px] text-[var(--text-muted)]">
-        Last seen {ago(principal.lastSeenAt)} · {principal.callCount} calls ·{' '}
-        {principal.planes.map((p) => planeCopy(p).label).join(', ') || 'no planes'}
-      </p>
-
-      <p className="text-[11px] text-[var(--text-muted)]">
-        Reads <span className="text-[var(--text-secondary)]">{grantSummary(principal).reads}</span>
-        {' · '}
-        <span className="text-[var(--text-secondary)]">{grantSummary(principal).budget}</span>
-        {/* Spend against the ceiling, not just the ceiling. A limit you cannot watch being
-            approached is a setting; a limit you can is a control — and "has this agent been
-            hammering the vault?" is the question this pane exists to answer. */}
-        {usageLine(principal) && (
-          <>
-            {' · '}
-            <span className="text-[var(--text-secondary)]">{usageLine(principal)}</span>
-          </>
-        )}
-      </p>
-
-      {freshToken && (
-        <div className="space-y-1 rounded border border-[var(--border-strong,var(--border))] p-2">
-          <p className="text-[11px] text-[var(--text-primary)]">
-            {t('New token — shown once. The previous one stopped working immediately.')}
-          </p>
-          <code className="block break-all font-mono text-[11px] text-[var(--text-secondary)]">
-            {freshToken}
-          </code>
-          <button
-            type="button"
-            onClick={onDismissToken}
-            className="text-[11px] text-[var(--text-muted)] underline"
-          >
-            {t('Done')}
-          </button>
-        </div>
-      )}
-
-      {!revoked && (
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => onSetStatus(principal.status === 'paused' ? 'active' : 'paused')}
-            className="rounded border border-[var(--border)] px-2 py-0.5 text-[11px] text-[var(--text-primary)] disabled:opacity-40"
-          >
-            {principal.status === 'paused' ? 'Resume' : 'Pause'}
-          </button>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={onToggleEdit}
-            className="rounded border border-[var(--border)] px-2 py-0.5 text-[11px] text-[var(--text-primary)] disabled:opacity-40"
-          >
-            {editing ? 'Close' : 'Limits'}
-          </button>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={onReissue}
-            className="rounded border border-[var(--border)] px-2 py-0.5 text-[11px] text-[var(--text-muted)] disabled:opacity-40"
-          >
-            {t('Reissue token')}
-          </button>
-          {confirmRevoke ? (
-            <>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => onSetStatus('revoked')}
-                className="rounded border border-[var(--border)] px-2 py-0.5 text-[11px] text-[var(--text-danger,#e5484d)] disabled:opacity-40"
-              >
-                {t('Revoke for good')}
-              </button>
-              <span className="text-[11px] text-[var(--text-muted)]">
-                Permanent — its token is still in the agent&apos;s config, so this cannot be undone.
-                Pair again to re-admit it.
-              </span>
-            </>
-          ) : (
-            <button
-              type="button"
+      }
+      hint={
+        <>
+          <span className="block">
+            {tf('Last seen {when} · {calls} calls · {planes}', {
+              when: ago(principal.lastSeenAt),
+              calls: principal.callCount,
+              planes: principal.planes.map((p) => planeCopy(p).label).join(', ') || t('nothing granted')
+            })}
+          </span>
+          {/* Spend against the ceiling, not just the ceiling. A limit you cannot watch being
+              approached is a setting; a limit you can is a control — and "has this agent been
+              hammering the vault?" is the question this pane exists to answer. */}
+          <span className="block">
+            {tf('Reads {reads} · {budget}', { reads: summary.reads, budget: summary.budget })}
+            {usage && ` · ${usage}`}
+          </span>
+        </>
+      }
+      control={
+        !revoked ? (
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button
+              size="sm"
               disabled={busy}
-              onClick={() => setConfirmRevoke(true)}
-              className="rounded border border-[var(--border)] px-2 py-0.5 text-[11px] text-[var(--text-muted)] disabled:opacity-40"
+              onClick={() => onSetStatus(principal.status === 'paused' ? 'active' : 'paused')}
             >
-              {t('Revoke')}
-            </button>
+              {principal.status === 'paused' ? t('Resume') : t('Pause')}
+            </Button>
+            <Button size="sm" disabled={busy} onClick={onToggleEdit}>
+              {editing ? t('Close') : t('Limits')}
+            </Button>
+            <Button size="sm" variant="ghost" disabled={busy} onClick={onReissue}>
+              {t('Reissue token')}
+            </Button>
+            {confirmRevoke ? (
+              <Button size="sm" variant="danger" disabled={busy} onClick={() => onSetStatus('revoked')}>
+                {t('Revoke for good')}
+              </Button>
+            ) : (
+              <Button size="sm" variant="ghost" disabled={busy} onClick={() => setConfirmRevoke(true)}>
+                {t('Revoke')}
+              </Button>
+            )}
+          </div>
+        ) : undefined
+      }
+    >
+      {body ? (
+        <div className="space-y-2">
+          {confirmRevoke && !revoked && (
+            <p className="text-[11px] text-[var(--text-muted)]">
+              {t('Permanent — its token is still in the agent\'s config, so this cannot be undone. Pair again to re-admit it.')}
+            </p>
           )}
+          {freshToken && (
+            <div className="space-y-1 rounded-md border border-[var(--panel-border)] bg-[var(--bg-secondary)] p-2">
+              <p className="text-[11px] text-[var(--text-primary)]">
+                {t('New token — shown once. The previous one stopped working immediately.')}
+              </p>
+              <code className="block break-all font-mono text-[11px] text-[var(--text-secondary)]">{freshToken}</code>
+              <Button size="sm" variant="ghost" onClick={onDismissToken}>
+                {t('Done')}
+              </Button>
+            </div>
+          )}
+          {editing && !revoked && <GrantEditor principal={principal} busy={busy} onSave={onSaveGrant} />}
         </div>
-      )}
-
-      {editing && !revoked && (
-        <GrantEditor principal={principal} busy={busy} onSave={onSaveGrant} />
-      )}
-    </div>
+      ) : null}
+    </SettingsRow>
   )
 }
 
@@ -637,10 +680,8 @@ function PrincipalRow({
  * It used to be an inline block inside PrincipalRow, whose useState initialisers ran once at
  * first mount and never re-synced — and the row stays mounted for the life of the pane. So the
  * fields froze at whatever the grant was when the list first rendered, while the summary line
- * above them tracked the server. Since Save sends all three fields together, saving a quota
- * would write back the STALE scope and silently revert a change made anywhere else. Mounting
- * on open makes "the form shows what the server currently holds" true by construction rather
- * than by remembering to sync.
+ * above them tracked the server. Mounting on open makes "the form shows what the server
+ * currently holds" true by construction rather than by remembering to sync.
  */
 function GrantEditor({
   principal,
@@ -649,73 +690,96 @@ function GrantEditor({
 }: {
   principal: PrincipalView
   busy: boolean
-  onSave: (patch: {
-    scope?: string[] | null
-    writeScope?: string | null
-    quota?: { callsPerHour: number; charsPerHour: number } | null
-  }) => void
+  onSave: (patch: GrantPatch) => void
 }): React.ReactElement {
-  const [scopeText, setScopeText] = useState((principal.scope ?? []).join('\n'))
-  const [writeScope, setWriteScope] = useState(principal.writeScope ?? '')
-  const [calls, setCalls] = useState(principal.quota ? String(principal.quota.callsPerHour) : '')
-  const [chars, setChars] = useState(principal.quota ? String(principal.quota.charsPerHour) : '')
+  const initial = {
+    scope: (principal.scope ?? []).join('\n'),
+    writeScope: principal.writeScope ?? '',
+    calls: principal.quota ? String(principal.quota.callsPerHour) : '',
+    chars: principal.quota ? String(principal.quota.charsPerHour) : ''
+  }
+  const [scopeText, setScopeText] = useState(initial.scope)
+  const [writeScope, setWriteScope] = useState(initial.writeScope)
+  const [calls, setCalls] = useState(initial.calls)
+  const [chars, setChars] = useState(initial.chars)
+  const ids = useId()
 
   const quota = quotaPatchFromForm(calls, chars)
+  const dirty =
+    scopeText !== initial.scope ||
+    writeScope !== initial.writeScope ||
+    calls !== initial.calls ||
+    chars !== initial.chars
+  useDirtyGuard(`settings:agents:limits:${principal.id}`, t('the agent limits editor'), dirty)
+
+  const fieldLabel = 'block text-[11px] text-[var(--text-muted)]'
 
   return (
-    <div className="space-y-2 border-t border-[var(--border)] pt-2">
-      <label className="block text-[11px] text-[var(--text-muted)]">
-        Readable folders — one per line. Leave empty for the whole vault.
+    <div className="space-y-2 border-t border-[var(--panel-border)] pt-2">
+      <div>
+        <label htmlFor={`${ids}-scope`} className={fieldLabel}>
+          {t('Readable folders — one per line. Leave empty for the whole vault.')}
+        </label>
         <textarea
+          id={`${ids}-scope`}
           value={scopeText}
-          aria-label={t('Readable folders')}
           onChange={(e) => setScopeText(e.target.value)}
           rows={3}
-          className="mt-1 w-full rounded border border-[var(--border)] bg-transparent p-1 font-mono text-[11px] text-[var(--text-primary)]"
-          placeholder="03 Projects/DUIN"
+          placeholder={t('03 Projects/DUIN')}
+          className="mt-1 w-full resize-y rounded-md border border-[var(--panel-border)] bg-[var(--bg-primary)] px-2 py-1.5 font-mono text-[11px] text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
         />
-      </label>
-      <label className="block text-[11px] text-[var(--text-muted)]">
-        Folder it may write notes into — empty for the default agent inbox.
-        <input
+      </div>
+      <div>
+        <label htmlFor={`${ids}-write`} className={fieldLabel}>
+          {t('Folder it may write notes into — empty for the default agent inbox.')}
+        </label>
+        <Input
+          id={`${ids}-write`}
           value={writeScope}
-          aria-label={t('Writable folder')}
           onChange={(e) => setWriteScope(e.target.value)}
-          className="mt-1 w-full rounded border border-[var(--border)] bg-transparent p-1 font-mono text-[11px] text-[var(--text-primary)]"
-          placeholder=".brain/agent-inbox"
+          placeholder={t('.brain/agent-inbox')}
+          className="mt-1 font-mono"
         />
-      </label>
+      </div>
       <div className="flex gap-2">
-        <label className="flex-1 text-[11px] text-[var(--text-muted)]">
-          Calls / hour
-          <input
+        <div className="flex-1">
+          <label htmlFor={`${ids}-calls`} className={fieldLabel}>
+            {t('Calls / hour')}
+          </label>
+          <Input
+            id={`${ids}-calls`}
             value={calls}
-            aria-label={t('Calls per hour')}
             inputMode="numeric"
             onChange={(e) => setCalls(e.target.value)}
-            className="mt-1 w-full rounded border border-[var(--border)] bg-transparent p-1 font-mono text-[11px] text-[var(--text-primary)]"
-            placeholder="default"
+            placeholder={t('default')}
+            className="mt-1 font-mono"
           />
-        </label>
-        <label className="flex-1 text-[11px] text-[var(--text-muted)]">
-          Characters / hour
-          <input
+        </div>
+        <div className="flex-1">
+          <label htmlFor={`${ids}-chars`} className={fieldLabel}>
+            {t('Characters / hour')}
+          </label>
+          <Input
+            id={`${ids}-chars`}
             value={chars}
-            aria-label={t('Characters per hour')}
             inputMode="numeric"
             onChange={(e) => setChars(e.target.value)}
-            className="mt-1 w-full rounded border border-[var(--border)] bg-transparent p-1 font-mono text-[11px] text-[var(--text-primary)]"
-            placeholder="default"
+            placeholder={t('default')}
+            className="mt-1 font-mono"
           />
-        </label>
+        </div>
       </div>
       <p className="text-[11px] text-[var(--text-muted)]">
-        Leaving a budget blank restores the default — it does not mean zero. Set it to 0 to stop
-        the agent making any call at all.
+        {t('Leaving a budget blank restores the default — it does not mean zero. Set it to 0 to stop the agent making any call at all.')}
       </p>
-      {!quota.ok && <p className="text-[11px] text-[var(--text-danger,#e5484d)]">{quota.reason}</p>}
-      <button
-        type="button"
+      {!quota.ok && (
+        <p role="alert" className="text-[11px] text-[var(--error)]">
+          {quota.reason}
+        </p>
+      )}
+      <Button
+        size="sm"
+        variant="primary"
         disabled={busy || !quota.ok}
         onClick={() => {
           if (!quota.ok) return
@@ -729,26 +793,20 @@ function GrantEditor({
             quota: quota.quota
           })
         }}
-        className="rounded border border-[var(--border)] px-2 py-0.5 text-[11px] text-[var(--text-primary)] disabled:opacity-40"
       >
         {t('Save limits')}
-      </button>
+      </Button>
     </div>
   )
 }
-
-/** The env var the plugin's .mcp.json reads. Kept next to the snippet that quotes it so the
- *  two cannot drift into naming different variables. */
-const TOKEN_ENV = 'DUIN_BRAIN_TOKEN'
 
 /**
  * Operator-initiated admission: name an agent, pick what it may do, get a token.
  *
  * The pairing flow below this waits for an agent to ASK, which is right for something showing
- * up uninvited and backwards when you already know what you want to connect — and it left this
- * pane with no action on it in exactly that case. Minting here grants nothing extra: the planes
- * are chosen deliberately rather than trimmed from a request, and the plaintext token still
- * exists exactly once, in the response that fills this box.
+ * up uninvited and backwards when you already know what you want to connect. Minting here
+ * grants nothing extra: the planes are chosen deliberately rather than trimmed from a request,
+ * and the plaintext token still exists exactly once, in the response that fills this box.
  */
 function AddAgent({
   busy,
@@ -762,37 +820,34 @@ function AddAgent({
   const [kind, setKind] = useState('cli-agent')
   const [planes, setPlanes] = useState<string[]>([...DEFAULT_GRANT])
   const [token, setToken] = useState<string | null>(null)
+  const ids = useId()
+  useDirtyGuard('settings:agents:new', t('the new agent form'), open && token === null && name.trim() !== '')
+
+  const reset = (): void => {
+    setToken(null)
+    setName('')
+    setPlanes([...DEFAULT_GRANT])
+    setOpen(false)
+  }
 
   if (token) {
     return (
-      <section className="space-y-2 rounded-md border border-[var(--border-strong,var(--border))] p-3">
-        <p className="text-[13px] font-medium text-[var(--text-primary)]">
-          Token for &quot;{name}&quot; — shown once
-        </p>
-        <p className="text-[11px] text-[var(--text-muted)]">
-          Nothing stores this in readable form, so if you lose it you reissue rather than look it
-          up. Set it where the agent will run, then start the agent:
-        </p>
-        <code className="block break-all rounded bg-[var(--bg-subtle,transparent)] p-2 font-mono text-[11px] text-[var(--text-secondary)]">
+      <SettingsRow
+        label={tf('Token for "{name}" — shown once', { name })}
+        hint={t('Nothing stores this in readable form, so if you lose it you reissue rather than look it up. Set it where the agent will run, then start the agent:')}
+        control={
+          <Button size="sm" onClick={reset}>
+            {t('Done')}
+          </Button>
+        }
+      >
+        <code className="block break-all rounded-md bg-[var(--bg-secondary)] p-2 font-mono text-[11px] text-[var(--text-secondary)]">
           {TOKEN_ENV}={token}
         </code>
-        <p className="text-[11px] text-[var(--text-muted)]">
-          The agent connects to <span className="font-mono">http://127.0.0.1:8799/exec/mcp</span>.
-          DUIN must be running: the brain is in-process, so no app means no mount.
+        <p className="mt-2 text-[12px] text-[var(--text-muted)]">
+          {tf('The agent connects to {url}. DUIN must be running for the connection to work.', { url: EXEC_MCP_URL })}
         </p>
-        <button
-          type="button"
-          onClick={() => {
-            setToken(null)
-            setName('')
-            setPlanes([...DEFAULT_GRANT])
-            setOpen(false)
-          }}
-          className="rounded border border-[var(--border)] px-2 py-0.5 text-[11px] text-[var(--text-primary)]"
-        >
-          {t('Done')}
-        </button>
-      </section>
+      </SettingsRow>
     )
   }
 
@@ -802,112 +857,79 @@ function AddAgent({
     // works, so the pane is degraded, not broken.
     if (typeof execApi()?.principals?.create !== 'function') {
       return (
-        <p className="text-[11px] text-[var(--text-muted)]">
-          Minting tokens needs a newer DUIN build. An agent can still connect by asking — see
-          below.
+        <p className="text-[12px] text-[var(--text-muted)]">
+          {t('Minting tokens needs a newer DUIN build. An agent can still connect by asking — see below.')}
         </p>
       )
     }
-    return (
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        className="rounded border border-[var(--border)] px-2.5 py-1 text-[12px] text-[var(--text-primary)]"
-      >
-        {t('Add an agent')}
-      </button>
-    )
+    return <Button onClick={() => setOpen(true)}>{t('Add an agent')}</Button>
   }
 
   return (
-    <section className="space-y-3 rounded-md border border-[var(--border-strong,var(--border))] p-3">
-      <label className="block text-[11px] text-[var(--text-muted)]">
-        Name — how it appears here and in the audit log.
-        <input
-          value={name}
-          aria-label={t('Agent name')}
-          autoFocus
-          onChange={(e) => setName(e.target.value)}
-          placeholder="claude-code"
-          className="mt-1 w-full rounded border border-[var(--border)] bg-transparent p-1 text-[12px] text-[var(--text-primary)]"
-        />
-      </label>
-
-      <label className="block text-[11px] text-[var(--text-muted)]">
-        Kind
-        <select
-          value={kind}
-          aria-label={t('Agent kind')}
-          onChange={(e) => setKind(e.target.value)}
-          className="mt-1 w-full rounded border border-[var(--border)] bg-transparent p-1 text-[12px] text-[var(--text-primary)]"
-        >
-          <option value="cli-agent">{t('CLI agent')}</option>
-          <option value="bridge">{t('Bridge')}</option>
-          <option value="team-agent">{t('Team agent')}</option>
-          <option value="device">{t('Device')}</option>
-        </select>
-      </label>
-
-      <div className="space-y-1.5">
-        <p className="text-[11px] text-[var(--text-muted)]">{t('What it may do. Grant the least that works.')}</p>
-        {GRANTABLE.map((plane) => {
-          const copy = planeCopy(plane)
-          const on = planes.includes(plane)
-          return (
-            <label key={plane} className="flex items-start gap-2 text-[12px]">
-              <input
-                type="checkbox"
-                checked={on}
-                aria-label={copy.label}
-                onChange={() =>
-                  setPlanes((ps) => (on ? ps.filter((p) => p !== plane) : [...ps, plane]))
-                }
-                className="mt-0.5"
-              />
-              <span>
-                <span className="text-[var(--text-primary)]">{copy.label}</span>
-                {copy.write && (
-                  <span className="ml-1.5 rounded bg-[var(--bg-warning,#7a5b00)] px-1 py-px text-[10px] text-[var(--text-primary)]">
-                    writes
-                  </span>
-                )}
-                {copy.detail && (
-                  <span className="block text-[11px] text-[var(--text-muted)]">{copy.detail}</span>
-                )}
-              </span>
-            </label>
-          )
-        })}
+    <SettingsRow label={t('New agent')} hint={t('Name it, pick what it may do, and get a token to paste where it runs.')}>
+      <div className="space-y-3">
+        <div>
+          <label htmlFor={`${ids}-name`} className="block text-[11px] text-[var(--text-muted)]">
+            {t('Name — how it appears here and in the audit log.')}
+          </label>
+          <Input
+            id={`${ids}-name`}
+            value={name}
+            autoFocus
+            onChange={(e) => setName(e.target.value)}
+            placeholder={t('codex')}
+            className="mt-1"
+          />
+        </div>
+        <div>
+          <label htmlFor={`${ids}-kind`} className="block text-[11px] text-[var(--text-muted)]">
+            {t('Kind')}
+          </label>
+          <Select id={`${ids}-kind`} value={kind} onChange={(e) => setKind(e.target.value)} className="mt-1 w-full">
+            <option value="cli-agent">{t('CLI agent')}</option>
+            <option value="bridge">{t('Bridge')}</option>
+            <option value="team-agent">{t('Team agent')}</option>
+            <option value="device">{t('Device')}</option>
+          </Select>
+        </div>
+        <div className="space-y-1.5">
+          <p className="text-[11px] text-[var(--text-muted)]">{t('What it may do. Grant the least that works.')}</p>
+          {GRANTABLE.map((plane) => (
+            <PlaneCheckbox
+              key={plane}
+              plane={plane}
+              checked={planes.includes(plane)}
+              onToggle={() =>
+                setPlanes((ps) => (ps.includes(plane) ? ps.filter((p) => p !== plane) : [...ps, plane]))
+              }
+            />
+          ))}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            size="sm"
+            variant="primary"
+            disabled={busy || !name.trim() || planes.length === 0}
+            onClick={() => {
+              void onCreate({ name: name.trim(), kind, planes }).then((minted) => {
+                // Only show the box on success. Clearing the form on a failure would throw
+                // away what was typed and leave the error with nothing to correct.
+                if (minted) setToken(minted)
+              })
+            }}
+          >
+            {t('Create token')}
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => setOpen(false)}>
+            {t('Cancel')}
+          </Button>
+          {planes.length === 0 && (
+            <span className="text-[11px] text-[var(--text-muted)]">
+              {t('Nothing ticked — the agent could authenticate and do nothing.')}
+            </span>
+          )}
+        </div>
       </div>
-
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          disabled={busy || !name.trim() || planes.length === 0}
-          onClick={() => {
-            void onCreate({ name: name.trim(), kind, planes }).then((t) => {
-              // Only show the box on success. Clearing the form on a failure would throw away
-              // what was typed and leave the error with nothing to correct.
-              if (t) setToken(t)
-            })
-          }}
-          className="rounded border border-[var(--border)] px-2.5 py-1 text-[12px] text-[var(--text-primary)] disabled:opacity-40"
-        >
-          {t('Create token')}
-        </button>
-        <button
-          type="button"
-          onClick={() => setOpen(false)}
-          className="rounded border border-[var(--border)] px-2.5 py-1 text-[12px] text-[var(--text-muted)]"
-        >
-          {t('Cancel')}
-        </button>
-        {planes.length === 0 && (
-          <span className="text-[11px] text-[var(--text-muted)]">
-            {t('Nothing ticked — the agent could authenticate and do nothing.')}
-          </span>
-        )}
-      </div>
-    </section>
+    </SettingsRow>
   )
 }

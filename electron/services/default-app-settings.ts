@@ -28,8 +28,13 @@
 // `proofGate`, and `agenticCodingComposer` retired with the pipeline, proof
 // machinery, and composer excisions. Stale keys in existing settings.json
 // files are inert: nothing reads them.
+//
+// P0 model plane (2026-09-02) — `defaultModel`, `backgroundModel`, `brainEngine` retired in
+// favour of `providerPolicy` (roles.ts). Unlike UB-7's keys these are NOT inert on disk: the
+// settings-helper migration seeds the policy from them once and deletes them.
+import type { ProviderPolicy } from './providers/roles'
+
 export interface DefaultAppSettings {
-  theme: 'dark'
   themePreset: string
   themeMode: 'light' | 'dark'
   /** Brain graph color scheme id ('default' | 'aurora' | 'precious' | 'ember').
@@ -49,6 +54,9 @@ export interface DefaultAppSettings {
   fontSize: number
   /** Chat transcript reading size in px (see src/styles/apply-theme applyChatFontSize). */
   chatFontSize: number
+  /** Markdown document reading size in px — note read view, detached note window, Library
+   *  document reader, artifact markdown viewer (see apply-theme applyDocFontSize). */
+  docFontSize: number
   /** Extra absolute paths the sandboxed shell may WRITE to, beyond the vault and
    *  $TMPDIR. Empty by default — the sandbox stays deny-by-default and only the
    *  operator can widen it. See sandbox/darwin.ts and sandbox/linux.ts. Used only in
@@ -65,14 +73,13 @@ export interface DefaultAppSettings {
   /** Response language. 'auto' = emit NO reply-language directive (byte-identical default);
    *  'en' | 'zh' | 'ja' pin the assistant's user-visible prose. Mirrors AppSettings.language. */
   language: 'auto' | 'en' | 'zh' | 'ja'
-  defaultModel: string
-  /** Background model — the LLM for DUIN's OWN structured work (note extraction, conversation
-   *  titles), separate from the chat model. '' = Auto (each provider's designated fast model,
-   *  registry EXTRACTION_DEFAULT); a model id pins it. Mirrors AppSettings.backgroundModel. */
-  backgroundModel: string
-  /** F3 — the LLM that powers the brain's language ("engine"). 'auto' = resolve
-   *  (BYO key → Ollama → keyless). The brain is the harness; this is just its engine. */
-  brainEngine: string
+  /** Provider policy (cohesion build P0, roles.ts) — REPLACES `defaultModel`, `backgroundModel`
+   *  and `brainEngine`, which stored model ids. Every role (chat, extraction, jury, title, …)
+   *  resolves at call time from this ordered provider preference filtered by live provider
+   *  health; the only stored model id is a per-conversation pin. `order: []` means "every keyed
+   *  provider in catalog order", computed at resolve time and never written. Existing files are
+   *  migrated once by settings-helper (legacy keys seed the order, then are deleted). */
+  providerPolicy: ProviderPolicy
   /** DUIN — endpoint of the agent/DUIN brain (AG-UI). Empty string = use
    *  the DUIN_BRAIN_URL env var / localhost default. */
   brainUrl: string
@@ -82,8 +89,6 @@ export interface DefaultAppSettings {
   /** DUIN — folder of notes the built-in local brain indexes. Empty = the
    *  demo graph; no notes indexed. */
   localBrainNotesDir: string
-  sidebarCollapsed: boolean
-  artifactPanelWidth: number
   minimizeToTray: boolean
   autoCheckUpdates: boolean
   aiGeneratedTitles: boolean
@@ -93,7 +98,6 @@ export interface DefaultAppSettings {
   agenticCodingMode: boolean
   agenticCodingSkills: string[]
   snipEnabled: boolean
-  snipVerbose: boolean
   safeSeedLength: number
   includePastReasoningInContext: boolean
   // Loop Phase LP-7 — autonomous loops, OFF by default (deliberate past-era
@@ -170,6 +174,8 @@ export interface DefaultAppSettings {
     calibration: boolean
     task: boolean
     jobFail: boolean
+    forecastOwed: boolean
+    confidentMiss: boolean
     driftThreshold: number
     debounceMs: number
     quietHours: { start: number; end: number }
@@ -180,7 +186,6 @@ export interface DefaultAppSettings {
 }
 
 export const DEFAULT_APP_SETTINGS: DefaultAppSettings = {
-  theme: 'dark',
   themePreset: 'duin-warm',
   themeMode: 'dark', // cold-start default = warm dark (duin-warm preset, dark variant)
   // Brain graph color scheme — 'default' preserves the original DUIN palette.
@@ -192,6 +197,11 @@ export const DEFAULT_APP_SETTINGS: DefaultAppSettings = {
   // 12px matches the surrounding UI chrome, which is why the transcript was pinned
   // there — it is now a floor the user can move rather than a constant they cannot.
   chatFontSize: 12,
+  // 16px is `.markdown-body`'s own reading base, already used by the Library and artifact
+  // viewers. The note read view had been pinned to 12 (panel chrome) and a detached note to
+  // 14 (editor), so the same document read at three sizes and the one opened most read
+  // smallest. One default, one control.
+  docFontSize: 16,
   // Empty: the shell can write to the vault and $TMPDIR and nothing else. Writing a
   // project outside the vault is a legitimate thing to want, and until now there was
   // no way to allow it short of turning the sandbox off entirely (DUIN_SANDBOX=0),
@@ -213,18 +223,14 @@ export const DEFAULT_APP_SETTINGS: DefaultAppSettings = {
   // Language default 'auto' — emits no reply-language directive, so a fresh install is
   // byte-for-byte today's behaviour until the operator picks a language.
   language: 'auto',
-  // DUIN — the brain is the default model for new conversations.
-  defaultModel: 'duin-brain',
-  // Background model '' = Auto: extraction/titles resolve per provider (registry
-  // EXTRACTION_DEFAULT) for whatever key the operator has — no provider is assumed.
-  backgroundModel: '',
-  // F3 — engine powering the brain's language. 'auto' = resolve (key→Ollama→keyless).
-  brainEngine: 'auto',
+  // Provider policy — no default model anywhere (plan §0 D1). An empty order is "every keyed
+  // provider in catalog order" at resolve time; no role override; background roles may leave the
+  // machine (the operator flips localOnlyBackground in Settings → Models). speed 'fast': the
+  // 2026-09-02 evaluation recommended the flash tier for chat (L6 §4).
+  providerPolicy: { order: [], roles: {}, localOnlyBackground: false, speed: 'fast' },
   brainUrl: '',
   brainGraphUrl: '',
   localBrainNotesDir: '',
-  sidebarCollapsed: false,
-  artifactPanelWidth: 420,
   minimizeToTray: false,
   autoCheckUpdates: true,
   aiGeneratedTitles: false,
@@ -234,7 +240,6 @@ export const DEFAULT_APP_SETTINGS: DefaultAppSettings = {
   agenticCodingMode: false,
   agenticCodingSkills: ['plan', 'context', 'verify'],
   snipEnabled: true,
-  snipVerbose: false,
   safeSeedLength: 8192,
   includePastReasoningInContext: true,
   loopsEnabled: false,
@@ -276,6 +281,8 @@ export const DEFAULT_APP_SETTINGS: DefaultAppSettings = {
     calibration: false,
     task: false,
     jobFail: true,
+    forecastOwed: false,
+    confidentMiss: false,
     driftThreshold: 0.25,
     debounceMs: 300000,
     quietHours: { start: 0, end: 0 }

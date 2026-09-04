@@ -2,6 +2,8 @@ import { t } from '@/lib/i18n'
 import { useSettingsStore } from '@/stores/settings-store'
 import { AGENT_TONES } from '@/lib/agent-tones'
 import { cn } from '@/duin/lib/utils'
+import { SettingsPage, SettingsSection, SettingsRow, SettingsLink, SavedMark, DraftTextarea } from '@/components/ui/settings'
+import { flashWhenSaved, useSavedFlash } from '@/components/ui/settings/useSavedFlash'
 
 // Voice & tone — DUIN is a personal agent, so how it talks is customizable. The
 // chosen preset is injected as a <voice> directive into the system prompt (see
@@ -10,66 +12,80 @@ export function PersonalitySettings() {
   const settings = useSettingsStore((s) => s.settings)
   const updateSettings = useSettingsStore((s) => s.updateSettings)
   const active = settings.agentTone ?? 'balanced'
+  const { saved, flash } = useSavedFlash()
 
   return (
-    <div className="space-y-5">
-      <div>
-        <h2 className="text-[14px] font-semibold text-[var(--text-primary)]">Voice &amp; tone</h2>
-        <p className="mt-1 text-[12px] text-[var(--text-muted)]">
-          {t('How DUIN talks to you. Applies everywhere — chat and background runs.')}
-        </p>
-      </div>
-
-      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-        {AGENT_TONES.map((tone) => {
-          const on = active === tone.id
-          return (
-            <button
-              key={tone.id}
-              onClick={() => updateSettings({ agentTone: tone.id })}
-              className={cn(
-                'rounded-lg border p-3 text-left transition-colors',
-                on
-                  ? 'border-[var(--accent)] bg-[var(--accent-dim)]'
-                  : 'border-[var(--panel-border)] hover:border-[var(--accent)] hover:bg-[var(--bg-tertiary)]'
-              )}
-            >
-              <div className="flex items-center gap-2">
-                <span
-                  className={cn(
-                    'inline-block h-3 w-3 shrink-0 rounded-full border',
-                    on ? 'border-[var(--accent)] bg-[var(--accent)]' : 'border-[var(--text-muted)]'
-                  )}
-                  aria-hidden
-                />
-                <span className="text-[12px] font-medium text-[var(--text-primary)]">{tone.label}</span>
-              </div>
-              <div className="mt-1 text-[12px] text-[var(--text-secondary)]">{tone.hint}</div>
-              {tone.sample && (
-                <div className="mt-1.5 border-l-2 border-[var(--panel-border)] pl-2 text-[12px] italic text-[var(--text-muted)]">
-                  “{tone.sample}”
+    <SettingsPage
+      purpose={
+        <>
+          {t('How DUIN talks to you, in chat and in background runs.')}{' '}
+          {t('Character itself lives in SOUL.md under')}{' '}
+          <SettingsLink tab="foundations">{t('Foundations')}</SettingsLink>
+        </>
+      }
+    >
+      <SettingsSection label={t('Voice')} actions={saved ? <SavedMark /> : undefined}>
+        <div role="radiogroup" aria-label={t('Voice')} className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          {AGENT_TONES.map((tone) => {
+            const on = active === tone.id
+            const sample = tone.sample()
+            return (
+              <button
+                key={tone.id}
+                type="button"
+                role="radio"
+                aria-checked={on}
+                onClick={() => {
+                  if (!on) flashWhenSaved(updateSettings({ agentTone: tone.id }), flash)
+                }}
+                className={cn(
+                  'rounded-lg border bg-[var(--bg-primary)] p-3 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]',
+                  on
+                    ? 'border-[var(--accent)] bg-[var(--accent)]/10'
+                    : 'border-[var(--panel-border)] hover:border-[var(--accent)] hover:bg-[var(--bg-tertiary)]'
+                )}
+              >
+                <div className="flex items-center gap-2">
+                  <span
+                    className={cn(
+                      'inline-block h-3 w-3 shrink-0 rounded-full border',
+                      on ? 'border-[var(--accent)] bg-[var(--accent)]' : 'border-[var(--text-muted)]'
+                    )}
+                    aria-hidden
+                  />
+                  <span className="text-[12px] font-medium text-[var(--text-primary)]">{tone.label()}</span>
                 </div>
-              )}
-            </button>
-          )
-        })}
-      </div>
+                <div className="mt-1 text-[12px] text-[var(--text-secondary)]">{tone.hint()}</div>
+                {sample && (
+                  <div className="mt-1.5 border-l-2 border-[var(--panel-border)] pl-2 text-[12px] italic text-[var(--text-muted)]">
+                    “{sample}”
+                  </div>
+                )}
+              </button>
+            )
+          })}
+        </div>
+      </SettingsSection>
 
       {active === 'custom' && (
-        <div>
-          <div className="mb-1 text-[12px] font-medium text-[var(--text-secondary)]">{t('Custom voice directive')}</div>
-          <textarea
-            value={settings.agentToneCustom ?? ''}
-            onChange={(e) => updateSettings({ agentToneCustom: e.target.value })}
-            placeholder="e.g. Speak like a dry, deadpan British butler. Understated, precise, occasionally droll."
-            rows={4}
-            className="w-full resize-y rounded-lg border border-[var(--panel-border)] bg-[var(--bg-primary)] px-3 py-2 text-[12px] text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
-          />
-          <div className="mt-1 text-[11px] text-[var(--text-muted)]">
-            Injected verbatim as the agent&apos;s voice. Describe tone, style, and quirks — keep it short.
-          </div>
-        </div>
+        <SettingsSection label={t('Custom voice')}>
+          <SettingsRow
+            label={t('Custom voice directive')}
+            hint={t('Used word for word as DUIN’s voice. Describe tone, style and quirks, and keep it short.')}
+          >
+            {/* A draft, committed on blur or Ctrl+Enter. The textarea this replaces was bound to
+                the store value, which only updates after the serialized settings write resolves,
+                so fast typing dropped characters and Chinese and Japanese composition broke. */}
+            <DraftTextarea
+              aria-label={t('Custom voice directive')}
+              value={settings.agentToneCustom ?? ''}
+              onCommit={(next) => updateSettings({ agentToneCustom: next })}
+              rows={4}
+              placeholder={t('e.g. Speak like a dry, deadpan British butler. Understated, precise, occasionally droll.')}
+            />
+          </SettingsRow>
+        </SettingsSection>
       )}
-    </div>
+    </SettingsPage>
   )
 }

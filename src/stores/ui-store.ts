@@ -43,6 +43,7 @@ export type ToolId =
   // Consolidation hub (surface rationalization 2026-07-07): owns a launcher
   // pill and wraps the existing folded panels as tabs.
   | 'homeStatus'
+  | 'home'
   // Relations (seam-edges surface, 2026-08-13): ego-centric entity/belief view
   // over the persistent entity plane, with govern actions in its drawer.
   | 'relations'
@@ -210,6 +211,13 @@ export type SettingsTabId =
   | 'planGoal'
   | 'hooks'
   | 'notifications'
+  | 'brain'
+  | 'channels'
+  | 'agents'
+  | 'rag'
+  | 'snip'
+  | 'engine'
+  | 'persistence'
   | 'automations'
   | 'loops'
   | 'workflows'
@@ -358,7 +366,8 @@ export const useUiStore = create<UiState>((set, get) => ({
   // pills made choosing a surface the first action of every session, when the answer is the
   // Explorer nearly every time. `null` is no longer "nothing selected" — it is the explicit
   // All-Surfaces view, reached from the toolbar toggle (see SecondaryToolbar).
-  activeTool: 'brain',
+  // Home leads: what needs you, what is alive, what changed. Explorer is one tap away.
+  activeTool: 'home',
   recentTools: loadRecentTools(),
   activeShell: readShell(),
   quickOpenVisible: false,

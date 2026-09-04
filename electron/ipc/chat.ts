@@ -8,10 +8,10 @@ import {
   getProviderForModel,
   resolveModel,
   routeModel,
-  resolveCompletionModel,
   type ModelRequestAudit,
   type ProviderId
 } from '../services/providers/registry'
+import { AUTO_ENGINE } from '../services/providers/roles'
 import { boundedJsonPreview, recordEvent } from '../services/event-log'
 import { validateChatSendRequest } from './chat-validation'
 import * as convStore from '../services/conversation-store'
@@ -35,7 +35,7 @@ import {
 import {
   modelCompactionEnabled,
   runModelCompaction,
-  defaultModelCompactionDeps,
+  productionModelCompactionDeps,
   DETERMINISTIC_BACKSTOP_THRESHOLD_PCT
 } from '../services/model-compaction'
 import { providerHasPrefixCache, sortToolsStable } from '../services/providers/usage-accounting'
@@ -384,29 +384,39 @@ export function registerChatHandlers(): void {
       // adapter. The
       // brain owns grounding/tools/governance; this app is the shell.
       //
-      // ENGINE selection: for a normal model pick we pass that model to the
-      // brain as its GENERATION engine; for the bare `duin-brain` sentinel we
-      // pass NO model so the brain auto-picks (today's behavior, byte-for-byte).
+      // ENGINE selection: an explicit per-conversation pin is passed to the
+      // brain as its GENERATION engine; the AUTO_ENGINE sentinel (no pin) passes
+      // NO model so the brain resolves the chat role from the provider policy.
+      // There is no default model anywhere in this path (roles.ts).
       // Only an explicit `raw:`-prefixed selection (rawBypass) skips this and
       // falls through to the raw provider loop below.
       if (!rawBypass) {
-        // The engine model handed to the brain. The `duin-brain` sentinel is the
-        // connector, not a callable LLM — omit it so the brain auto-picks.
-        const engineModel = model === 'duin-brain' ? undefined : model
+        // The engine model handed to the brain. AUTO_ENGINE is the connector,
+        // not a callable LLM — omit it so the brain routes the chat role.
+        const engineModel = model === AUTO_ENGINE ? undefined : model
+        // A retry of a turn that died before answering re-runs the persisted row instead of
+        // appending a duplicate user message (L5 F9): when the newest stored row is a user
+        // row with this exact content and nothing has answered it, it IS this turn.
+        const persisted = convStore.getMessages(conversationId)
+        // System markers ("— Switched to X —") sit between the failed row and the retry.
+        const newest = [...persisted].reverse().find((m) => m.role !== 'system')
+        const unansweredRetry = !!newest && newest.role === 'user' && newest.content === content
         // Persist the images with the turn, not just forward them in-flight.
         // Without this the model can see an attachment on the turn it arrives
         // and never again: reopening the conversation replayed a text-only
         // history, so "what did I show you?" had no answer.
-        convStore.saveMessage({
-          id: randomUUID(),
-          conversationId,
-          role: 'user',
-          content,
-          model,
-          ...(validation.value.images?.length
-            ? { contentParts: imagesToParts(validation.value.images) }
-            : {})
-        })
+        if (!unansweredRetry) {
+          convStore.saveMessage({
+            id: randomUUID(),
+            conversationId,
+            role: 'user',
+            content,
+            model,
+            ...(validation.value.images?.length
+              ? { contentParts: imagesToParts(validation.value.images) }
+              : {})
+          })
+        }
         const duinAbort = new AbortController()
         activeAbortControllers.set(correlationId, {
           controller: duinAbort,
@@ -809,13 +819,13 @@ export function registerChatHandlers(): void {
 
   ipcMain.handle('chat:generateTitle', async (_event, content: string, model?: string) => {
     try {
-      // Route via the 'title' tier (cheapest/open-flash), honoring the
-      // conversation's selected model as `preferred` — so an Ollama/local-only
-      // conversation keeps title generation on-device instead of unconditionally
-      // shipping the first user message to DeepSeek (the old hardcoded pin).
-      const selected = typeof model === 'string' && model ? model : undefined
-      const titleModel =
-        routeModel('title', selected) ?? resolveCompletionModel(selected) ?? 'deepseek-v4-flash'
+      // The 'title' role (cheapest healthy model), honoring the conversation's
+      // explicit pin as `preferred` — so an Ollama/local-only conversation keeps
+      // title generation on-device. AUTO_ENGINE is not a pin. No fallback id:
+      // when no provider can answer, the title honestly stays the raw prompt.
+      const selected = typeof model === 'string' && model && model !== AUTO_ENGINE ? model : undefined
+      const titleModel = routeModel('title', selected)
+      if (!titleModel) return { success: false, error: 'No usable model for the title role' }
       const rawResult = await chatOnce(
         [
           {
@@ -920,7 +930,12 @@ export async function runHeadlessTurn(input: {
    *  unchanged. */
   unattended?: boolean
 }): Promise<HeadlessTurnResult> {
-  const { conversationId, model } = input
+  const { conversationId } = input
+  // This is the RAW provider loop, so it needs a concrete engine: an explicit pin
+  // is honoured when usable; AUTO_ENGINE (or an unusable pin) resolves the chat role
+  // from the provider policy. No default model — nothing routable is a hard stop.
+  const model = routeModel('chat', input.model && input.model !== AUTO_ENGINE ? input.model : undefined)
+  if (!model) throw new Error('No usable model for the chat role — add a provider key or fix the provider order')
   const correlationId = input.correlationId ?? randomUUID()
   const activeSkillIds = input.activeSkillIds ?? []
 
@@ -1205,7 +1220,7 @@ export async function runHeadlessTurn(input: {
               ? sortToolsStable(tools)
               : undefined
         },
-        defaultModelCompactionDeps()
+        productionModelCompactionDeps()
       )
         .then((c) => {
           if (c) {

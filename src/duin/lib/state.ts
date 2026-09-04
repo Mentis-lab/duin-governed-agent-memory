@@ -982,6 +982,72 @@ export async function deleteNode(id: string): Promise<void> {
   if (!r.ok) throw new Error(`node delete failed (${r.status})`);
 }
 
+/* ---------------- Organize the vault by hand (Explorer): POST /state/organize/<op> ---------------- */
+// Each wrapper names its route as a literal, so renderer-route-parity.test.ts can see every one
+// of them and prove the brain serves it.
+export type OrganizeOutcome = { ok: true; path: string; linksUpdated?: number; notesTouched?: number; notesMoved?: number };
+async function organize(route: string, body: Record<string, unknown>): Promise<OrganizeOutcome> {
+  const r = await fetch(`${BASE()}${route}`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  const j = (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string; path?: string; linksUpdated?: number; notesTouched?: number; notesMoved?: number };
+  if (!r.ok || !j.ok) throw new Error(j.error || `${route} failed (${r.status})`);
+  return { ok: true, path: j.path ?? "", linksUpdated: j.linksUpdated, notesTouched: j.notesTouched, notesMoved: j.notesMoved };
+}
+/** Rename a note in place; `[[links]]` to it are rewritten across the vault unless told not to. */
+export const renameDoc = (path: string, newName: string, updateLinks = true): Promise<OrganizeOutcome> =>
+  organize("/state/organize/rename-note", { path, newName, updateLinks });
+/** Move a note into a folder ('' = the root); the folder is created if needed. */
+export const moveDoc = (path: string, toFolder: string): Promise<OrganizeOutcome> => organize("/state/organize/move-note", { path, toFolder });
+export const renameVaultFolder = (path: string, newName: string): Promise<OrganizeOutcome> => organize("/state/organize/rename-folder", { path, newName });
+export const createVaultFolder = (path: string): Promise<OrganizeOutcome> => organize("/state/organize/create-folder", { path });
+export const createDoc = (folder: string, name: string): Promise<OrganizeOutcome> => organize("/state/organize/create-note", { folder, name });
+/** The operator's name for a derived entity; an empty label clears it. */
+export async function setNodeLabel(id: string, label: string): Promise<void> {
+  const r = await fetch(`${BASE()}/state/organize/label-node`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, label }),
+  });
+  const j = (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+  if (!r.ok || !j.ok) throw new Error(j.error || `label failed (${r.status})`);
+}
+
+/** One derived entity's card: facts, sources, relations, aliases, merge candidates and the
+ *  model-written description when one exists. See electron/services/brain/entity-card.ts. */
+export interface EntityCardFact {
+  other: string; relation: string; direction: "subject" | "object"; note: string; current: boolean;
+  validFrom: string | null; validUntil: string | null; observedAt: number | null; source: "claim" | "triple";
+}
+export interface EntityCardRelation { type: string; dir: "out" | "in"; id: string; label: string; kind: string }
+export interface EntityCardSource { path: string; title: string; snippet: string | null; mtime: number | null }
+export interface EntityCardMerge { id: string; label: string; kind: string; reason: "same-label" | "alias" | "same-slug" }
+export interface EntityCardEnrichment {
+  id: string; description: string; attributes: { key: string; value: string }[]; aliases: string[];
+  model: string; materialHash: string; at: string;
+}
+export interface EntityCardData {
+  id: string; label: string; kind: string; labelBy: "operator" | null; extractedLabel: string | null; aliases: string[];
+  facts: EntityCardFact[]; factsTotal: number; relations: EntityCardRelation[]; relationsTotal: number;
+  sources: EntityCardSource[]; sourcesTotal: number; firstSeen: string | null; lastSeen: string | null;
+  mergeCandidates: EntityCardMerge[]; enrichment: EntityCardEnrichment | null; materialHash: string;
+}
+export interface EntityCardPayload { card: EntityCardData; enrichAvailable: boolean }
+/** `enrich` runs the model pass when no description matches the card's material; `force` re-describes anyway. */
+export async function fetchEntityCard(id: string, enrich = false, force = false): Promise<EntityCardPayload> {
+  const qs = `id=${encodeURIComponent(id)}${enrich ? "&enrich=1" : ""}${force ? "&force=1" : ""}`;
+  const r = await fetch(`${BASE()}/state/entity?${qs}`);
+  const j = (await r.json().catch(() => ({}))) as Partial<EntityCardPayload> & { error?: string };
+  if (!r.ok || !j.card) throw new Error(j.error || `entity card failed (${r.status})`);
+  return { card: j.card, enrichAvailable: !!j.enrichAvailable };
+}
+/** Record that `label` names the same thing as `canonicalId`; the graph folds them on its next build. */
+export async function mergeEntity(label: string, canonicalId: string): Promise<void> {
+  const r = await fetch(`${BASE()}/reveal/merge`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ label, canonicalId, verdict: "confirm" }),
+  });
+  const j = (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+  if (!r.ok || !j.ok) throw new Error(j.error || `merge failed (${r.status})`);
+}
+
 /** Resolve an Obsidian [[wikilink]] name to a vault-relative path, or null if it doesn't exist. */
 export async function resolveWiki(name: string, signal?: AbortSignal): Promise<string | null> {
   const r = await fetch(`${BASE()}/state/resolve?name=${encodeURIComponent(name)}`, { signal });

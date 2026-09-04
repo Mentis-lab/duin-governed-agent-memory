@@ -19,7 +19,11 @@ import { applyUserDataDirOverride } from './services/user-data-dir-override'
 import { readFileSync } from 'fs'
 import { is } from '@electron-toolkit/utils'
 import { registerAllIpcHandlers } from './ipc'
-import { instrumentIpcMain, startMainStallMonitor } from './services/main-stall-monitor'
+import {
+  instrumentIntervals,
+  instrumentIpcMain,
+  startMainStallMonitor
+} from './services/main-stall-monitor'
 import { runWhenIdle } from './services/idle-scheduler'
 import { setWorkflowChatRunner, abortAllWorkflows } from './ipc/workflows'
 import { abortAllLive as abortAllLiveForks } from './services/subagent-runner'
@@ -49,7 +53,8 @@ import { ensureFoundationSoul } from './services/brain/okf-scaffold'
 import { seedDefaultHooks } from './services/hooks-seed'
 import {
   setUserDataPathProvider as setProviderUserDataPath,
-  resolveWorkflowTierModel
+  resolveWorkflowTierModel,
+  LEGACY_MODEL_SETTINGS_DEPS
 } from './services/providers/registry'
 import { setTierModelResolver } from './services/workflow-budget'
 import {
@@ -94,7 +99,7 @@ import {
 } from './services/tray'
 import { registerGlobalShortcuts } from './services/shortcuts'
 import { initializeUpdater, quitAndInstall, checkNow, downloadUpdate } from './services/updater'
-import { readSettings, patchSettings } from './services/settings-helper'
+import { readSettings, patchSettings, registerLegacyModelSettingsDeps } from './services/settings-helper'
 import {
   startLocalBrain,
   getBrainExecToken,
@@ -113,6 +118,7 @@ import { recordEvent } from './services/event-log'
 import { isAllowedNavigationTarget, isExternalOpenTarget } from './services/window-guard'
 import { startFeedbackBridge, stopFeedbackBridge } from './services/feedback-bridge'
 import { setOperatorModelPath, setOperatorLifecycleHook, setOperatorEventHook, setMeasureHook, setMaterializeHook, setOperatorChangeHook, getOperatorFacts } from './services/brain/operator-model'
+import { refreshKeylessRatifyCard } from './services/brain/operator-govern'
 import { makeMaterializeHook } from './services/brain/concept-materialize'
 import {
   startSeamAutoReconcile,
@@ -147,6 +153,7 @@ import { registerForFullDiskAccessListing } from './services/mac-permissions'
 import { setDeliveryQueuePath } from './services/proactive/delivery-queue'
 import { setPendingInteractionsPath } from './services/proactive/pending-interactions'
 import { setNoticesPath, setNoticesChangeListener } from './services/proactive/notices-store'
+import { installModelFailureWatcher } from './services/proactive/watchers'
 import { broadcastNoticesChanged } from './ipc/notices'
 import { startGateway, stopGateway } from './services/channels/gateway'
 import { setConstructPaths } from './services/brain/construct'
@@ -630,6 +637,28 @@ app.whenReady().then(() => {
     app.setAppUserModelId('com.duin.app')
   }
 
+  // DBG1 — wire the diagnostic trace writer's userData path, FIRST: this is also what points the
+  // always-on main-process log (main-log.ts) at <userData>/logs and mirrors the console into it,
+  // so every boot line after this point — the settings migration, the watcher, the probes, a
+  // stall — is on disk and readable at GET /debug/log-tail. Tracing itself is opt-in via
+  // `debugTrace: true` in settings.json (which also lets main.log take info lines);
+  // `forceDebugTraceOn()` stays exported from debug-trace.ts as the escape hatch for a debug build.
+  setDebugTraceUserDataPath(() => app.getPath('userData'))
+  // P0 failure → notice (plan §2.4 W12): subscribe the model-failure watcher to the event spine
+  // BEFORE anything can record a `model.request.failed` — startLocalBrain (boot probes, the boot
+  // extraction/construct pass) runs much further down. Explicit and idempotent; it used to be a
+  // watchers.ts module-load side effect (installed by whoever imported the file first).
+  installModelFailureWatcher()
+  console.log('[main] model-failure watcher installed (event spine → Needs-you)')
+
+  // P0 model plane (plan §2.1 W3): the one-time defaultModel/backgroundModel/brainEngine →
+  // providerPolicy migration runs inside readSettings() (settings-helper.ts migrateOnce) and needs
+  // two catalog lookups that settings-helper cannot import (registry imports it). Registered HERE,
+  // explicitly, before the doctor path and before the first settings read of the boot body — until
+  // 2026-09-03 a registry.ts module-load side effect, which tied "does the migration run" to import
+  // order. Every role resolution reads settings first, so nothing can resolve against a legacy file.
+  registerLegacyModelSettingsDeps(LEGACY_MODEL_SETTINGS_DEPS)
+
   // `doctor` — the one-command answer to "is this install actually working?". Runs on the
   // same headless boot as `run` (it needs the userData-backed stores hydrated below), but
   // exits with the 0/1/2 contract a CI step or a wrapper script can branch on.
@@ -698,6 +727,9 @@ app.whenReady().then(() => {
         // Same stores, same settings, different boot path.
         setProviderUserDataPath(() => app.getPath('userData'))
         setDebugTraceUserDataPath(() => app.getPath('userData'))
+        // Same watcher as the GUI boot below: a headless run's model failures land in the same
+        // notices store. Idempotent, so both paths may call it.
+        installModelFailureWatcher()
         setLocalBrainUserDataPath(app.getPath('userData'))
         setPairingPath(app.getPath('userData'))
         setPendingInteractionsPath(app.getPath('userData'))
@@ -988,10 +1020,9 @@ app.whenReady().then(() => {
   // T1 — let chatStream's inactivity watchdog read settings.json without
   // dragging an electron import into provider-layer tests.
   setProviderUserDataPath(() => app.getPath('userData'))
-  // DBG1 — wire the diagnostic trace writer's userData path. Tracing itself is
-  // opt-in via `debugTrace: true` in settings.json; `forceDebugTraceOn()` stays
-  // exported from debug-trace.ts as the escape hatch for a debug build.
-  setDebugTraceUserDataPath(() => app.getPath('userData'))
+  // DBG1 (the trace writer's userData path, which is also the main.log sink) and the failure →
+  // notice watcher are wired at the TOP of this callback, before the doctor path and the
+  // settings migration — see there.
   // macOS only lists an app under Full Disk Access once it has ATTEMPTED a protected
   // read. DUIN never touched one in a normal session, so it never appeared in System
   // Settings and there was no switch for the user to turn on. Best-effort probe.
@@ -1028,6 +1059,11 @@ app.whenReady().then(() => {
   // registered AFTER it, so it must precede registerAllIpcHandlers; the
   // heartbeat catches whatever the wraps don't. Read at GET /debug/stalls.
   instrumentIpcMain(ipcMain)
+  // instrumentIntervals names recurring main-thread blocks by the timer that caused
+  // them. 'unattributed' was the largest bucket by an order of magnitude and recurs
+  // on a fixed period while the app is idle — the shape of a timer. Wraps only
+  // intervals registered after this line, so it sits beside the ipc wrap.
+  instrumentIntervals(globalThis)
   startMainStallMonitor()
 
   registerAllIpcHandlers()
@@ -1036,10 +1072,9 @@ app.whenReady().then(() => {
   // a real model→tool loop (was unregistered → the Workflow tool threw). Tools
   // are capability-gated (fail-closed, sandbox-bypass denied) via tool-exec.
   try {
-    setWorkflowChatRunner({
-      runner: agenticForkRunner,
-      defaultModel: (readSettings().defaultModel as string) || 'glm-5.3'
-    })
+    // No default model: a fork names its engine or resolves the `agentic` role from
+    // the provider policy at fork time (subagent-runner.ts).
+    setWorkflowChatRunner({ runner: agenticForkRunner })
     // B5 fix — TIER_MODEL_MAP (workflow-budget.ts) ships hardcoded to literal DeepSeek
     // ids as a last-resort default, so every built-in workflow's
     // `agent(prompt, {model:'cheap'|'pro'})` call silently required a DeepSeek key
@@ -1410,6 +1445,24 @@ app.whenReady().then(() => {
     // The store stays free of electron imports so it unit-tests off Electron; the owner
     // supplies the broadcast rather than the store reaching for BrowserWindow itself.
     setNoticesChangeListener(broadcastNoticesChanged)
+    // Settle the keyless-ratify card HERE, at boot, against the queue as it actually stands.
+    //
+    // The card is persisted; the count that decides its fate is not. Fixing the guard that
+    // skipped the clear was necessary and not sufficient, because the only things that CALL
+    // the settle are the govern pass — which runs at the end of a chat turn — and the
+    // ratify/veto IPC. So a card left owed by a previous run kept leading Home until the
+    // operator happened to send a message, which on 2026-09-03 meant days of "1 thing needs
+    // you" over a Learning panel with nothing in it. Boot is the moment the two can be
+    // reconciled without waiting for the operator to do anything.
+    //
+    // Both dependencies are ready by here: the operator model was pathed above and the
+    // notice store is pathed on the line before. Costs one read of the fact list, and clears
+    // nothing that is genuinely owed — resolveByActionId only fires on an EMPTY queue.
+    try {
+      refreshKeylessRatifyCard()
+    } catch (err) {
+      console.error('[main] Keyless-ratify card settle error:', (err as Error)?.message)
+    }
     // Reach — start the channel gateway. No-op unless the operator has enabled
     // a configured channel; every inbound turn is deny-first + de-privileged.
     void startGateway().catch((err) =>

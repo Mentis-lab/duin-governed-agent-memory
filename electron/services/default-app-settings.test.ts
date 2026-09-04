@@ -54,21 +54,28 @@ describe('SP-1 defaults parity — canonical vs renderer literal', () => {
     expect(rendererSource).not.toMatch(/\bagentRoster:/)
     expect(rendererSource).not.toMatch(/\bproofGate:/)
     expect(rendererSource).not.toMatch(/\bagenticCodingComposer:/)
+    // 2026-09-03: three keys that had defaults and types but no reader anywhere.
+    expect(canonical.theme).toBeUndefined()
+    expect(canonical.sidebarCollapsed).toBeUndefined()
+    expect(canonical.artifactPanelWidth).toBeUndefined()
+    expect(rendererSource).not.toMatch(/^\s+theme:/m)
+    expect(rendererSource).not.toMatch(/\bsidebarCollapsed:/)
+    expect(rendererSource).not.toMatch(/\bartifactPanelWidth:/)
   })
 
   it('scalar defaults match', () => {
-    expectRendererDefault('theme', `'${DEFAULT_APP_SETTINGS.theme}'`)
     expectRendererDefault('fontSize', String(DEFAULT_APP_SETTINGS.fontSize))
-    expectRendererDefault('defaultModel', `'${DEFAULT_APP_SETTINGS.defaultModel}'`)
-    expectRendererDefault('backgroundModel', "''")
-    expectRendererDefault('sidebarCollapsed', String(DEFAULT_APP_SETTINGS.sidebarCollapsed))
-    expectRendererDefault('artifactPanelWidth', String(DEFAULT_APP_SETTINGS.artifactPanelWidth))
     expectRendererDefault('minimizeToTray', String(DEFAULT_APP_SETTINGS.minimizeToTray))
     expectRendererDefault('autoCheckUpdates', String(DEFAULT_APP_SETTINGS.autoCheckUpdates))
     expectRendererDefault('aiGeneratedTitles', String(DEFAULT_APP_SETTINGS.aiGeneratedTitles))
     expectRendererDefault('agenticCodingMode', String(DEFAULT_APP_SETTINGS.agenticCodingMode))
     expectRendererDefault('snipEnabled', String(DEFAULT_APP_SETTINGS.snipEnabled))
-    expectRendererDefault('snipVerbose', String(DEFAULT_APP_SETTINGS.snipVerbose))
+    // Nested blocks escaped this lock: watchers.jobFail read false in the renderer and true
+    // in main for weeks (settings evaluation D8). Key lines are unique, so the same regex works.
+    expectRendererDefault('jobFail', String(DEFAULT_APP_SETTINGS.watchers.jobFail))
+    expectRendererDefault('forecastOwed', String(DEFAULT_APP_SETTINGS.watchers.forecastOwed))
+    expectRendererDefault('confidentMiss', String(DEFAULT_APP_SETTINGS.watchers.confidentMiss))
+    expectRendererDefault('multiQueryRewrite', String(DEFAULT_APP_SETTINGS.rag.multiQueryRewrite))
     expectRendererDefault('safeSeedLength', String(DEFAULT_APP_SETTINGS.safeSeedLength))
     expectRendererDefault(
       'includePastReasoningInContext',
@@ -119,11 +126,38 @@ describe('SP-1 defaults parity — canonical vs renderer literal', () => {
     expectRendererDefault('loopMinIntervalSeconds', String(DEFAULT_APP_SETTINGS.loopMinIntervalSeconds))
   })
 
+  // Keys the canonical object carries that the renderer literal is ALLOWED to lack for one phase,
+  // because the two files sit in different lanes (SESSION-LANES). The exemption is itself checked:
+  // the moment the renderer literal carries an exempted key, the second test below fails and names
+  // the line to delete. Empty since 2026-09-03 — lane B landed `providerPolicy` in settings-store.ts
+  // (integration @ 93148d6), so the 2026-09-02 exemption for it went; the mechanism stays.
+  const RENDERER_PARITY_PENDING = new Set<string>([])
+
   it('every canonical key appears in the renderer literal', () => {
     for (const key of Object.keys(DEFAULT_APP_SETTINGS)) {
+      if (RENDERER_PARITY_PENDING.has(key)) continue
       expect(rendererSource, `renderer defaults literal is missing key \`${key}\``).toMatch(
         new RegExp(`\\b${esc(key)}:`)
       )
     }
+  })
+
+  it('the renderer-parity exemption is still needed (remove it once lane B lands the key)', () => {
+    for (const key of RENDERER_PARITY_PENDING) {
+      expect(
+        rendererSource,
+        `renderer settings-store.ts now carries \`${key}:\` — delete it from RENDERER_PARITY_PENDING`
+      ).not.toMatch(new RegExp(`\\b${esc(key)}:`))
+    }
+  })
+
+  it('P0 model plane: the three model-id keys are gone from the canonical defaults', () => {
+    // A stored model id is a claim the account is funded and the id still exists (S2, 2026-09-02).
+    // The provider policy replaces all three; settings-helper migrates existing files once.
+    const canonical = DEFAULT_APP_SETTINGS as unknown as Record<string, unknown>
+    expect(canonical.defaultModel).toBeUndefined()
+    expect(canonical.backgroundModel).toBeUndefined()
+    expect(canonical.brainEngine).toBeUndefined()
+    expect(DEFAULT_APP_SETTINGS.providerPolicy).toEqual({ order: [], roles: {}, localOnlyBackground: false, speed: 'fast' })
   })
 })

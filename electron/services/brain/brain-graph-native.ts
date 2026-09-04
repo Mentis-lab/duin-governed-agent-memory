@@ -22,6 +22,8 @@
 // is a pure dedup (index-hub ids and edge pairs are deterministic regardless of
 // visitation order), so iterating those sets in SORTED order changes only the
 // emission order, never the content — and gives this port stable, diffable output.
+import { applyNodeLabels, readNodeLabels } from './node-labels'
+import { applyEntityDescriptions, readEnrichments } from './entity-enrich'
 import type { GraphReadResult } from './graph-native'
 import { buildGraph } from './build-graph-native'
 import { listOkrs } from './okrs-native'
@@ -512,6 +514,10 @@ export function buildBrainGraph(vaultDir: string | null, opts: BuildBrainGraphOp
         // retrieval is a separate decision needing its own evidence. See pruneUnstructuredTopics.
         pruneUnstructuredTopics: true
       })
+      // The operator's names for entities, applied AFTER the build pipeline (after the fold),
+      // so naming a node never folds it onto another node.
+      applyNodeLabels(built.nodes as Array<Record<string, unknown>>, readNodeLabels(vaultDir))
+      applyEntityDescriptions(built.nodes as Array<{ id: string; layer?: unknown; desc?: unknown; descBy?: unknown }>, readEnrichments(vaultDir))
       return {
         ...graph,
         nodes: built.nodes as unknown as Node[],
@@ -521,5 +527,7 @@ export function buildBrainGraph(vaultDir: string | null, opts: BuildBrainGraphOp
     }
   }
 
+  applyNodeLabels(graph.nodes as unknown as Array<Record<string, unknown>>, readNodeLabels(vaultDir))
+  applyEntityDescriptions(graph.nodes as unknown as Array<{ id: string; layer?: unknown; desc?: unknown; descBy?: unknown }>, readEnrichments(vaultDir))
   return graph
 }

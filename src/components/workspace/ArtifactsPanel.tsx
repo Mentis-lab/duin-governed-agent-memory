@@ -107,7 +107,9 @@ export function ArtifactsPanel(): React.ReactElement {
           </button>
           <span className="min-w-0 flex-1 truncate text-[var(--text-primary)]">{viewing.name}</span>
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
+        {/* `doc-md` — a saved artifact is a document being read, so it takes the
+            Document text size like the note and Library readers. */}
+        <div className="doc-md min-h-0 flex-1 overflow-y-auto px-3 py-2">
           <MarkdownRenderer content={viewing.content} />
         </div>
       </div>

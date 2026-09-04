@@ -18,6 +18,7 @@
 // second used to be expressed as the first — every pixel of slider travel serialised the
 // whole graph and restarted from alpha 1, so the graph jumped and the thumb stuttered.
 import { applyForceParams, buildSimulation, type ForceParams, type SimEdge, type SimNode } from "./graph-layout-sim";
+import { REHEAT_ALPHA } from "./graph-layout-forces";
 import type { Simulation } from "d3-force";
 
 export type LayoutRequest = ForceParams & {
@@ -32,6 +33,10 @@ export type LayoutRequest = ForceParams & {
   pinned: Uint8Array;
   /** Flat [srcIdx, dstIdx, ...] pairs. */
   links: Uint32Array;
+  /** Each node's drawn radius (world units). Present = collision on: nodes keep clear of each other. */
+  radius?: Float32Array;
+  /** Starting energy (graph-layout-forces `seedAlpha`): 1 for an unseeded run, less when most nodes already sit somewhere. */
+  alpha?: number;
   maxTicks: number;
   snapshotMs: number;
 };
@@ -40,9 +45,10 @@ export type LayoutRequest = ForceParams & {
  * Re-tune the forces of the run identified by `token` and re-heat it. Ignored for any
  * token but the current one; acknowledged with a `done` response if that run has no
  * simulation to re-heat (an empty graph), so the UI never waits on a reply that is not
- * coming.
+ * coming. `alpha` is the energy to re-heat to (graph-layout-forces `reheatAlphaFor`:
+ * proportional to how far the slider travelled); absent = the 0.3 ceiling.
  */
-export type LayoutParamsUpdate = ForceParams & { kind: "params"; token: number };
+export type LayoutParamsUpdate = ForceParams & { kind: "params"; token: number; alpha?: number };
 
 export type LayoutMessage = LayoutRequest | LayoutParamsUpdate;
 
@@ -53,13 +59,6 @@ export type LayoutResponse = {
   /** Flat [x0, y0, x1, y1, ...] matching `ids` order. */
   pos: Float32Array;
 };
-
-/**
- * Alpha a live parameter change re-heats to. d3's own convention for an interactive
- * nudge (its drag examples target 0.3): enough energy to re-settle under the new forces,
- * not the alpha-1 scatter of a run from scratch.
- */
-const REHEAT_ALPHA = 0.3;
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope;
 
@@ -106,7 +105,9 @@ function step(r: Run): void {
     r.sim.tick();
     r.ticks++;
   }
-  const finished = r.ticks >= r.maxTicks || r.sim.alpha() <= r.sim.alphaMin();
+  // A non-finite alpha would make both comparisons false forever: the run would never tick,
+  // never finish, and post an unchanged snapshot every cycle. Treat it as finished.
+  const finished = r.ticks >= r.maxTicks || r.sim.alpha() <= r.sim.alphaMin() || !Number.isFinite(r.sim.alpha());
   const now = Date.now();
   if (finished) {
     r.stepping = false;
@@ -121,7 +122,7 @@ function step(r: Run): void {
 }
 
 function startRun(req: LayoutRequest): void {
-  const { ids, x, y, pinned, links, maxTicks, snapshotMs, token } = req;
+  const { ids, x, y, pinned, links, radius, maxTicks, snapshotMs, token } = req;
   const n = ids.length;
   if (n === 0) {
     run = null;
@@ -148,15 +149,19 @@ function startRun(req: LayoutRequest): void {
     deg[s]++; deg[t]++;
   }
 
-  const sim = buildSimulation(nodes, edges, deg, req);
+  const sim = buildSimulation(nodes, edges, deg, req, radius);
+  if (typeof req.alpha === "number" && req.alpha > 0 && req.alpha < 1) sim.alpha(req.alpha);
   run = { token, sim, nodes, deg, ticks: 0, maxTicks, snapshotMs, lastPost: Date.now(), stepping: true };
   step(run);
 }
 
 /** Re-tune the run's forces and give it the energy to re-settle — from where it is, not from scratch. */
-function reheat(r: Run, p: ForceParams): void {
+function reheat(r: Run, p: LayoutParamsUpdate): void {
   applyForceParams(r.sim, r.deg, p);
-  r.sim.alpha(Math.max(r.sim.alpha(), REHEAT_ALPHA));
+  // Only ever UP to the requested energy: a run still hot from a bigger move keeps its heat.
+  // A missing or non-finite alpha means the ceiling (NaN would wedge the run, see step()).
+  const wanted = typeof p.alpha === "number" && Number.isFinite(p.alpha) ? p.alpha : REHEAT_ALPHA.max;
+  r.sim.alpha(Math.max(r.sim.alpha(), Math.min(REHEAT_ALPHA.max, Math.max(REHEAT_ALPHA.min, wanted))));
   r.ticks = 0; // a fresh tick budget for the new settle
   if (!r.stepping) {
     r.stepping = true;

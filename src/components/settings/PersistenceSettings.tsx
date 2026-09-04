@@ -1,32 +1,44 @@
-import { t } from '@/lib/i18n'
-import { useCallback, useEffect, useState } from 'react'
+import { t, tf } from '@/lib/i18n'
+import { useCallback, useEffect, useId, useState } from 'react'
+import { Button } from '@/components/ui/Button'
+import { Input } from '@/components/ui/Input'
+import { PanelState } from '@/components/ui/PanelState'
+import {
+  SettingsLoadError,
+  SettingsLoading,
+  SettingsPage,
+  SettingsRow,
+  SettingsSection
+} from '@/components/ui/settings'
+import { useDirtyGuard } from '@/hooks/useDirtyGuard'
+import { invoke, query } from '@/lib/ipc-client'
+import { panelFromResult, panelLoading, type PanelStatus } from '@/lib/panel-state'
+import { describeError, type IpcEnvelope } from '@/lib/result'
 import {
   restoreConfirmMessage,
   restoreCompletionMessage,
   type RestoreInfo
 } from '@/components/persistence/restore-copy'
+import { SettingsBackupSection } from './SettingsBackupSection'
 
-// Persistence Phase / PS10 — the Settings panel that surfaces every
-// PS1–PS9 lever and live status.
+// The Settings page for the database floor.
 //
 // Read sections:
-//   - DB / WAL / SHM file sizes (PS2).
-//   - Last WAL checkpoint result (PS2): ok flag, pages moved, duration.
-//   - Last integrity check (PS4): ok flag, raw result, timestamp.
-//   - Backup directory + latest backup metadata (PS5).
-//   - Encryption status (PS9): binding available, db encrypted,
-//     passphrase stored.
+//   - Database: file path and size; WAL / SHM sizes under a Details disclosure.
+//   - Checkpoint: the last WAL checkpoint (ok flag, pages moved, duration).
+//   - Integrity check: the last PRAGMA integrity_check (ok flag, raw result, timestamp).
+//   - Backups: backup folder, count, latest backup, and the list to restore from.
+//   - Encryption: binding available, database encrypted, passphrase stored.
 //
-// Action sections:
-//   - "Run integrity check now" — re-runs PRAGMA integrity_check on
-//     demand (PS4). Useful after a suspected corruption.
-//   - "Force checkpoint now" — runs wal_checkpoint(TRUNCATE) on demand
-//     (PS2). Visible WAL shrinkage in the status above proves the call.
-//   - "Create backup now" — async snapshot (PS5).
-//   - "Restore from backup…" — list of backups; click one to restore.
-//     Atomic file swap + relaunch prompt.
-//   - Encryption: enable + disable + change-passphrase forms,
-//     conditional on bindingAvailable.
+// Actions:
+//   - "Run checkpoint now" — wal_checkpoint(TRUNCATE) on demand; the WAL size above
+//     shrinking proves the call.
+//   - "Run integrity check now" — useful after a suspected corruption.
+//   - "Create backup now" — async snapshot.
+//   - "Restore" on a listed backup — confirm, atomic file swap, then a restart is needed.
+//   - Encryption: an enable form (passphrase + confirm) and a disable form (current
+//     passphrase), shown only when the cipher binding is available. A change-passphrase
+//     IPC exists main-side; this page has no form for it.
 
 interface CheckpointResult {
   ok: boolean
@@ -81,30 +93,25 @@ function formatTimestamp(ms: number | undefined): string {
   return new Date(ms).toLocaleString()
 }
 
-function StatusRow({ label, value }: { label: string; value: React.ReactNode }) {
+function StatusLine({ label, value }: { label: string; value: React.ReactNode }): React.ReactElement {
   return (
-    <div className="flex items-baseline justify-between gap-3 py-1 text-[12px]">
+    <div className="flex items-baseline justify-between gap-3 py-0.5 text-[12px]">
       <span className="text-[var(--text-muted)]">{label}</span>
-      <span className="font-mono text-[var(--text-primary)]">{value}</span>
+      <span className="break-all text-right font-mono text-[var(--text-primary)]">{value}</span>
     </div>
   )
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div className="mb-5">
-      <div className="mb-2 border-b border-[var(--panel-border)] pb-1 text-[12px] font-semibold uppercase tracking-wide text-[var(--text-secondary)]">
-        {title}
-      </div>
-      {children}
-    </div>
-  )
+function checkpointSummary(c: CheckpointResult | null): string {
+  if (!c) return t('No checkpoint yet')
+  if (c.ok) return tf('{moved} of {total} pages moved', { moved: c.pagesCheckpointed, total: c.pagesInWal })
+  return t('Busy, no pages moved')
 }
 
 export function PersistenceSettings(): React.ReactElement {
-  const [status, setStatus] = useState<PersistenceStatus | null>(null)
-  const [encryption, setEncryption] = useState<EncryptionStatus | null>(null)
-  const [backups, setBackups] = useState<BackupInfo[]>([])
+  const [status, setStatus] = useState<PanelStatus<PersistenceStatus>>(panelLoading())
+  const [encryption, setEncryption] = useState<PanelStatus<EncryptionStatus>>(panelLoading())
+  const [backups, setBackups] = useState<PanelStatus<BackupInfo[]>>(panelLoading())
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [info, setInfo] = useState<string | null>(null)
@@ -113,293 +120,394 @@ export function PersistenceSettings(): React.ReactElement {
   const [encryptPassphrase, setEncryptPassphrase] = useState('')
   const [encryptConfirm, setEncryptConfirm] = useState('')
   const [decryptPassphrase, setDecryptPassphrase] = useState('')
+  const newPassId = useId()
+  const confirmPassId = useId()
+  const currentPassId = useId()
+  useDirtyGuard(
+    'settings:persistence:encryption',
+    'the encryption form',
+    encryptPassphrase !== '' || encryptConfirm !== '' || decryptPassphrase !== ''
+  )
 
-  const refresh = useCallback(async () => {
-    if (!window.api?.persistence) return
-    try {
-      const [s, e, b] = await Promise.all([
-        window.api.persistence.getStatus(),
-        window.api.persistence.getEncryptionStatus(),
-        window.api.persistence.listBackups()
-      ])
-      if (s.success) setStatus(s.data)
-      if (e.success) setEncryption(e.data)
-      if (b.success) setBackups(b.data)
-    } catch (err: any) {
-      setError(err?.message ?? String(err))
-    }
+  // Every read lands in a PanelStatus: a thrown call, a missing handler and a
+  // `success:false` envelope (which the old refresh silently dropped, leaving "—" in
+  // every row) all render as a load error with a Retry.
+  const refresh = useCallback(async (): Promise<void> => {
+    const [s, e, b] = await Promise.all([
+      query<PersistenceStatus>('database status', window.api?.persistence?.getStatus),
+      query<EncryptionStatus>('encryption status', window.api?.persistence?.getEncryptionStatus),
+      query<BackupInfo[]>('backups', window.api?.persistence?.listBackups)
+    ])
+    setStatus(panelFromResult(s))
+    setEncryption(panelFromResult(e))
+    setBackups(panelFromResult(b))
   }, [])
 
   useEffect(() => {
     void refresh()
   }, [refresh])
 
-  const runAction = async (
+  const runAction = async <T,>(
     label: string,
-    fn: () => Promise<{ success: boolean; data?: unknown; error?: string }>,
-    onSuccess?: (data: unknown) => void
+    key: string,
+    fn: () => Promise<IpcEnvelope<T> | undefined>,
+    onSuccess: (data: T) => void
   ): Promise<void> => {
-    setBusy(label)
+    setBusy(key)
     setError(null)
     setInfo(null)
     try {
-      const result = await fn()
-      if (!result.success) {
-        setError(result.error ?? `${label} failed`)
-        return
-      }
-      setInfo(`${label} complete.`)
-      onSuccess?.(result.data)
+      const data = await invoke<T>(label, fn)
+      onSuccess(data)
       await refresh()
-    } catch (err: any) {
-      setError(err?.message ?? String(err))
+    } catch (err) {
+      setError(describeError(err, t('Something went wrong')))
     } finally {
       setBusy(null)
     }
   }
 
-  if (!window.api?.persistence) {
-    return (
-      <div className="text-[12px] text-[var(--text-muted)]">
-        Persistence APIs unavailable — this view requires the Electron preload
-        bridge.
-      </div>
-    )
-  }
+  const encryptDisabled =
+    busy !== null || encryptPassphrase.length < 8 || encryptPassphrase !== encryptConfirm
 
   return (
-    <div className="flex flex-col">
+    <SettingsPage
+      purpose={t('Where DUIN keeps its database and backups, and the tools to check and restore it.')}
+    >
       {error && (
-        <div className="mb-3 rounded border border-[var(--error)] bg-[var(--error)]/10 px-2 py-1 text-[12px] text-[var(--text-primary)]">
+        <div
+          role="alert"
+          className="rounded-lg border border-[var(--error)]/60 bg-[var(--bg-primary)] px-3 py-2 text-[12px] text-[var(--text-primary)]"
+        >
           {error}
         </div>
       )}
       {info && (
-        <div className="mb-3 rounded border border-[var(--success)] bg-[var(--success)]/10 px-2 py-1 text-[12px] text-[var(--text-primary)]">
+        <div
+          role="status"
+          className="rounded-lg border border-[var(--success)]/60 bg-[var(--bg-primary)] px-3 py-2 text-[12px] text-[var(--text-primary)]"
+        >
           {info}
         </div>
       )}
 
-      <Section title={t('Database files')}>
-        <StatusRow label={t('Path')} value={status?.dbPath ?? '—'} />
-        <StatusRow label={t('Main DB')} value={formatBytes(status?.dbBytes ?? null)} />
-        <StatusRow label="WAL" value={formatBytes(status?.walBytes ?? null)} />
-        <StatusRow label="SHM" value={formatBytes(status?.shmBytes ?? null)} />
-      </Section>
-
-      <Section title={t('Last checkpoint (PS2)')}>
-        <StatusRow
-          label={t('Result')}
-          value={
-            status?.lastCheckpoint
-              ? status.lastCheckpoint.ok
-                ? `ok — ${status.lastCheckpoint.pagesCheckpointed} of ${status.lastCheckpoint.pagesInWal} pages moved`
-                : `busy (no pages moved)`
-              : 'no checkpoint yet'
-          }
-        />
-        <StatusRow
-          label={t('Duration')}
-          value={status?.lastCheckpoint ? `${status.lastCheckpoint.durationMs} ms` : '—'}
-        />
-        <div className="mt-2">
-          <button
-            disabled={busy !== null}
-            onClick={() =>
-              runAction('Force checkpoint', () => window.api.persistence.forceCheckpoint())
-            }
-            className="rounded border border-[var(--border)] px-2 py-1 text-[12px] hover:bg-[var(--bg-tertiary)] disabled:opacity-50"
-          >
-            {busy === 'Force checkpoint' ? 'Checkpointing…' : 'Force checkpoint now'}
-          </button>
-        </div>
-      </Section>
-
-      <Section title={t('Last integrity check (PS4)')}>
-        <StatusRow
-          label={t('Result')}
-          value={
-            status?.lastIntegrity ? (
-              status.lastIntegrity.ok ? (
-                <span className="text-[var(--success)]">ok</span>
-              ) : (
-                <span className="text-[var(--error)]">{status.lastIntegrity.result}</span>
-              )
-            ) : (
-              'never run'
-            )
-          }
-        />
-        <StatusRow label={t('Ran at')} value={formatTimestamp(status?.lastIntegrity?.ranAt)} />
-        <StatusRow
-          label={t('Duration')}
-          value={status?.lastIntegrity ? `${status.lastIntegrity.durationMs} ms` : '—'}
-        />
-        <div className="mt-2">
-          <button
-            disabled={busy !== null}
-            onClick={() =>
-              runAction('Run integrity check', () =>
-                window.api.persistence.runIntegrityCheck()
-              )
-            }
-            className="rounded border border-[var(--border)] px-2 py-1 text-[12px] hover:bg-[var(--bg-tertiary)] disabled:opacity-50"
-          >
-            {busy === 'Run integrity check' ? 'Checking…' : 'Run integrity check now'}
-          </button>
-        </div>
-      </Section>
-
-      <Section title={`Backups (PS5): ${status?.backupCount ?? 0} kept`}>
-        <StatusRow label={t('Backup directory')} value={status?.backupDir ?? '—'} />
-        <StatusRow
-          label={t('Latest backup')}
-          value={
-            status?.latestBackup
-              ? `${status.latestBackup.name} (${formatBytes(status.latestBackup.bytes)})`
-              : 'none'
-          }
-        />
-        <StatusRow
-          label={t('Latest backup time')}
-          value={formatTimestamp(status?.latestBackup?.mtime)}
-        />
-        <div className="mt-2 flex flex-wrap gap-2">
-          <button
-            disabled={busy !== null}
-            onClick={() =>
-              runAction('Create backup', () => window.api.persistence.createBackup())
-            }
-            className="rounded border border-[var(--border)] px-2 py-1 text-[12px] hover:bg-[var(--bg-tertiary)] disabled:opacity-50"
-          >
-            {busy === 'Create backup' ? 'Backing up…' : 'Create backup now'}
-          </button>
-        </div>
-        {backups.length > 0 && (
-          <details className="mt-3">
-            <summary className="cursor-pointer text-[12px] text-[var(--text-secondary)]">
-              Restore from backup ({backups.length} available)
-            </summary>
-            <ul className="mt-2 space-y-1">
-              {backups.map((b) => (
-                <li
-                  key={b.path}
-                  className="flex items-center justify-between gap-2 rounded border border-[var(--border)] px-2 py-1 text-[12px]"
-                >
-                  <span>
-                    <span className="font-mono">{b.name}</span>{' '}
-                    <span className="text-[var(--text-muted)]">
-                      ({formatBytes(b.bytes)} · {formatTimestamp(b.mtime)})
-                    </span>
-                  </span>
-                  <button
-                    disabled={busy !== null}
-                    onClick={() => {
-                      // U9: restore swaps the entire user database. It used to
-                      // fire on this single click with no confirmation at all.
-                      if (!window.confirm(restoreConfirmMessage(b))) return
-                      void runAction(
-                        `Restore ${b.name}`,
-                        () => window.api.persistence.restoreFromBackup(b.path),
-                        // Overwrites runAction's generic "<label> complete." —
-                        // the operator needs the pre-restore path and the
-                        // relaunch instruction, not just "complete".
-                        (data) => setInfo(restoreCompletionMessage(data as RestoreInfo | undefined))
-                      )
-                    }}
-                    className="rounded border border-[var(--warning)] bg-[var(--warning)]/10 px-2 py-0.5 text-[12px] hover:bg-[var(--warning)]/20 disabled:opacity-50"
-                  >
-                    {t('Restore')}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </details>
+      <PanelState
+        state={status}
+        loading={<SettingsLoading what={t('the database status')} />}
+        error={(message, retry) => (
+          <SettingsLoadError what={t('the database status')} message={message} onRetry={retry} />
         )}
-      </Section>
-
-      {/* Release M11 (A4 F13): the SQLCipher binding (better-sqlite3-multiple-ciphers) is not a
-          dependency of this build, so the option cannot succeed — hide it rather than tell a
-          user to install an npm package into a packaged app. Renders only when the main
-          process reports the binding present (or is still loading). */}
-      {(encryption === null || encryption.bindingAvailable) && (
-      <Section title={t('Encryption (PS9)')}>
-        {encryption === null ? (
-          <div className="text-[12px] text-[var(--text-muted)]">loading…</div>
-        ) : (
+        empty={
+          <SettingsLoadError
+            what={t('the database status')}
+            message={t('The main process returned no status.')}
+            onRetry={() => void refresh()}
+          />
+        }
+        onRetry={() => void refresh()}
+      >
+        {(s) => (
           <>
-            <StatusRow
-              label={t('Status')}
-              value={
-                encryption.databaseEncrypted ? (
-                  <span className="text-[var(--success)]">encrypted</span>
-                ) : (
-                  'plaintext'
-                )
-              }
-            />
-            {!encryption.databaseEncrypted ? (
-              <div className="mt-2 space-y-2">
-                <input
-                  type="password"
-                  placeholder={t('New passphrase (min 8 chars)')}
-                  value={encryptPassphrase}
-                  onChange={(e) => setEncryptPassphrase(e.target.value)}
-                  className="w-full rounded border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1 text-[12px]"
+            <SettingsSection label={t('Database')}>
+              <SettingsRow
+                label={t('Database file')}
+                hint={<span className="break-all font-mono">{s.dbPath}</span>}
+              >
+                <StatusLine label={t('Size')} value={formatBytes(s.dbBytes)} />
+                <details className="mt-1 text-[12px]">
+                  <summary className="cursor-pointer text-[var(--text-secondary)]">{t('Details')}</summary>
+                  <StatusLine label="WAL" value={formatBytes(s.walBytes)} />
+                  <StatusLine label="SHM" value={formatBytes(s.shmBytes)} />
+                </details>
+              </SettingsRow>
+            </SettingsSection>
+
+            <SettingsSection
+              label={t('Checkpoint')}
+              description={t('Moves pending writes from the write-ahead log into the main database file.')}
+            >
+              <SettingsRow
+                label={t('Last checkpoint')}
+                hint={checkpointSummary(s.lastCheckpoint)}
+                control={
+                  <Button
+                    size="sm"
+                    disabled={busy !== null}
+                    onClick={() =>
+                      void runAction(
+                        'force checkpoint',
+                        'checkpoint',
+                        () => window.api.persistence.forceCheckpoint(),
+                        () => setInfo(t('Checkpoint complete.'))
+                      )
+                    }
+                  >
+                    {busy === 'checkpoint' ? t('Checkpointing…') : t('Run checkpoint now')}
+                  </Button>
+                }
+              >
+                <StatusLine
+                  label={t('Duration')}
+                  value={s.lastCheckpoint ? tf('{ms} ms', { ms: s.lastCheckpoint.durationMs }) : '—'}
                 />
-                <input
-                  type="password"
-                  placeholder={t('Confirm passphrase')}
-                  value={encryptConfirm}
-                  onChange={(e) => setEncryptConfirm(e.target.value)}
-                  className="w-full rounded border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1 text-[12px]"
-                />
-                <button
-                  disabled={
-                    busy !== null ||
-                    encryptPassphrase.length < 8 ||
-                    encryptPassphrase !== encryptConfirm
-                  }
-                  onClick={() =>
-                    runAction('Encrypt database', () =>
-                      window.api.persistence.enableEncryption(encryptPassphrase)
+              </SettingsRow>
+            </SettingsSection>
+
+            <SettingsSection
+              label={t('Integrity check')}
+              description={t('Asks SQLite to verify the whole file. Run it after a crash or when something looks wrong.')}
+            >
+              <SettingsRow
+                label={t('Last integrity check')}
+                hint={
+                  s.lastIntegrity ? (
+                    s.lastIntegrity.ok ? (
+                      <span className="text-[var(--success)]">{t('OK')}</span>
+                    ) : (
+                      <span className="text-[var(--error)]">{s.lastIntegrity.result}</span>
                     )
+                  ) : (
+                    t('Never run')
+                  )
+                }
+                control={
+                  <Button
+                    size="sm"
+                    disabled={busy !== null}
+                    onClick={() =>
+                      void runAction(
+                        'run integrity check',
+                        'integrity',
+                        () => window.api.persistence.runIntegrityCheck(),
+                        () => setInfo(t('Integrity check complete.'))
+                      )
+                    }
+                  >
+                    {busy === 'integrity' ? t('Checking…') : t('Run integrity check now')}
+                  </Button>
+                }
+              >
+                <StatusLine label={t('Ran at')} value={formatTimestamp(s.lastIntegrity?.ranAt)} />
+                <StatusLine
+                  label={t('Duration')}
+                  value={s.lastIntegrity ? tf('{ms} ms', { ms: s.lastIntegrity.durationMs }) : '—'}
+                />
+              </SettingsRow>
+            </SettingsSection>
+
+            <SettingsSection
+              label={t('Backups')}
+              description={t('Snapshots of the database. Restoring swaps the live file for a backup and keeps the current file beside it.')}
+            >
+              <SettingsRow
+                label={tf('{n} backups kept', { n: s.backupCount })}
+                hint={<span className="break-all font-mono">{s.backupDir}</span>}
+                control={
+                  <Button
+                    size="sm"
+                    disabled={busy !== null}
+                    onClick={() =>
+                      void runAction(
+                        'create backup',
+                        'backup',
+                        () => window.api.persistence.createBackup(),
+                        () => setInfo(t('Backup created.'))
+                      )
+                    }
+                  >
+                    {busy === 'backup' ? t('Backing up…') : t('Create backup now')}
+                  </Button>
+                }
+              >
+                <StatusLine
+                  label={t('Latest backup')}
+                  value={
+                    s.latestBackup
+                      ? `${s.latestBackup.name} (${formatBytes(s.latestBackup.bytes)})`
+                      : t('None')
                   }
-                  className="rounded border border-[var(--error)] bg-[var(--error)]/10 px-2 py-1 text-[12px] hover:bg-[var(--error)]/20 disabled:opacity-50"
-                >
-                  {busy === 'Encrypt database' ? 'Encrypting…' : 'Encrypt database'}
-                </button>
-                <div className="text-[var(--text-muted)]">
-                  Requires app relaunch. The plaintext file is moved aside as a
-                  timestamped backup so you can roll back manually if needed.
+                />
+                <StatusLine label={t('Latest backup time')} value={formatTimestamp(s.latestBackup?.mtime)} />
+                <div className="mt-2">
+                  <PanelState
+                    state={backups}
+                    loading={<SettingsLoading what={t('backups')} />}
+                    error={(message, retry) => (
+                      <SettingsLoadError what={t('backups')} message={message} onRetry={retry} />
+                    )}
+                    empty={<p className="text-[12px] text-[var(--text-muted)]">{t('No backups yet.')}</p>}
+                    onRetry={() => void refresh()}
+                  >
+                    {(list) => (
+                      <details>
+                        <summary className="cursor-pointer text-[12px] text-[var(--text-secondary)]">
+                          {tf('Restore from a backup ({n} available)', { n: list.length })}
+                        </summary>
+                        <ul className="mt-2 space-y-1">
+                          {list.map((b) => (
+                            <li
+                              key={b.path}
+                              className="flex items-center justify-between gap-2 rounded-md border border-[var(--panel-border)] px-2 py-1 text-[12px]"
+                            >
+                              <span>
+                                <span className="font-mono">{b.name}</span>{' '}
+                                <span className="text-[var(--text-muted)]">
+                                  ({formatBytes(b.bytes)} · {formatTimestamp(b.mtime)})
+                                </span>
+                              </span>
+                              <Button
+                                variant="danger"
+                                size="sm"
+                                disabled={busy !== null}
+                                onClick={() => {
+                                  // Restore swaps the entire user database: confirm first, and
+                                  // report where the previous file went afterwards.
+                                  if (!window.confirm(restoreConfirmMessage(b))) return
+                                  void runAction(
+                                    'restore backup',
+                                    'restore',
+                                    () => window.api.persistence.restoreFromBackup(b.path),
+                                    (data) => setInfo(restoreCompletionMessage(data as RestoreInfo | undefined))
+                                  )
+                                }}
+                              >
+                                {t('Restore')}
+                              </Button>
+                            </li>
+                          ))}
+                        </ul>
+                      </details>
+                    )}
+                  </PanelState>
                 </div>
-              </div>
-            ) : (
-              <div className="mt-2 space-y-2">
-                <input
-                  type="password"
-                  placeholder={t('Current passphrase')}
-                  value={decryptPassphrase}
-                  onChange={(e) => setDecryptPassphrase(e.target.value)}
-                  className="w-full rounded border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1 text-[12px]"
-                />
-                <button
-                  disabled={busy !== null || decryptPassphrase.length === 0}
-                  onClick={() =>
-                    runAction('Decrypt database', () =>
-                      window.api.persistence.disableEncryption(decryptPassphrase)
-                    )
-                  }
-                  className="rounded border border-[var(--border)] px-2 py-1 text-[12px] hover:bg-[var(--bg-tertiary)] disabled:opacity-50"
-                >
-                  {busy === 'Decrypt database' ? 'Decrypting…' : 'Decrypt database'}
-                </button>
-              </div>
-            )}
+              </SettingsRow>
+            </SettingsSection>
           </>
         )}
-      </Section>
-      )}
-    </div>
+      </PanelState>
+
+      {/* The SQLCipher binding is not a dependency of every build, so the option cannot
+          always succeed. The section renders only while the status is loading, when it
+          failed to load, or when main reports the binding present. */}
+      <PanelState
+        state={encryption}
+        loading={
+          <SettingsSection label={t('Encryption')}>
+            <SettingsLoading what={t('the encryption status')} />
+          </SettingsSection>
+        }
+        error={(message, retry) => (
+          <SettingsSection label={t('Encryption')}>
+            <SettingsLoadError what={t('the encryption status')} message={message} onRetry={retry} />
+          </SettingsSection>
+        )}
+        empty={null}
+        onRetry={() => void refresh()}
+      >
+        {(enc) =>
+          enc.bindingAvailable ? (
+            <SettingsSection label={t('Encryption')}>
+              <SettingsRow
+                label={t('Database encryption')}
+                hint={
+                  enc.databaseEncrypted
+                    ? t('The database is encrypted with your passphrase.')
+                    : t('The database is not encrypted.')
+                }
+              >
+                {!enc.databaseEncrypted ? (
+                  <div className="max-w-sm space-y-2">
+                    <div className="space-y-1">
+                      <label htmlFor={newPassId} className="block text-[11px] text-[var(--text-muted)]">
+                        {t('New passphrase')}
+                      </label>
+                      <Input
+                        id={newPassId}
+                        type="password"
+                        autoComplete="new-password"
+                        placeholder={t('At least 8 characters')}
+                        value={encryptPassphrase}
+                        onChange={(e) => setEncryptPassphrase(e.target.value)}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label htmlFor={confirmPassId} className="block text-[11px] text-[var(--text-muted)]">
+                        {t('Confirm passphrase')}
+                      </label>
+                      <Input
+                        id={confirmPassId}
+                        type="password"
+                        autoComplete="new-password"
+                        value={encryptConfirm}
+                        onChange={(e) => setEncryptConfirm(e.target.value)}
+                      />
+                    </div>
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      disabled={encryptDisabled}
+                      onClick={() =>
+                        void runAction(
+                          'encrypt database',
+                          'encrypt',
+                          () => window.api.persistence.enableEncryption(encryptPassphrase),
+                          () => {
+                            setEncryptPassphrase('')
+                            setEncryptConfirm('')
+                            setInfo(t('Database encrypted. Restart DUIN to finish.'))
+                          }
+                        )
+                      }
+                    >
+                      {busy === 'encrypt' ? t('Encrypting…') : t('Encrypt database')}
+                    </Button>
+                    <p className="text-[12px] text-[var(--text-muted)]">
+                      {t('You will need to restart DUIN afterwards. The unencrypted file is kept beside it as a dated backup, so you can go back by hand.')}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="max-w-sm space-y-2">
+                    <div className="space-y-1">
+                      <label htmlFor={currentPassId} className="block text-[11px] text-[var(--text-muted)]">
+                        {t('Current passphrase')}
+                      </label>
+                      <Input
+                        id={currentPassId}
+                        type="password"
+                        autoComplete="current-password"
+                        value={decryptPassphrase}
+                        onChange={(e) => setDecryptPassphrase(e.target.value)}
+                      />
+                    </div>
+                    <Button
+                      size="sm"
+                      disabled={busy !== null || decryptPassphrase.length === 0}
+                      onClick={() =>
+                        void runAction(
+                          'decrypt database',
+                          'decrypt',
+                          () => window.api.persistence.disableEncryption(decryptPassphrase),
+                          () => {
+                            setDecryptPassphrase('')
+                            setInfo(t('Database decrypted. Restart DUIN to finish.'))
+                          }
+                        )
+                      }
+                    >
+                      {busy === 'decrypt' ? t('Decrypting…') : t('Decrypt database')}
+                    </Button>
+                    <p className="text-[12px] text-[var(--text-muted)]">
+                      {t('You will need to restart DUIN afterwards.')}
+                    </p>
+                  </div>
+                )}
+              </SettingsRow>
+            </SettingsSection>
+          ) : null
+        }
+      </PanelState>
+
+      <SettingsBackupSection />
+    </SettingsPage>
   )
 }

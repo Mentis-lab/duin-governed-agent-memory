@@ -1,7 +1,10 @@
-﻿import { useSettingsStore } from '@/stores/settings-store'
-import { t } from '@/lib/i18n'
+import { useSettingsStore } from '@/stores/settings-store'
+import { t, tf } from '@/lib/i18n'
 import { toast } from '@/stores/toast-store'
-import { Toggle } from '@/components/ui/Toggle'
+import { cn } from '@/duin/lib/utils'
+import { Button } from '@/components/ui/Button'
+import { SettingsPage, SettingsSection, SettingsRow, ToggleRow, SettingsLink } from '@/components/ui/settings'
+import { flashWhenSaved, useSavedFlash } from '@/components/ui/settings/useSavedFlash'
 import { FullDiskAccessRow } from './FullDiskAccessRow'
 
 /** Native single-folder picker (same one the brain-folder setting uses). Returns the chosen
@@ -26,218 +29,175 @@ const LANGUAGE_OPTIONS: { value: 'auto' | 'en' | 'zh' | 'ja'; label: () => strin
 export function GeneralSettings() {
   const settings = useSettingsStore((s) => s.settings)
   const updateSettings = useSettingsStore((s) => s.updateSettings)
+  const languageFlash = useSavedFlash()
 
+  const language = settings.language ?? 'auto'
+  const fullAccess = settings.fullComputerAccess === true
   const writePaths = settings.sandboxWritePaths ?? []
 
   const addWritePath = async (): Promise<void> => {
     const picking = pickFolder()
     if (!picking) {
-      toast.error('Folder picker is only available in the desktop app.')
+      toast.error(t('The folder picker is only available in the desktop app.'))
       return
     }
     const r = await picking
     if (!r.success) {
-      toast.error(r.error ?? 'Folder picker failed')
+      toast.error(r.error ?? t('The folder picker failed'))
       return
     }
     if (r.data == null) return // cancelled
     if (writePaths.some((p) => p === r.data)) return // already listed
-    // The main process re-vets this list (operator-write-paths.ts refuses your home
-    // folder and system roots), so a bad pick fails closed there; here we just persist
-    // the operator's intent through the same updateSettings path every field uses.
+    // The main process re-vets this list (operator-write-paths.ts skips your home
+    // folder and system roots at read time), so a bad pick fails closed there; here we
+    // just persist the operator's intent through the same updateSettings path every
+    // field uses.
     await updateSettings({ sandboxWritePaths: [...writePaths, r.data] })
   }
 
-  const removeWritePath = async (target: string): Promise<void> => {
-    await updateSettings({ sandboxWritePaths: writePaths.filter((p) => p !== target) })
-  }
+  const removeWritePath = (target: string): Promise<boolean> =>
+    updateSettings({ sandboxWritePaths: writePaths.filter((p) => p !== target) })
 
   return (
-    <div className="space-y-5">
-      <h3 className="font-mono text-[16px] font-semibold text-[var(--text-primary)]">{t('General')}</h3>
-
-      <section className="space-y-3">
-        <h4 className="font-mono text-[12px] uppercase tracking-wider text-[var(--text-muted)]">
-          {t('Language')}
-        </h4>
+    <SettingsPage purpose={t('Language, window behaviour, and how much of this computer DUIN may touch.')}>
+      <SettingsSection label={t('Language')}>
         {/* This one setting drives BOTH the interface language and the reply directive.
             The old copy ("Reply language … Auto leaves it to the model") described only
             the reply half — while zh.json's `Auto` entry (跟随系统) had already committed
             to the follow-the-system reading. Say what actually happens. */}
-        <p className="text-[12px] leading-relaxed text-[var(--text-muted)]">
-          {t('The language of DUIN’s interface and replies. Auto follows your system language for the interface and lets replies match the language you write in. Pin English, 中文, or 日本語 to fix both. Code, file paths, and identifiers always stay as written.')}
-        </p>
-        <div className="inline-flex overflow-hidden rounded-md border border-[var(--panel-border)]">
-          {LANGUAGE_OPTIONS.map((opt) => {
-            const active = (settings.language ?? 'auto') === opt.value
-            return (
-              <button
-                key={opt.value}
-                onClick={() => {
-                  if (!active) updateSettings({ language: opt.value })
-                }}
-                aria-pressed={active}
-                className={`px-3 py-1.5 text-[12px] transition-colors ${
-                  active
-                    ? 'bg-[var(--accent)] text-white'
-                    : 'bg-[var(--bg-primary)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]'
-                }`}
-              >
-                {opt.label()}
-              </button>
-            )
-          })}
-        </div>
-      </section>
+        <SettingsRow
+          label={t('Interface and reply language')}
+          hint={t('The language of DUIN’s interface and replies. Auto follows your system language for the interface and lets replies match the language you write in. Pin English, 中文, or 日本語 to fix both. Code, file paths, and identifiers always stay as written.')}
+          saved={languageFlash.saved}
+          control={
+            <div
+              role="radiogroup"
+              aria-label={t('Interface and reply language')}
+              className="inline-flex overflow-hidden rounded-md border border-[var(--panel-border)]"
+            >
+              {LANGUAGE_OPTIONS.map((opt) => {
+                const active = language === opt.value
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={active}
+                    onClick={() => {
+                      if (!active) flashWhenSaved(updateSettings({ language: opt.value }), languageFlash.flash)
+                    }}
+                    className={cn(
+                      'px-3 py-1.5 text-[12px] transition-colors',
+                      active
+                        ? 'bg-[var(--accent)] text-[var(--on-accent)]'
+                        : 'bg-[var(--bg-primary)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]'
+                    )}
+                  >
+                    {opt.label()}
+                  </button>
+                )
+              })}
+            </div>
+          }
+        />
+      </SettingsSection>
 
-      <section className="space-y-3">
-        <h4 className="font-mono text-[12px] uppercase tracking-wider text-[var(--text-muted)]">
-          {t('Conversation titles')}
-        </h4>
-        <label className="flex cursor-pointer items-start gap-3 rounded border border-[var(--panel-border)] bg-[var(--bg-primary)] p-3 text-[12px] text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-tertiary)]">
-          <Toggle
-            checked={settings.aiGeneratedTitles}
-            onChange={(v) => updateSettings({ aiGeneratedTitles: v })}
-            aria-label={t('AI-generated titles')}
-            className="mt-0.5"
-          />
-          <span className="flex-1">
-            <span className="block font-medium text-[var(--text-primary)]">{t('AI-generated titles')}</span>
-            <span className="mt-1 block text-[12px] leading-relaxed text-[var(--text-muted)]">
-              After the first response, ask your active model for a 3-5 word title. Without it
-              we use the first 40 characters of your opening message.
-            </span>
-          </span>
-        </label>
-      </section>
+      <SettingsSection label={t('Conversation titles')}>
+        <ToggleRow
+          label={t('AI-generated titles')}
+          hint={t('After the first reply, DUIN asks your active model for a 3–5 word title. Off uses the first 40 characters of your opening message.')}
+          checked={settings.aiGeneratedTitles}
+          onChange={(v) => updateSettings({ aiGeneratedTitles: v })}
+        />
+      </SettingsSection>
 
-      <section className="space-y-3">
-        <h4 className="font-mono text-[12px] uppercase tracking-wider text-[var(--text-muted)]">
-          {t('Application')}
-        </h4>
-        <label className="flex cursor-pointer items-start gap-3 rounded border border-[var(--panel-border)] bg-[var(--bg-primary)] p-3 text-[12px] text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-tertiary)]">
-          <Toggle
-            checked={settings.minimizeToTray}
-            onChange={(v) => updateSettings({ minimizeToTray: v })}
-            aria-label={t('Minimize to tray when closing')}
-            className="mt-0.5"
-          />
-          <span className="flex-1">
-            <span className="block font-medium text-[var(--text-primary)]">{t('Minimize to tray on close')}</span>
-            <span className="mt-1 block text-[12px] leading-relaxed text-[var(--text-muted)]">
-              Closing the window hides DUIN to the system tray instead of quitting, so it keeps
-              running in the background. Quit from the tray menu.
-            </span>
-          </span>
-        </label>
-        <label className="flex cursor-pointer items-start gap-3 rounded border border-[var(--panel-border)] bg-[var(--bg-primary)] p-3 text-[12px] text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-tertiary)]">
-          <Toggle
-            checked={settings.autoCheckUpdates}
-            onChange={(v) => updateSettings({ autoCheckUpdates: v })}
-            aria-label={t('Automatically check for updates')}
-            className="mt-0.5"
-          />
-          <span className="flex-1">
-            <span className="block font-medium text-[var(--text-primary)]">{t('Automatically check for updates')}</span>
-            <span className="mt-1 block text-[12px] leading-relaxed text-[var(--text-muted)]">
-              {t('Periodically check for a newer DUIN release in the background. Off leaves updates manual.')}
-            </span>
-          </span>
-        </label>
-      </section>
+      <SettingsSection label={t('Application')}>
+        <ToggleRow
+          label={t('Minimize to tray on close')}
+          hint={t('Closing the window hides DUIN in the system tray and keeps it running in the background. Quit from the tray menu.')}
+          checked={settings.minimizeToTray}
+          onChange={(v) => updateSettings({ minimizeToTray: v })}
+        />
+        <ToggleRow
+          label={t('Automatically check for updates')}
+          hint={t('Periodically check for a newer DUIN release in the background. Off leaves updates manual.')}
+          checked={settings.autoCheckUpdates}
+          onChange={(v) => updateSettings({ autoCheckUpdates: v })}
+        />
+      </SettingsSection>
 
-      <section className="space-y-3">
-        <h4 className="font-mono text-[12px] uppercase tracking-wider text-[var(--text-muted)]">
-          {t('Computer access')}
-        </h4>
-        <label className="flex cursor-pointer items-start gap-3 rounded border border-[var(--panel-border)] bg-[var(--bg-primary)] p-3 text-[12px] text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-tertiary)]">
-          <Toggle
-            checked={settings.fullComputerAccess === true}
-            onChange={(v) => updateSettings({ fullComputerAccess: v })}
-            aria-label={t('Full computer access')}
-            className="mt-0.5"
-          />
-          <span className="flex-1">
-            <span className="block font-medium text-[var(--text-primary)]">{t('Full computer access')}</span>
-            <span className="mt-1 block text-[12px] leading-relaxed text-[var(--text-muted)]">
-              Off by default. When on, DUIN acts as a general computer-use agent: it can read,
-              write, move, and delete files anywhere on this computer — Desktop, Documents, other
-              drives — with no folders to add, and run shell commands without asking, on every turn
-              including messages from connected channels. Deletes and moves are reversible (they go
-              to your vault&apos;s .trash), and OS-destroying commands (format, rm -rf /) are always
-              blocked. Leave it off to confine DUIN to your vault, active workspace, and the specific
-              folders you list below, with a prompt before commands and destructive file changes.
-            </span>
-          </span>
-        </label>
-        {settings.fullComputerAccess !== true && (
-          <div className="space-y-2">
-            <p className="text-[12px] leading-relaxed text-[var(--text-muted)]">
-              Confined mode: folders outside your vault that DUIN may act in. The same allowlist
-              governs the file browser, the agent&apos;s file tools, and the sandboxed shell. Your
-              home folder and system directories cannot be added.
-            </p>
+      <SettingsSection label={t('Computer access')}>
+        {/* The hint describes what is on screen in EACH state: the folder list below only
+            exists while access is off, so the "on" copy must not point at it. */}
+        <ToggleRow
+          label={t('Full computer access')}
+          tone={fullAccess ? 'warning' : 'default'}
+          checked={fullAccess}
+          onChange={(v) => updateSettings({ fullComputerAccess: v })}
+          hint={
+            <>
+              {fullAccess
+                ? t('DUIN can read, write, move and delete files anywhere on this computer and run commands without asking, on every turn, including messages from connected channels. Deleted and moved files go to your vault’s .trash, and commands that could destroy the operating system are always blocked. Turn it off to confine DUIN to your vault, workspace and the folders you choose.')
+                : t('Off: DUIN acts only inside your vault, your workspace and the folders listed below, and asks before running commands or making destructive file changes. On: it can read, write, move and delete files anywhere on this computer and run commands without asking, on every turn, including messages from connected channels. Deleted files still go to your vault’s .trash, and commands that could destroy the operating system are always blocked.')}{' '}
+              <SettingsLink tab="permissions">{t('Tool permissions')}</SettingsLink>
+            </>
+          }
+        />
+        {!fullAccess && (
+          <SettingsRow
+            label={t('Folders DUIN may act in')}
+            hint={t('Folders outside your vault that DUIN may read and change. The same list governs the file browser, DUIN’s file tools and the shell. Your home folder and system folders cannot be added; choose a folder inside them.')}
+            control={<Button onClick={() => void addWritePath()}>{t('Add folder…')}</Button>}
+          >
             {writePaths.length === 0 ? (
               <p className="text-[12px] text-[var(--text-muted)]">
-                {t('No folders added — DUIN can act only inside your vault.')}
+                {t('No folders added. DUIN acts only inside your vault and workspace.')}
               </p>
             ) : (
-              writePaths.map((p) => (
-                <div
-                  key={p}
-                  className="flex items-center gap-2 rounded border border-[var(--panel-border)] bg-[var(--bg-primary)] px-3 py-2"
-                >
-                  <span
-                    className="flex-1 truncate font-mono text-[12px] text-[var(--text-secondary)]"
-                    title={p}
+              <ul className="space-y-1">
+                {writePaths.map((p) => (
+                  <li
+                    key={p}
+                    className="flex items-center gap-2 rounded-md border border-[var(--panel-border)] bg-[var(--bg-secondary)] px-3 py-1.5"
                   >
-                    {p}
-                  </span>
-                  <button
-                    onClick={() => removeWritePath(p)}
-                    aria-label={`Remove ${p}`}
-                    className="rounded px-2 py-0.5 text-[12px] text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]"
-                  >
-                    {t('Remove')}
-                  </button>
-                </div>
-              ))
+                    <span className="flex-1 truncate font-mono text-[12px] text-[var(--text-secondary)]" title={p}>
+                      {p}
+                    </span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      aria-label={tf('Remove {path}', { path: p })}
+                      onClick={() => void removeWritePath(p)}
+                    >
+                      {t('Remove')}
+                    </Button>
+                  </li>
+                ))}
+              </ul>
             )}
-            <button
-              onClick={addWritePath}
-              className="rounded-md border border-[var(--panel-border)] bg-[var(--bg-primary)] px-3 py-1.5 text-[12px] text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-tertiary)]"
-            >
-              + Add folder…
-            </button>
-          </div>
+          </SettingsRow>
         )}
-      </section>
+      </SettingsSection>
 
-      <section className="space-y-3">
-        <h4 className="font-mono text-[12px] uppercase tracking-wider text-[var(--text-muted)]">
-          {t('Hooks')}
-        </h4>
-        {/* Release M11 (A4 F8): `enableHooks` existed as a setting (default ON — the three seeded
-            hooks are audit logs + a destructive-command guard, hooks-seed.ts) but had no switch
-            anywhere in the UI. hooks-runner reads `enableHooks === false` as the hard-disable. */}
-        <label className="flex cursor-pointer items-start gap-3 rounded border border-[var(--panel-border)] bg-[var(--bg-primary)] p-3 text-[12px] text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-tertiary)]">
-          <Toggle
-            checked={settings.enableHooks !== false}
-            onChange={(v) => updateSettings({ enableHooks: v })}
-            aria-label={t('Run lifecycle hooks')}
-            className="mt-0.5"
-          />
-          <span className="flex-1">
-            <span className="block font-medium text-[var(--text-primary)]">{t('Run lifecycle hooks')}</span>
-            <span className="mt-1 block text-[12px] leading-relaxed text-[var(--text-muted)]">
-              {t('Small scripts that run at session start, before and after each tool call, and when an agent stops. The three DUIN ships are read-only audit logs plus a guard that blocks obviously destructive shell commands; they run in a locked-down JavaScript sandbox with no file or network access. Creating or editing a hook always asks you first. Turn this off to disable every hook, including your own.')}
-            </span>
-          </span>
-        </label>
-      </section>
+      <SettingsSection label={t('Hooks')}>
+        {/* `enableHooks` defaults ON (the three seeded hooks are audit logs + a destructive-
+            command guard, hooks-seed.ts); hooks-runner reads `enableHooks === false` as the
+            hard-disable. */}
+        <ToggleRow
+          label={t('Run lifecycle hooks')}
+          hint={
+            <>
+              {t('Small scripts that run at session start, around each tool call, and when an agent stops. DUIN ships three: two audit logs and a guard that blocks obviously destructive commands. Off disables every hook, including your own.')}{' '}
+              <SettingsLink tab="hooks">{t('Manage hooks')}</SettingsLink>
+            </>
+          }
+          checked={settings.enableHooks !== false}
+          onChange={(v) => updateSettings({ enableHooks: v })}
+        />
+      </SettingsSection>
 
       {/* macOS only — renders nothing elsewhere. */}
       <FullDiskAccessRow />
-    </div>
+    </SettingsPage>
   )
 }

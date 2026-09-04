@@ -342,12 +342,16 @@ describe('P8 — whole-note grounding is gated on answer-model locality (fail cl
 
   it('`modelId` (the already-resolved answer model) is reused — the guard adds NO second resolution', () => {
     // The guard passes the pre-resolved `modelId` variable to wholeNoteEgressAllowed (a pure read),
-    // not a fresh resolveAnswerModel(...) call. resolveAnswerModel therefore appears exactly twice in
-    // the file: its definition and the SINGLE per-turn call. A second call would mean re-resolution /
-    // possible reorder / double-charge — this catches that regression.
-    const occurrences = (src.match(/resolveAnswerModel\(/g) || []).length
+    // not a fresh resolution. Since the P0 model plane the turn resolves the chat ROLE once
+    // (resolveAnswerEngine → RoleResolution, whose modelId is the engine and whose chain the
+    // failover walk reads), so that name appears exactly twice in the file: its definition and the
+    // SINGLE per-turn call. A second call would mean re-resolution / possible reorder (health can
+    // change between two reads) — this catches that regression.
+    const occurrences = (src.match(/resolveAnswerEngine\(/g) || []).length
     expect(occurrences).toBe(2) // 1 definition + 1 call site
-    expect(src).toContain('const modelId = resolveAnswerModel(requestedModel)')
+    expect(src).toContain('const engine = resolveAnswerEngine(requestedModel)')
+    expect(src).toContain('const modelId = engine?.modelId ?? null')
+    expect(src).not.toContain('resolveAnswerModel(')
   })
 
   it('the agentic snippet retriever remains the safe fallback AFTER the whole-note guard (minimal egress)', () => {

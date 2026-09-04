@@ -707,6 +707,8 @@ export function initializeMemoryStore(): void {
   watcher.on('change', onAddOrChange)
   watcher.on('unlink', onUnlink)
   watcher.on('error', (err) => console.error('[memory-store] watcher error:', err))
+  // 'ready' fires once per watcher; `on` (not `once`) because the unit-test chokidar stub only has `on`.
+  watcherReady = new Promise((resolve) => watcher?.on('ready', () => resolve()))
 
   console.log(`[memory-store] watching ${base}`)
 }
@@ -717,6 +719,42 @@ export function shutdownMemoryStore(): void {
     watcher = null
   }
   initialized = false
+}
+
+/** Resolves once the watcher has finished its initial scan — i.e. once every directory handle it
+ *  will hold is actually open. Exported for the vault-switch regression test, which needs the
+ *  handles ESTABLISHED before it can prove the pause releases them. */
+let watcherReady: Promise<void> = Promise.resolve()
+
+/**
+ * Release the watcher's directory handles and resolve only once they are closed.
+ *
+ * moat-durability's vault switch removes `<userData>/lamprey-memory` wholesale and rehydrates it
+ * from the new vault. On Windows, ReadDirectoryChangesW keeps every watched directory open, and a
+ * directory with an open handle cannot be removed — rmdir fails ENOTEMPTY, then EPERM once the
+ * entry is delete-pending. With the watcher armed at boot (main.ts), that made EVERY first-run
+ * folder pick fail at "Vault durability moat failed: vault switch cleanup failed: lamprey-memory".
+ * The watcher also must not observe the switch's own unlinks: it journals them as EXTERNAL
+ * deletions, tombstones that the next boot's rehydrate would then honor against the very files the
+ * switch just restored. Pause around the switch; resume re-arms and rescans, so nothing is missed.
+ */
+export async function pauseMemoryStoreWatcher(): Promise<void> {
+  const active = watcher
+  watcher = null
+  initialized = false
+  if (!active) return
+  try {
+    await active.close()
+  } catch {
+    /* a watcher that fails to close cleanly has still dropped its handles (chokidar clears them
+       before the closers' promises settle) — nothing more to release here */
+  }
+}
+
+/** Re-arm the watcher after {@link pauseMemoryStoreWatcher}: a full re-initialization, which
+ *  recreates the base directory (the switch removed it) and rescans it into the mirror. */
+export function resumeMemoryStoreWatcher(): void {
+  initializeMemoryStore()
 }
 
 function guessProjectSlugFromPath(filePath: string): string | null {
@@ -1246,6 +1284,8 @@ export const __memoryStoreTest = {
     useFallback = false
     selfDeleted.clear()
   },
+  /** Settles once the armed watcher holds every directory handle it is going to (chokidar 'ready'). */
+  whenWatcherReady: (): Promise<void> => watcherReady,
   forceFallback: (): void => {
     useFallback = true
   },

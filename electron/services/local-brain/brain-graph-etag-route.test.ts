@@ -20,6 +20,15 @@ import { EventEmitter } from 'events'
 import type { IncomingMessage, ServerResponse } from 'http'
 import { createHash } from 'node:crypto'
 
+// This file pins the ROUTE's stale-while-revalidate contract: a key change is served
+// stale and the rebuild lands behind it. brainGraphCache separately rate-limits how
+// OFTEN it will schedule that rebuild (60s in production — the graph costs ~3s of main
+// thread and its key moves on every channel-ingest write). That policy has its own tests
+// in swr-json-cache.test.ts; here it would simply suppress the rebuilds these cases exist
+// to observe, so it is switched off. freshRoute() re-imports the module per test and the
+// cache reads this at construction, so setting it once here covers every case.
+process.env.DUIN_BRAIN_GRAPH_MIN_REBUILD_MS = '0'
+
 const VAULT = 'D:\\test-vault'
 
 /** The one input to the cache key, so a test can move the vault under the route. */
@@ -44,12 +53,23 @@ vi.mock('../brain/brain-graph-native', async (importOriginal) => ({
   }
 }))
 
+// Both derive entry points come from ONE definition here. The route reads recency via
+// deriveNodeMtimes (deriveGraph deep-clones the whole causal graph to hand over two
+// fields per node, which is the cost the rebuild could not afford); mocking only
+// deriveGraph would leave the route calling the real one against an unmocked index and
+// silently attach no mtimes at all.
+const derivedNodes = (): Array<{ id: string; mtime: number }> => [
+  { id: `graph-at-${mtime}`, mtime: mtime + 5000 }
+]
+
 vi.mock('./graph-derive', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./graph-derive')>()),
   deriveGraph: (): { nodes: unknown[]; edges: unknown[] } => ({
-    nodes: [{ id: `graph-at-${mtime}`, mtime: mtime + 5000 }],
+    nodes: derivedNodes(),
     edges: []
-  })
+  }),
+  deriveNodeMtimes: (): Map<string, number> =>
+    new Map(derivedNodes().map((n) => [n.id, n.mtime]))
 }))
 
 

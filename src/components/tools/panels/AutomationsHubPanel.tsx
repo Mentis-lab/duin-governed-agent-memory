@@ -1,18 +1,19 @@
 import { t } from '@/lib/i18n'
 import { useState } from 'react'
 import { AutomationsPanel } from '@/components/automations/AutomationsPanel'
+import { GovernancePanel } from '@/components/automations/GovernancePanel'
 import { LoopsPanel } from './LoopsPanel'
 import { ActivityTimeline } from '@/components/activity/ActivityTimeline'
 
-// Automations hub — one home for time-triggered background behavior. Two
-// distinct engines live here: Automations (a fixed prompt fired on a cron
-// schedule, stateless per fire) and Loops (a stateful agentic worker that
-// grinds a backlog under a token budget). Event-triggered Hooks are NOT here —
-// they live in Settings, since they react to app events, not the clock. The
-// Activity tab shows what actually fired. Each tab embeds its self-contained
-// panel as-is.
+// Automations hub — one home for everything DUIN does on its own, on the clock. Two engines
+// live here: Automations (a fixed prompt fired on a schedule, stateless per fire) and Loops
+// (a stateful worker that grinds a backlog under a budget). Event-triggered Hooks are NOT
+// here — they live in Settings, since they react to app events, not the clock. Activity
+// shows what actually ran; Governance shows the capability breaker and what the governor
+// has done (moved out of Settings on 2026-09-03: monitoring, not settings). Each tab embeds
+// its self-contained panel as-is.
 
-type HubTab = 'automations' | 'loops' | 'activity'
+type HubTab = 'automations' | 'loops' | 'activity' | 'governance'
 
 interface TabDef {
   id: HubTab
@@ -20,40 +21,43 @@ interface TabDef {
   hint: string
 }
 
-const TABS: TabDef[] = [
-  { id: 'automations', label: 'Automations', hint: 'A fixed prompt fired on a schedule (cron)' },
-  { id: 'loops', label: 'Loops', hint: 'An agentic worker grinding a backlog under a budget' },
-  { id: 'activity', label: 'Activity', hint: 'What actually fired' }
-]
-
 export function AutomationsHubPanel(): React.ReactElement {
   const [tab, setTab] = useState<HubTab>('automations')
 
+  // Built per render so the labels follow the UI language.
+  const tabs: TabDef[] = [
+    { id: 'automations', label: t('Automations'), hint: t('Prompts that run on a schedule') },
+    { id: 'loops', label: t('Loops'), hint: t('Workers that keep going toward a goal under a budget') },
+    { id: 'activity', label: t('Activity'), hint: t('What actually ran') },
+    { id: 'governance', label: t('Governance'), hint: t('The capability breaker and what the governor has done') }
+  ]
+
   return (
     <div className="flex h-full flex-col">
-      {/* Tab bar — Automations (cron prompt) | Loops (backlog worker) | Activity */}
+      {/* Tab bar — Automations | Loops | Activity | Governance */}
       <div
         role="tablist"
         aria-label={t('Automations hub')}
         className="flex shrink-0 items-center gap-1 border-b border-[var(--panel-border)] px-2 py-1.5"
       >
-        {TABS.map((t) => {
-          const active = t.id === tab
+        {tabs.map((def) => {
+          const active = def.id === tab
           return (
             <button
-              key={t.id}
+              key={def.id}
+              type="button"
               role="tab"
               aria-selected={active}
-              title={t.hint}
-              onClick={() => setTab(t.id)}
+              title={def.hint}
+              onClick={() => setTab(def.id)}
               className={
                 'rounded-md px-2.5 py-1 text-[14px] transition-colors ' +
                 (active
-                  ? 'bg-[var(--accent)] font-medium text-white'
+                  ? 'bg-[var(--accent)] font-medium text-[var(--on-accent)]'
                   : 'text-[var(--text-secondary)] hover:bg-[var(--panel-border)]/40 hover:text-[var(--text-primary)]')
               }
             >
-              {t.label}
+              {def.label}
             </button>
           )
         })}
@@ -64,6 +68,7 @@ export function AutomationsHubPanel(): React.ReactElement {
         {tab === 'automations' && <AutomationsPanel />}
         {tab === 'loops' && <LoopsPanel />}
         {tab === 'activity' && <ActivityTimeline />}
+        {tab === 'governance' && <GovernancePanel />}
       </div>
     </div>
   )

@@ -228,6 +228,22 @@ export function nodesByIds(ids: string[]): Array<{ id: string; label: string; ki
   }
 }
 
+/** The row timestamps for one node id (live row first), for the entity card's first/last seen.
+ *  Null on miss/error. */
+export function nodeTimestamps(id: string): { createdAt: string | null; updatedAt: string | null } | null {
+  if (!id) return null
+  try {
+    const row = egDb()
+      .prepare('SELECT created_at, updated_at FROM entity_nodes WHERE id = ? ORDER BY (valid_to IS NULL) DESC, created_at ASC LIMIT 1')
+      .get(id) as { created_at?: string | null; updated_at?: string | null } | undefined
+    if (!row) return null
+    return { createdAt: row.created_at ?? null, updatedAt: row.updated_at ?? null }
+  } catch (err) {
+    console.warn('[entity-graph-store] nodeTimestamps failed:', (err as Error)?.message)
+    return null
+  }
+}
+
 /** Resolve a human label to a live node id, case-insensitively. First match wins (deterministic
  *  by id order); null on miss/error — the Relations anchor box accepts labels, ids are exact. */
 export function findNodeIdByLabel(label: string): string | null {

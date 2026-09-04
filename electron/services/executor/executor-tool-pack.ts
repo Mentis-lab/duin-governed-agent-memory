@@ -20,7 +20,7 @@ import { createAgentWorktreeManager } from '../worktree-runner'
 import { getKey } from '../keychain'
 import { describeMissing } from '../capability-requires'
 import { messageOf } from '../guarded'
-import { dshForkRunner, DSH_DEFAULT_MODEL } from './executor-run'
+import { dshForkRunner, dshModelFor } from './executor-run'
 import { probeDshRuntime } from './executor-runtime'
 import { isExecutorKind } from './executor-types'
 import { executorNotify } from './executor-notify'
@@ -82,6 +82,10 @@ toolRegistry.registerNative(
     const runtime = probeDshRuntime()
     if (!runtime.satisfied) throw new Error(`delegate_task: the dsh runtime is not staged — ${describeMissing(runtime)}`)
     if (!getKey('deepseek')) throw new Error('delegate_task: no DeepSeek API key (Settings → API Keys, provider: deepseek)')
+    // The child's engine: the parent turn's model when it is a usable DeepSeek model, else the
+    // `agentic` role resolved within the DeepSeek family (the only family dsh can drive).
+    const model = dshModelFor(ctx.model)
+    if (!model) throw new Error('delegate_task: no usable DeepSeek model for the agentic role')
 
     const timeoutMs = typeof args.timeoutMs === 'number' && args.timeoutMs > 0 ? Math.min(args.timeoutMs, SUBAGENT_MAX_TIMEOUT_MS) : SUBAGENT_MAX_TIMEOUT_MS
     const background = args.background === true
@@ -98,7 +102,7 @@ toolRegistry.registerNative(
       },
       {
         runner: dshForkRunner,
-        defaultModel: DSH_DEFAULT_MODEL,
+        model,
         loadType: (name) => (name === 'dsh' ? DSH_SUBAGENT_TYPE : null),
         agentRunStore: realAgentRunStore,
         // The app fan-out AND the review raise. A settled run whose worktree still holds changes

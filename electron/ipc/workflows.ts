@@ -42,14 +42,11 @@ const liveWorkflows = new Map<string, WorkflowRunHandle>()
 const MAX_LIVE_WORKFLOWS = 8
 
 let chatRunner: ForkAgentRunner | null = null
-let defaultModel: string | null = null
 
-export function setWorkflowChatRunner(args: {
-  runner: ForkAgentRunner
-  defaultModel: string
-}): void {
+/** Register the fork runner. There is no default model: every fork names its engine
+ *  (a workflow's `model:` option) or resolves the `agentic` role at fork time. */
+export function setWorkflowChatRunner(args: { runner: ForkAgentRunner }): void {
   chatRunner = args.runner
-  defaultModel = args.defaultModel
 }
 
 /** Abort every live workflow — used on app quit so no workflow keeps spawning
@@ -69,14 +66,13 @@ export function broadcastWorkflowProgress(event: WorkflowProgressEvent): void {
 }
 
 function buildForkDeps(): ForkAgentDeps {
-  if (!chatRunner || !defaultModel) {
+  if (!chatRunner) {
     throw new Error(
-      'workflows: chat runner not yet registered; call setWorkflowChatRunner({runner, defaultModel}) at startup'
+      'workflows: chat runner not yet registered; call setWorkflowChatRunner({runner}) at startup'
     )
   }
   return {
     runner: chatRunner,
-    defaultModel,
     agentRunStore: realAgentRunStore,
     notify: broadcastAgentRunEvent
   }

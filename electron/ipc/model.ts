@@ -1,4 +1,4 @@
-import { ipcMain } from 'electron'
+import { ipcMain, BrowserWindow } from 'electron'
 import { join } from 'path'
 import { app } from 'electron'
 import {
@@ -7,8 +7,20 @@ import {
   verifyCatalog,
   listLiveModelIds,
   describeBackgroundModel,
+  readProviderPolicy,
+  writeProviderPolicy,
+  resolveRole,
+  resolveModel,
+  isCallableModel,
   type ProviderId
 } from '../services/providers/registry'
+import {
+  listProviderHealth,
+  refreshProviderHealth,
+  onProviderHealthChanged
+} from '../services/providers/provider-health'
+import { MODEL_IPC, AUTO_ENGINE, type ProviderPolicy, type RouteTask } from '../services/providers/roles'
+import { ROUTE_TASKS, POLICY_SPEEDS } from '../services/providers/router'
 import { buildLiveModelImports, type ImportModelIdentity } from '../services/providers/model-import'
 import { messageOf } from '../services/guarded'
 import { readSettingsFile, writeSettingsFile } from '../services/settings-file'
@@ -83,6 +95,8 @@ function readCustomModels(): ModelInfo[] {
 function combinedModels(): ModelInfo[] {
   const customs = readCustomModels().map((m) => ({
     ...m,
+    // Rows written before model:addCustom required a provider were always routed to
+    // DeepSeek; keeping that read for them changes nothing they did not already do.
     provider: (m.provider as ProviderId) || 'deepseek'
   }))
   const customIds = new Set(customs.map((m) => m.id))
@@ -140,18 +154,120 @@ export function registerModelHandlers(): void {
     return { success: true, data: Object.values(PROVIDERS).filter((p) => !p.hidden) }
   })
 
-  ipcMain.handle('model:getActive', async () => {
-    const settings = readSettings()
-    // DUIN default — new installs default to the agent/DUIN brain so the
-    // brain is the out-of-the-box model. Mirrors DEFAULT_APP_SETTINGS.defaultModel.
-    return { success: true, data: (settings.defaultModel as string) || 'duin-brain' }
+  // ── P0 model plane (roles.ts MODEL_IPC) ──
+  // Lane A implements, lanes B/C consume. Policy is the operator's ordered provider preference;
+  // health is a completion (provider-health.ts); resolve answers a ROLE with a failover chain.
+
+  ipcMain.handle(MODEL_IPC.policyGet, async () => {
+    try {
+      return { success: true, data: readProviderPolicy() }
+    } catch (err) {
+      return { success: false, error: messageOf(err) }
+    }
   })
 
-  ipcMain.handle('model:setActive', async (_event, id) => {
+  ipcMain.handle(MODEL_IPC.policySet, async (_event, patch: Partial<ProviderPolicy> | undefined) => {
     try {
-      const settings = readSettings()
-      settings.defaultModel = id
-      writeSettings(settings)
+      if (!patch || typeof patch !== 'object') return { success: false, error: 'policy patch must be an object' }
+      const known = new Set(Object.keys(PROVIDERS))
+      const bad = (v: unknown): string | null =>
+        Array.isArray(v) ? (v.find((p) => typeof p !== 'string' || !known.has(p)) as string | undefined) ?? null : 'not a list'
+      if (patch.order !== undefined) {
+        const b = bad(patch.order)
+        if (b) return { success: false, error: `order: unknown provider ${b}` }
+      }
+      if (patch.speed !== undefined && !(POLICY_SPEEDS as readonly unknown[]).includes(patch.speed)) {
+        return { success: false, error: `speed must be one of ${POLICY_SPEEDS.join(' | ')}` }
+      }
+      if (patch.roles !== undefined) {
+        if (!patch.roles || typeof patch.roles !== 'object') return { success: false, error: 'roles must be an object' }
+        for (const [k, v] of Object.entries(patch.roles)) {
+          if (!(ROUTE_TASKS as readonly string[]).includes(k)) return { success: false, error: `roles: unknown role ${k}` }
+          const b = bad(v)
+          if (b) return { success: false, error: `roles.${k}: unknown provider ${b}` }
+        }
+      }
+      return { success: true, data: writeProviderPolicy(patch) }
+    } catch (err) {
+      return { success: false, error: messageOf(err) }
+    }
+  })
+
+  // Cached (may be up to HEALTH_TTL_MS stale); the fresh path is healthProbe.
+  ipcMain.handle(MODEL_IPC.healthList, async () => {
+    try {
+      return { success: true, data: listProviderHealth() }
+    } catch (err) {
+      return { success: false, error: messageOf(err) }
+    }
+  })
+
+  ipcMain.handle(MODEL_IPC.healthProbe, async (_event, target: unknown) => {
+    try {
+      if (target !== 'all' && (typeof target !== 'string' || !(target in PROVIDERS))) {
+        return { success: false, error: `Unknown provider: ${String(target)}` }
+      }
+      return { success: true, data: await refreshProviderHealth(target as ProviderId | 'all') }
+    } catch (err) {
+      return { success: false, error: messageOf(err) }
+    }
+  })
+
+  ipcMain.handle(MODEL_IPC.resolve, async (_event, task: unknown, pin?: unknown) => {
+    try {
+      if (typeof task !== 'string' || !(ROUTE_TASKS as readonly string[]).includes(task)) {
+        return { success: false, error: `Unknown role: ${String(task)}` }
+      }
+      const pinned = typeof pin === 'string' && pin && pin !== AUTO_ENGINE ? pin : undefined
+      return { success: true, data: resolveRole(task as RouteTask, { pin: pinned }) }
+    } catch (err) {
+      return { success: false, error: messageOf(err) }
+    }
+  })
+
+  // Push: every health/cooldown change → the full list, to every window (keychain:changed pattern).
+  onProviderHealthChanged(() => {
+    try {
+      if (typeof BrowserWindow?.getAllWindows !== 'function') return
+      const list = listProviderHealth()
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.webContents.send(MODEL_IPC.healthChanged, list)
+      }
+    } catch (err) {
+      console.error('[model] health-changed broadcast failed:', err)
+    }
+  })
+
+  // DEPRECATED shims — one phase. There is no stored default model any more (plan §0 D1):
+  //   getActive → what the chat ROLE resolves to right now, or the AUTO_ENGINE sentinel.
+  //   setActive(id) → moves that model's provider to the FRONT of the policy order. It does not
+  //   pin a model (only a conversation may), so an unusable id changes nothing and says so.
+  let deprecationWarned = false
+  const warnDeprecated = (which: string): void => {
+    if (deprecationWarned) return
+    deprecationWarned = true
+    console.warn(`[model] ${which} is deprecated (P0 model plane): use model:policy:* and model:resolve`)
+  }
+
+  ipcMain.handle('model:getActive', async () => {
+    warnDeprecated('model:getActive')
+    try {
+      return { success: true, data: resolveRole('chat')?.modelId ?? AUTO_ENGINE }
+    } catch (err) {
+      return { success: false, error: messageOf(err) }
+    }
+  })
+
+  ipcMain.handle('model:setActive', async (_event, id: unknown) => {
+    warnDeprecated('model:setActive')
+    try {
+      if (typeof id !== 'string' || !id || id === AUTO_ENGINE) return { success: true, data: null }
+      if (!isCallableModel(id)) {
+        return { success: false, error: `${id} is not callable (no key or unknown id); policy unchanged` }
+      }
+      const provider = resolveModel(id).provider
+      const current = readProviderPolicy()
+      writeProviderPolicy({ order: [provider, ...current.order.filter((p) => p !== provider)] })
       return { success: true, data: null }
     } catch (err) {
       return { success: false, error: messageOf(err) }
@@ -178,13 +294,22 @@ export function registerModelHandlers(): void {
       if (typeof model.name !== 'string' || !model.name.trim()) {
         return { success: false, error: 'Model display name is required' }
       }
+      // The provider is where the id is sent. This used to default to DeepSeek whenever the
+      // form left it out, so a hand-added Groq or Mistral id hit DeepSeek's endpoint while
+      // the copy promised "any model id one of your keys can call". Missing or unknown is
+      // now refused; only the legacy read path (combinedModels) still assumes DeepSeek for
+      // rows written before the provider was required.
+      const provider = typeof model.provider === 'string' ? model.provider.trim() : ''
+      if (!provider || !(provider in PROVIDERS)) {
+        return { success: false, error: 'Pick the provider that serves this model id' }
+      }
       const settings = readSettings()
       const existing = (settings.customModels as ModelInfo[] | undefined) ?? []
       const filtered = existing.filter((m) => m.id !== model.id)
       filtered.push({
         id: model.id.trim(),
         name: model.name.trim(),
-        provider: (model.provider as ProviderId) || 'deepseek',
+        provider: provider as ProviderId,
         contextWindow:
           typeof model.contextWindow === 'number' && model.contextWindow > 0
             ? model.contextWindow

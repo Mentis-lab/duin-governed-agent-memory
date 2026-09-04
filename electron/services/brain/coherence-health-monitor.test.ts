@@ -140,10 +140,13 @@ describe('COHERENCE_MAP live re-score (current corrected map)', () => {
   // Same day, later: 75 → 80 when the Agents pane shipped and that SHADOW became LIVE. The
   // map briefly held the honest bad number, then the number improved because the SYSTEM did —
   // which is the loop working in both directions rather than a score being managed.
-  it('WIRING is 80 — 16/20 live-or-by-design, ONE dead (brain-client, unadopted)', () => {
-    expect(report.axes.wiring.score).toBe(80)
-    expect(report.axes.wiring.metrics.subsystems).toBe(20)
-    expect(report.axes.wiring.metrics.liveOrByDesign).toBe(16)
+  // 80 → 81 on 2026-09-03 (P0 wiring audit): the role router + health probe entered the wiring
+  // axis LIVE (subsystems 20→21, liveOrByDesign 16→17), proven by its explicit boot-path calls and
+  // an isolated keyless boot rather than by the presence of an export.
+  it('WIRING is 81 — 17/21 live-or-by-design, ONE dead (brain-client, unadopted)', () => {
+    expect(report.axes.wiring.score).toBe(81)
+    expect(report.axes.wiring.metrics.subsystems).toBe(21)
+    expect(report.axes.wiring.metrics.liveOrByDesign).toBe(17)
     expect(report.axes.wiring.metrics.deadWiring).toBe(1)
     // 5 → 4 on 2026-08-21 (W2): the RSI row is LIVE now (engage-time staging + ratify UI),
     // no longer a by-design cold-hold; liveOrByDesign is unchanged because the row was
@@ -153,7 +156,11 @@ describe('COHERENCE_MAP live re-score (current corrected map)', () => {
     expect(report.axes.wiring.metrics.byDesignCold).toBe(3)
   })
 
-  it('GUARDEDNESS is 70 (withMonitor 15; unguarded 2 — the Agents pane arrived with tests)', () => {
+  // 70 → 69.2 on 2026-09-03, the same honest mechanism a fifth time: the P0 failure → notice
+  // watcher and the main log + cost ledger entered the guarded axis carrying TEST detectors only
+  // (watchers.test, main-log.test, cost-ledger.test, control-plane-*.test) — nothing WATCHES either
+  // at runtime — so the denominator grows while withMonitor stays at 15 and unguarded at 2.
+  it('GUARDEDNESS is 69.2 (withMonitor 15; unguarded 2 — the P0 observability rows are test-guarded)', () => {
     // 72 → 71.4 on 2026-08-02, and the drop is HONEST rather than a regression. Two subsystems were
     // added to the map (the agentic retriever, and the runCode tool), both of which had been
     // missing entirely — the retriever produces every grounded answer and was unmapped. Both carry
@@ -172,7 +179,7 @@ describe('COHERENCE_MAP live re-score (current corrected map)', () => {
     // exactly how a fully-wired IPC dangled an inch short of the glass unnoticed. It now carries
     // real test detectors because the pane shipped with them. Still no *-monitor: nothing
     // WATCHES this at runtime, so it stays out of withMonitor.
-    expect(report.axes.guardedness.score).toBe(70)
+    expect(report.axes.guardedness.score).toBe(69.2)
     expect(report.axes.guardedness.metrics.withMonitor).toBe(15)
     expect(report.axes.guardedness.metrics.unguarded).toBe(2)
   })
@@ -182,7 +189,7 @@ describe('COHERENCE_MAP live re-score (current corrected map)', () => {
     expect(report.axes.liveness.score).toBe(65.7)
   })
 
-  it('overall is 81.1; weakest axis is liveness', () => {
+  it('overall is 81.3; weakest axis is liveness', () => {
     // 82.5 → 82.4 from the guardedness move; 82.4 → 80.8 on 2026-08-03 from the entity-graph
     // byDesign correction above. Both drops are corrections to the map, not regressions in the
     // system — the system did not get worse, the description stopped flattering it.
@@ -193,7 +200,9 @@ describe('COHERENCE_MAP live re-score (current corrected map)', () => {
     // stopped one component short of existing. Building that component earned 1.7 back. The
     // dip and the recovery are the same mechanism — describe it honestly, then fix what the
     // description exposes. A map that had only ever gone up would be the suspicious one.
-    expect(report.overall).toBe(81.1)
+    // 81.1 → 81.3 on 2026-09-03 (P0 wiring audit): +1 LIVE wiring row outweighed the guardedness
+    // dilution of the two test-guarded observability rows; the live-eval row kept intent at 100.
+    expect(report.overall).toBe(81.3)
     expect(report.weakestAxis).toBe('liveness')
   })
 })

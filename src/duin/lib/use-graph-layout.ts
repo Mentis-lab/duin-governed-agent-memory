@@ -1,10 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import type { LayoutParamsUpdate, LayoutRequest, LayoutResponse } from "./graph-layout.worker";
+import { seedAlpha } from "./graph-layout-forces";
 
 /** d3's own stopping point; a settle that reaches it is genuinely converged. */
 const MAX_TICKS = 400;
-/** How often the worker streams intermediate positions back (ms). */
-const SNAPSHOT_MS = 120;
+/**
+ * How often the worker streams intermediate positions back (ms). Was 120: at the live drawn
+ * set a tick costs ~17 ms in the worker, so each snapshot carried ~7 ticks of motion and the
+ * settle read as 8 keyframes a second (mean step per keyframe 38 world units at the start of a
+ * re-heat, measured). At 60 the renderer gets 3-tick keyframes (15 units) and tweens between
+ * them, which is what "smooth" means here. The upload per snapshot is 2 floats per node.
+ */
+const SNAPSHOT_MS = 60;
 
 export type GraphLayoutParams = {
   /** The live node objects the renderer draws — positions are written back into these. */
@@ -12,12 +19,16 @@ export type GraphLayoutParams = {
   links: any[];
   /** Changes to this string trigger a fresh layout; force changes re-tune the one in flight. */
   signature: string;
+  /** The forces (graph-layout-forces `slidersToForces`). A change re-tunes the run in flight. */
   charge: number;
   linkDistance: number;
-  /** < 0 selects d3's adaptive default (1 / min degree). */
-  linkStrength: number;
-  centerStrength: number;
+  linkStrengthScale: number;
+  positional: number;
   velocityDecay: number;
+  /** Energy a force change re-heats the run to (`reheatAlphaFor`); read when a change is sent. */
+  reheatAlpha?: number;
+  /** Each node's drawn radius (world units); when given, the layout keeps nodes from overlapping. */
+  radiusOf?: (n: any) => number;
   /** False parks the worker (e.g. graph not loaded yet). */
   enabled: boolean;
 };
@@ -29,6 +40,9 @@ export type GraphLayoutState = {
   computing: boolean;
   /** False when the worker could not be constructed — caller must settle on the main thread. */
   available: boolean;
+  /** The energy the LAST structural run started with (`seedAlpha`): 1 = cold, from d3's spiral;
+   *  less = mostly seeded (a refresh, or a launch from the remembered layout). */
+  startAlpha: number;
 };
 
 /**
@@ -59,13 +73,16 @@ export function useGraphLayout(p: GraphLayoutParams): GraphLayoutState {
   const [available, setAvailable] = useState(true);
   const [computing, setComputing] = useState(false);
   const [version, setVersion] = useState(0);
+  const [startAlpha, setStartAlpha] = useState(1);
 
   nodesRef.current = p.nodes;
   linksRef.current = p.links;
   // The forces, readable by the structural post without sitting in its deps: a fresh
   // layout must carry the CURRENT slider values, but must not be re-triggered by them.
-  const forcesRef = useRef({ charge: p.charge, linkDistance: p.linkDistance, linkStrength: p.linkStrength, centerStrength: p.centerStrength, velocityDecay: p.velocityDecay });
-  forcesRef.current = { charge: p.charge, linkDistance: p.linkDistance, linkStrength: p.linkStrength, centerStrength: p.centerStrength, velocityDecay: p.velocityDecay };
+  const forcesRef = useRef({ charge: p.charge, linkDistance: p.linkDistance, linkStrengthScale: p.linkStrengthScale, positional: p.positional, velocityDecay: p.velocityDecay });
+  forcesRef.current = { charge: p.charge, linkDistance: p.linkDistance, linkStrengthScale: p.linkStrengthScale, positional: p.positional, velocityDecay: p.velocityDecay };
+  const reheatAlphaRef = useRef(p.reheatAlpha); reheatAlphaRef.current = p.reheatAlpha;
+  const radiusOfRef = useRef(p.radiusOf); radiusOfRef.current = p.radiusOf;
 
   // Spawn once. A construction failure (bundling, CSP, unsupported runtime) is not
   // fatal — it just returns the component to the pre-worker behaviour.
@@ -123,6 +140,7 @@ export function useGraphLayout(p: GraphLayoutParams): GraphLayoutState {
 
     const n = nodes.length;
     const x = new Float32Array(n), y = new Float32Array(n), pinned = new Uint8Array(n);
+    let seeded = 0;
     for (let i = 0; i < n; i++) {
       const nd = nodes[i];
       // NaN tells the worker "no seed" so d3 places it; a known position keeps the
@@ -130,7 +148,14 @@ export function useGraphLayout(p: GraphLayoutParams): GraphLayoutState {
       x[i] = typeof nd.fx === "number" ? nd.fx : (typeof nd.x === "number" ? nd.x : NaN);
       y[i] = typeof nd.fy === "number" ? nd.fy : (typeof nd.y === "number" ? nd.y : NaN);
       if (typeof nd.fx === "number" || typeof nd.fy === "number") pinned[i] = 1;
+      // A centroid guess (brain-shell's fresh-node rule) is a starting point, not a settled
+      // place: it still seeds d3 but does not make the run "already placed".
+      if (Number.isFinite(x[i]) && Number.isFinite(y[i]) && nd.__seed !== "centroid") seeded++;
     }
+    // A run that is mostly placed already (a refresh, or a launch seeded from the remembered
+    // layout) re-heats gently instead of scattering from alpha 1.
+    const alpha = seedAlpha(seeded, n);
+    setStartAlpha(alpha);
 
     const pairs: number[] = [];
     for (const l of linksRef.current) {
@@ -141,6 +166,9 @@ export function useGraphLayout(p: GraphLayoutParams): GraphLayoutState {
     }
 
     const ids = nodes.map((nd) => nd.id as string);
+    // Each node's drawn radius, so the worker's collision keeps what the renderer draws apart.
+    const radiusOf = radiusOfRef.current;
+    const radius = radiusOf ? Float32Array.from(nodes, (nd) => radiusOf(nd)) : undefined;
     // Bump the token and record the ids it describes in the same breath — the response
     // handler pairs them to apply positions by id instead of by array position.
     const token = ++tokenRef.current;
@@ -148,11 +176,15 @@ export function useGraphLayout(p: GraphLayoutParams): GraphLayoutState {
     const req: LayoutRequest = {
       kind: "layout", token, ids, x, y, pinned,
       links: Uint32Array.from(pairs),
+      radius,
+      alpha,
       ...forcesRef.current,
       maxTicks: MAX_TICKS, snapshotMs: SNAPSHOT_MS,
     };
     setComputing(true);
-    w.postMessage(req, [x.buffer, y.buffer, pinned.buffer, req.links.buffer]);
+    const transfer = [x.buffer, y.buffer, pinned.buffer, req.links.buffer];
+    if (radius) transfer.push(radius.buffer);
+    w.postMessage(req, transfer);
     // Nodes, links and forces are read through refs on purpose — see above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [p.signature, available, p.enabled]);
@@ -165,11 +197,11 @@ export function useGraphLayout(p: GraphLayoutParams): GraphLayoutState {
     if (!forcesSeen.current) { forcesSeen.current = true; return; }
     const w = workerRef.current;
     if (!w || !available || !p.enabled || tokenRef.current === 0) return;
-    const msg: LayoutParamsUpdate = { kind: "params", token: tokenRef.current, ...forcesRef.current };
+    const msg: LayoutParamsUpdate = { kind: "params", token: tokenRef.current, alpha: reheatAlphaRef.current, ...forcesRef.current };
     setComputing(true);
     w.postMessage(msg);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [p.charge, p.linkDistance, p.linkStrength, p.centerStrength, p.velocityDecay]);
+  }, [p.charge, p.linkDistance, p.linkStrengthScale, p.positional, p.velocityDecay]);
 
-  return { version, computing, available };
+  return { version, computing, available, startAlpha };
 }

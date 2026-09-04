@@ -39,19 +39,16 @@ type Room = 'Brain' | 'Workbench'
 
 const ROOM_MEMBERS: Record<Room, ToolId[]> = {
   Brain: [
-    // Status leads the room because it is the ONLY pill that can demand something:
-    // renderPill gives `homeStatus` alone a waiting state ("3 waiting on you" / "2 new
-    // since you looked") with an accent dot. Sitting eighth, the one surface that knows
-    // when it needs you was the last thing you'd read — a notice inbox below the fold is
-    // a notice inbox nobody opens. Everything under it is browsable at leisure; this one
-    // is not, so it goes where the eye lands first.
-    'homeStatus',
+    // Home leads the room because it is the ONLY pill that can demand something:
+    // renderPill gives `home` alone a waiting state ("3 waiting on you" / "2 new since
+    // you looked") with an accent dot. The one surface that knows when it needs you goes
+    // where the eye lands first; everything under it is browsable at leisure.
+    'home',
     'brain',
     'relations',
     'library',
     'artifacts',
     'decisions',
-    'learning',
     'graphReport'
   ],
   // Surface rationalization: connections → Settings; status/calibration/loop/orgs were
@@ -59,14 +56,12 @@ const ROOM_MEMBERS: Record<Room, ToolId[]> = {
   // panels only they could open. `files` opens from QuickOpen and `plan` opens itself on
   // a plan-gate transition, so neither wants a pill. `review` is the one thing left
   // reachable only by a chord — give it a pill or retire it, but don't leave it there.
-  // Graph Report (brain-analytics) is a Brain-room pill; After Action is a Workbench
-  // pill — the Explorer lens bar only filters node lists, so it can't host these.
-  Workbench: [
-    'terminal',
-    'automations',
-    'background',
-    'afterAction'
-  ]
+  //
+  // 2026-09-03: the monitoring surfaces (Status, Learning, Automations, Background tasks,
+  // After action) FOLDED INTO HOME. They keep their ToolId and their panel — Home's lines
+  // and its Details row open them — but they no longer sit here as five equal pills
+  // spreading one question ("where do things stand?") across five doors.
+  Workbench: ['terminal']
 }
 const ROOM_ORDER: Room[] = ['Brain', 'Workbench']
 
@@ -102,8 +97,15 @@ export function RightPanelHome(): React.ReactElement {
 
   const pills: Pill[] = [
     {
+      // The one operator surface: what needs you, whether the machine is alive, what
+      // changed. Folds Status, Learning, Automations, Background tasks and After action.
+      id: 'home',
+      label: 'Home',
+      description: 'What needs you, what is alive, what changed'
+    },
+    {
       // The flagship browsing surface, and first in the room among the surfaces you
-      // GO to. Only Status sits above it, because Status is the one that comes to you
+      // GO to. Only Home sits above it, because Home is the one that comes to you
       // (see ROOM_MEMBERS). Render order is ROOM_MEMBERS, not this array.
       id: 'brain',
       label: 'Explorer',
@@ -140,13 +142,10 @@ export function RightPanelHome(): React.ReactElement {
     // hand, and its only real output — closing an owed decision — now happens unattended in
     // brain/decision-loop.ts on the calibration tick. Task tracking is not a surface to check;
     // if something needs a human, it should arrive as a nudge, not wait in a list.
-    {
-      // What DUIN has learned about you. Learning is automatic now — this is the
-      // auditable record of what it promoted, not a review queue.
-      id: 'learning',
-      label: 'Learning',
-      description: 'What DUIN has learned about you — the audit trail'
-    },
+    //
+    // 'learning', 'homeStatus', 'automations', 'background', 'afterAction' FOLDED INTO HOME
+    // 2026-09-03: still routed (ToolId + ToolsPanel case), opened from Home's lines and its
+    // Details row, no launcher pill of their own.
     {
       // Structural graph analytics — clusters, surprising bridges, hubs, and
       // suggested links across your brain.
@@ -155,33 +154,9 @@ export function RightPanelHome(): React.ReactElement {
       description: 'Structure of your brain: clusters, bridges & suggested links'
     },
     {
-      // Consolidation hub — machine health (Brain status) + the foresight
-      // scoreboard (Calibration), one glanceable surface.
-      id: 'homeStatus',
-      label: 'Status',
-      description: "The machine's health & the foresight scoreboard"
-    },
-    {
-      // One home for every background behavior — schedules, loops, hooks, activity.
-      id: 'automations',
-      label: 'Automations',
-      description: 'Automations, loops, hooks & what fired'
-    },
-    {
       id: 'terminal',
       label: 'Terminal',
       description: 'PowerShell, Git Bash, WSL, or cmd'
-    },
-    {
-      id: 'background',
-      label: 'Background tasks',
-      description: 'Live agents, tool calls, wakeups, and scheduled jobs'
-    },
-    {
-      // Per-turn recap — what ran, the signals, and what to fix next.
-      id: 'afterAction',
-      label: 'After Action',
-      description: 'Per-turn recap: what ran, the signals & what to fix'
     }
   ]
 
@@ -212,7 +187,7 @@ export function RightPanelHome(): React.ReactElement {
     // The pill says WHAT is waiting, not just that something is. A bare count makes
     // the user open the surface to find out whether it mattered.
     const waiting =
-      pill.id === 'homeStatus'
+      pill.id === 'home'
         ? noticeCounts.needsDecision > 0
           ? `${noticeCounts.needsDecision} waiting on you`
           : noticeCounts.unread > 0

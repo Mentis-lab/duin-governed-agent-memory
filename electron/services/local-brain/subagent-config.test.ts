@@ -3,7 +3,7 @@ import {
   resolveSubagentConfig, listSubagentTypes, SUBAGENT_TYPE_IDS, BUILT_IN_SUBAGENT_TYPES
 } from './subagent-config'
 
-const ctx = { defaultModelId: 'parent-model' }
+const ctx = { parentModelId: 'parent-model' }
 
 describe('subagent-config — registry', () => {
   it('exposes stable type ids incl. the general default', () => {
@@ -80,7 +80,7 @@ describe('subagent-config — resolveSubagentConfig', () => {
   })
 
   it('respects ctx defaults for effort and rounds', () => {
-    const cfg = resolveSubagentConfig({ task: 't' }, { defaultModelId: 'm', defaultEffort: 'medium', defaultMaxRounds: 10 })
+    const cfg = resolveSubagentConfig({ task: 't' }, { parentModelId: 'm', defaultEffort: 'medium', defaultMaxRounds: 10 })
     expect(cfg.effort).toBe('medium')
     expect(cfg.maxRounds).toBe(10)
   })

@@ -124,7 +124,7 @@ describe('settings:set sanitizer', () => {
     // Use a function-call shape that won't trigger native __proto__ semantics
     // but tests our defence against the literal key name.
     const malicious = JSON.parse(
-      '{"__proto__": {"polluted": true}, "theme": "dark"}'
+      '{"__proto__": {"polluted": true}, "language": "en"}'
     )
     await handler(undefined, malicious)
     // The settings file must NOT contain __proto__ as an own property.
@@ -133,7 +133,7 @@ describe('settings:set sanitizer', () => {
     // Object.prototype must not have been polluted.
     expect(({} as Record<string, unknown>).polluted).toBeUndefined()
     // Legitimate key DID land.
-    expect(written.theme).toBe('dark')
+    expect(written.language).toBe('en')
   })
 
   it('rejects `constructor` and `prototype` keys', async () => {
@@ -143,12 +143,12 @@ describe('settings:set sanitizer', () => {
     await handler(undefined, {
       constructor: 'evil',
       prototype: 'evil',
-      theme: 'light'
+      language: 'zh'
     })
     const written = JSON.parse(readFileSync(join(userDataDir, 'settings.json'), 'utf-8'))
     expect(written.constructor).not.toBe('evil')
     expect(written.prototype).not.toBe('evil')
-    expect(written.theme).toBe('light')
+    expect(written.language).toBe('zh')
   })
 
   it('array input is treated as empty (not spread as numeric-keyed object)', async () => {
@@ -212,18 +212,18 @@ describe('settings:set sanitizer', () => {
     registerSettingsHandlers()
     const handler = ipcRegistered.get('settings:set')!
     // User toggles ONE unrelated setting, starting from an absent settings.json.
-    const res = await handler(undefined, { sidebarCollapsed: true })
+    const res = await handler(undefined, { minimizeToTray: true })
     expect(res.success).toBe(true)
     const written = JSON.parse(readFileSync(join(userDataDir, 'settings.json'), 'utf-8'))
     // The touched key landed.
-    expect(written.sidebarCollapsed).toBe(true)
+    expect(written.minimizeToTray).toBe(true)
     // Defaults the user never touched must NOT be materialised on disk — that is
     // exactly the freezing this fix prevents. Pre-fix, all of these were present.
     expect(Object.prototype.hasOwnProperty.call(written, 'loopMaxIterations')).toBe(false)
     expect(Object.prototype.hasOwnProperty.call(written, 'safeSeedLength')).toBe(false)
     expect(Object.prototype.hasOwnProperty.call(written, 'backgroundAutonomy')).toBe(false)
     // The on-disk object is the patch alone (no default keys leaked in).
-    expect(Object.keys(written)).toEqual(['sidebarCollapsed'])
+    expect(Object.keys(written)).toEqual(['minimizeToTray'])
   })
 
   it('preserves prior on-disk keys across an unrelated patch (no clobber, no default bloat)', async () => {
@@ -231,13 +231,13 @@ describe('settings:set sanitizer', () => {
     registerSettingsHandlers()
     const handler = ipcRegistered.get('settings:set')!
     // Two sequential writes: the second must keep the first key AND stay minimal.
-    await handler(undefined, { theme: 'dark' })
-    await handler(undefined, { sidebarCollapsed: true })
+    await handler(undefined, { language: 'en' })
+    await handler(undefined, { minimizeToTray: true })
     const written = JSON.parse(readFileSync(join(userDataDir, 'settings.json'), 'utf-8'))
-    expect(written.theme).toBe('dark')
-    expect(written.sidebarCollapsed).toBe(true)
+    expect(written.language).toBe('en')
+    expect(written.minimizeToTray).toBe(true)
     // Still only the two user-set keys — defaults did not accrete over the two writes.
-    expect(Object.keys(written).sort()).toEqual(['sidebarCollapsed', 'theme'])
+    expect(Object.keys(written).sort()).toEqual(['language', 'minimizeToTray'])
   })
 
   it('caps recursion depth so a hostile deep object cannot OOM', async () => {
@@ -247,7 +247,40 @@ describe('settings:set sanitizer', () => {
     // Build a 50-deep nested object — well past the depth cap (16).
     let deep: Record<string, unknown> = { leaf: 'value' }
     for (let i = 0; i < 50; i++) deep = { nested: deep }
-    const res = await handler(undefined, { wrapper: deep })
+    // modelConfig is the open-shaped block the schema allows to hold anything.
+    const res = await handler(undefined, { modelConfig: deep })
     expect(res.success).toBe(true)
+  })
+
+  // 2026-09-03 (settings evaluation D5): the file's shape is checked on the way in.
+  it('refuses a key DUIN does not know, naming it, and writes nothing', async () => {
+    const { registerSettingsHandlers } = await import('./settings')
+    registerSettingsHandlers()
+    const handler = ipcRegistered.get('settings:set')!
+    const res = await handler(undefined, { minimiseToTray: true, language: 'en' })
+    expect(res.success).toBe(false)
+    expect(res.error).toMatch(/minimiseToTray is not a setting DUIN knows/)
+    expect(existsSync(join(userDataDir, 'settings.json'))).toBe(false)
+  })
+
+  it('refuses a known key whose value is the wrong kind', async () => {
+    const { registerSettingsHandlers } = await import('./settings')
+    registerSettingsHandlers()
+    const handler = ipcRegistered.get('settings:set')!
+    const res = await handler(undefined, { fontSize: '16' })
+    expect(res.success).toBe(false)
+    expect(res.error).toMatch(/fontSize must be number, got string/)
+  })
+
+  it('refuses the home folder as a sandbox write root even after a picker grant', async () => {
+    const { registerSettingsHandlers } = await import('./settings')
+    registerSettingsHandlers()
+    const handler = ipcRegistered.get('settings:set')!
+    const { homedir } = await import('os')
+    const home = homedir()
+    grantTrustedDirectory(home)
+    const res = await handler(undefined, { sandboxWritePaths: [home] })
+    expect(res.success).toBe(false)
+    expect(res.error).toMatch(/home folder and system folders cannot be added/)
   })
 })

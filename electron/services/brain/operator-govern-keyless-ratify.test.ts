@@ -119,3 +119,40 @@ describe('W5 — refreshKeylessRatifyCard settles the card as soon as the queue 
     expect(listByStatus('promoted').map((f) => f.fact)).toContain('keyless survivor')
   })
 })
+
+// The card outlives the process; the count that guards it does not. Before this, the clear
+// was gated on `pending !== lastKeylessRatifyCount`, so a queue that drained after a restart
+// compared 0 against a freshly-zeroed 0 and skipped resolveByActionId forever. One card on
+// the operator's machine sat owed from 2026-09-01, leading Home with "1 decision is waiting
+// on you" and pointing at a Learning panel with nothing in it.
+describe('the card is cleared even when the queue drained across a restart', () => {
+  it('a ratify after a restart still settles the card', async () => {
+    const id = provisionalFact('keyless survivor', ['s1', 's2', 's3', 's4'])
+    await runGovernPass(keylessJury, P)
+    expect(listNotices().find((n) => n.actionId === 'govern:keyless-review')?.resolvedAt).toBeNull()
+
+    // RESTART: the notice is persisted, the in-memory count is not.
+    __resetKeylessRatifyAnnounce()
+
+    expect(ratifyFact(id)).toBe(true)
+    expect(refreshKeylessRatifyCard()).toBe(0)
+    expect(listNotices().find((n) => n.actionId === 'govern:keyless-review')?.resolvedAt).not.toBeNull()
+  })
+
+  it('an empty govern pass after a restart clears a card left owed by an earlier run', async () => {
+    const id = provisionalFact('keyless survivor', ['s1', 's2', 's3', 's4'])
+    await runGovernPass(keylessJury, P)
+    confirmFact(id)
+    __resetKeylessRatifyAnnounce()
+
+    const r = await runGovernPass(keylessJury, P)
+    expect(r.awaitingRatify).toBe(0)
+    expect(listNotices().find((n) => n.actionId === 'govern:keyless-review')?.resolvedAt).not.toBeNull()
+  })
+
+  it('an empty queue with no card files nothing', async () => {
+    __resetKeylessRatifyAnnounce()
+    expect(refreshKeylessRatifyCard()).toBe(0)
+    expect(listNotices()).toHaveLength(0)
+  })
+})

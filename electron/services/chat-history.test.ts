@@ -231,14 +231,23 @@ describe('buildApiMessagesFromStoredMessages — reasoning_content field for Dee
     expect(assistant.content).not.toContain('<think>')
   })
 
-  it('does NOT include reasoning_content for non-V4 models', () => {
+  it('does NOT include reasoning_content for models on another provider', () => {
+    const api = buildApiMessagesFromStoredMessages('system', [
+      { role: 'user', content: 'help' },
+      { role: 'assistant', content: 'reply', reasoning: 'thought' }
+    ], 'glm-5.3')
+    const assistant = api[2] as any
+    expect(assistant.reasoning_content).toBeUndefined()
+    expect(assistant.content).toContain('<think>')
+  })
+
+  it('a retired DeepSeek alias behaves like the catalog row it is sent as (wire truth, not an id list)', () => {
     const api = buildApiMessagesFromStoredMessages('system', [
       { role: 'user', content: 'help' },
       { role: 'assistant', content: 'reply', reasoning: 'thought' }
     ], 'deepseek-chat')
     const assistant = api[2] as any
-    expect(assistant.reasoning_content).toBeUndefined()
-    expect(assistant.content).toContain('<think>')
+    expect(assistant.reasoning_content).toBe('thought')
   })
 
   it('does NOT include reasoning_content when modelId is undefined', () => {

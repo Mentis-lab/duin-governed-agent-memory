@@ -9,10 +9,14 @@ import {
   fetchLearnLoop,
   runReflect,
   bindCandidate,
+  readState,
   type Schedule,
   type Taste,
   type LearnLoop
 } from '@/duin/lib/state'
+import { duinFetch } from '@/duin/lib/loopback-auth'
+import { panelFromResult, panelLoading, type PanelStatus } from '@/lib/panel-state'
+import { formatModelIdFallback } from '@/lib/model-label'
 
 // Brain status — the "error log the brain never had". DUIN surfaces its own
 // health here, and every line carries an ACTION, not a static readout. The
@@ -43,11 +47,24 @@ interface ConnApi {
   list?: () => Promise<{ success: boolean; data?: Connection[]; error?: string }>
   sync?: (id: string) => Promise<{ success: boolean; data?: { ok: boolean; count: number; error?: string }; error?: string }>
 }
+/** The router's IPC surface (roles.ts MODEL_IPC, exposed by preload as `window.api.model.*`).
+ *  Every member is optional: a build whose preload predates the router renders the row as
+ *  "engine unknown" instead of throwing. */
+interface ModelApi {
+  resolve?: (task: string, pin?: string) => Promise<unknown>
+  healthList?: () => Promise<unknown>
+  healthProbe?: (provider: string) => Promise<unknown>
+  listProviders?: () => Promise<unknown>
+  list?: () => Promise<unknown>
+}
 function brainApi(): BrainApi | undefined {
   return (window as unknown as { api?: { brain?: BrainApi } }).api?.brain
 }
 function connApi(): ConnApi | undefined {
   return (window as unknown as { api?: { connections?: ConnApi } }).api?.connections
+}
+function modelApi(): ModelApi | undefined {
+  return (window as unknown as { api?: { model?: ModelApi } }).api?.model
 }
 
 // Humanize a ms-since-epoch timestamp into a relative "synced …" label.
@@ -79,6 +96,132 @@ function SectionTitle({ children }: { children: React.ReactNode }): React.ReactE
       {children}
     </div>
   )
+}
+
+// ── Engine — the router's answer, not the graph's ────────────────────────────
+//
+// "Connected" used to be `graphKnown && nodeCount > 0`: a dead chat engine with a healthy
+// graph rendered a green dot (2026-09-02 evaluation, L5 F2 — 5/5 Claude turns died while
+// Status said Connected). The engine row now reads the router (lane A, roles.ts): which model
+// the chat role resolves to, whether it is pinned or policy-chosen, and the live health of
+// every provider. The graph keeps its own row below. The pure decisions are exported so the
+// node-only test env (no jsdom here) can pin them.
+
+/** Mirror of roles.ts `RoleResolution` as it crosses preload. Renderer code cannot import
+ *  electron/services (tsconfig.web lists shared files one by one), so the shape is restated. */
+export interface EngineResolution {
+  task: string
+  modelId: string
+  provider: string
+  chain?: string[]
+  source: 'pin' | 'policy'
+}
+/** Mirror of roles.ts `ProviderHealth` (+ the optional `hint` lane A may attach). */
+export interface EngineHealth {
+  provider: string
+  healthy: boolean
+  reason: string
+  detail?: string
+  hint?: string
+  probedModelId?: string
+  checkedAt?: number
+  latencyMs?: number
+}
+
+export type EngineState =
+  | { phase: 'no-bridge' }
+  | { phase: 'loading' }
+  | { phase: 'no-engine'; unhealthy: EngineHealth[] }
+  | { phase: 'ready'; resolution: EngineResolution; health: EngineHealth | null; healthy: boolean | null }
+
+/**
+ * PURE. Unwrap an IPC reply that may be the `{success, data}` envelope every handler in this
+ * app returns, or a bare value. A failed envelope is null — never a value that reads as data.
+ */
+export function unwrapIpc<T>(r: unknown): T | null {
+  if (r && typeof r === 'object' && 'success' in (r as Record<string, unknown>)) {
+    const env = r as { success: boolean; data?: T }
+    return env.success ? ((env.data ?? null) as T | null) : null
+  }
+  return (r ?? null) as T | null
+}
+
+/**
+ * PURE. The engine line's branch. `resolution === undefined` is "not asked yet"; `null` is the
+ * router's honest "no healthy candidate for chat". A resolution whose provider has no health
+ * row yet is `healthy: null` (unknown), which is NOT rendered as connected.
+ */
+export function engineStateFrom(
+  bridge: boolean,
+  resolution: EngineResolution | null | undefined,
+  health: EngineHealth[] | null | undefined
+): EngineState {
+  if (!bridge) return { phase: 'no-bridge' }
+  if (resolution === undefined) return { phase: 'loading' }
+  if (resolution === null) return { phase: 'no-engine', unhealthy: (health ?? []).filter((h) => !h.healthy) }
+  const h = (health ?? []).find((x) => x.provider === resolution.provider) ?? null
+  return { phase: 'ready', resolution, health: h, healthy: h ? h.healthy : null }
+}
+
+/** PURE. The one boolean the header dot reads. */
+export function engineConnected(state: EngineState): boolean {
+  return state.phase === 'ready' && state.healthy === true
+}
+
+// ── Spend — the cost ledger, honestly labelled ───────────────────────────────
+
+/** The slice of /debug/cost (cost-ledger.ts `CostLedger`) this row renders. */
+export interface CostLedgerView {
+  window: string
+  since: number
+  totals: {
+    calls: number
+    costUsd: number
+    inputTokens: number
+    outputTokens: number
+    metered: number
+    estimatedCalls: number
+    redactedCalls: number
+  }
+  estimated: boolean
+  sources?: { name: string; rows: number; costUsd: number }[]
+}
+
+export function fmtTokens(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return '0'
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
+  return String(Math.round(n))
+}
+
+export function fmtUsd(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return '$0.00'
+  return n < 0.01 ? `$${n.toFixed(4)}` : `$${n.toFixed(2)}`
+}
+
+/** PURE. "$0.04 · 57 calls · 12.3k in / 4.1k out". */
+export function spendLine(v: CostLedgerView): string {
+  const t = v.totals
+  return `${fmtUsd(t.costUsd)} · ${t.calls} call${t.calls === 1 ? '' : 's'} · ${fmtTokens(t.inputTokens)} in / ${fmtTokens(t.outputTokens)} out`
+}
+
+/** PURE. Why the figure is an estimate, or null when it is exact. Never hides the caveat. */
+export function spendCaveat(v: CostLedgerView): string | null {
+  if (!v.estimated) return null
+  const parts: string[] = []
+  if (v.totals.redactedCalls > 0) parts.push(`${v.totals.redactedCalls} call${v.totals.redactedCalls === 1 ? '' : 's'} with redacted counters (before the fix)`)
+  if (v.totals.estimatedCalls > 0) parts.push(`${v.totals.estimatedCalls} priced at the fallback rate`)
+  return parts.length ? `estimated — ${parts.join('; ')}` : 'estimated'
+}
+
+const brainBase = (): string =>
+  (typeof window !== 'undefined' && (window as unknown as { __DUIN_BASE?: string }).__DUIN_BASE) ||
+  'http://127.0.0.1:8799'
+
+async function fetchCostLedger(signal?: AbortSignal): Promise<CostLedgerView> {
+  const r = await duinFetch(`${brainBase()}/debug/cost?window=24h`, { signal })
+  if (!r.ok) throw new Error(`/debug/cost failed (HTTP ${r.status})`)
+  return (await r.json()) as CostLedgerView
 }
 
 // ── Binding candidates — the falsification loop's mouth ──────────────────────
@@ -169,9 +312,82 @@ export function BrainStatusPanel({ embedded = false }: { embedded?: boolean } = 
 
   const nodeCount = graph?.nodes ?? 0
   const linkCount = graph?.links ?? 0
-  // Only OUR fetch can report health. Unknown (loading) and unreachable are distinct from empty.
+  // Only OUR fetch can report graph health. Unknown (loading) and unreachable are distinct from empty.
   const graphKnown = graph !== undefined
-  const connected = graphKnown && nodeCount > 0
+
+  // ── Engine (router) ────────────────────────────────────────────────────────
+  const [resolution, setResolution] = useState<EngineResolution | null | undefined>(undefined)
+  const [health, setHealth] = useState<EngineHealth[] | null>(null)
+  const [providerLabels, setProviderLabels] = useState<Record<string, string>>({})
+  const [modelNames, setModelNames] = useState<Record<string, string>>({})
+  const [probing, setProbing] = useState(false)
+  const bridge = typeof modelApi()?.resolve === 'function'
+
+  const loadEngine = useCallback(async (): Promise<void> => {
+    const api = modelApi()
+    if (!api?.resolve) return
+    try {
+      setResolution(unwrapIpc<EngineResolution>(await api.resolve('chat')))
+    } catch {
+      setResolution(null)
+    }
+    try {
+      setHealth(unwrapIpc<EngineHealth[]>(await api.healthList?.()) ?? [])
+    } catch {
+      setHealth([])
+    }
+  }, [])
+
+  // Labels are cosmetic and cheap; a failure here leaves ids showing, never a blank row.
+  useEffect(() => {
+    const api = modelApi()
+    void (async () => {
+      try {
+        const ps = unwrapIpc<{ id: string; label: string }[]>(await api?.listProviders?.()) ?? []
+        setProviderLabels(Object.fromEntries(ps.map((p) => [p.id, p.label])))
+      } catch {
+        /* ids will do */
+      }
+      try {
+        const ms = unwrapIpc<{ id: string; name: string }[]>(await api?.list?.()) ?? []
+        setModelNames(Object.fromEntries(ms.map((m) => [m.id, m.name])))
+      } catch {
+        /* ids will do */
+      }
+    })()
+  }, [])
+
+  const probe = async (): Promise<void> => {
+    const api = modelApi()
+    if (!api?.healthProbe) return
+    setProbing(true)
+    try {
+      const fresh = unwrapIpc<EngineHealth[]>(await api.healthProbe('all'))
+      if (!fresh) {
+        toast.error('Probe failed — the router did not answer')
+      } else {
+        setHealth(fresh)
+        const ok = fresh.filter((h) => h.healthy).length
+        toast.success(`Probed ${fresh.length} provider${fresh.length === 1 ? '' : 's'}: ${ok} healthy`)
+      }
+      await loadEngine()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Probe failed')
+    } finally {
+      setProbing(false)
+    }
+  }
+
+  const engine = engineStateFrom(bridge, resolution, health)
+  const connected = engineConnected(engine)
+  const providerLabel = (id: string): string => providerLabels[id] ?? id
+  const modelLabel = (id: string): string => modelNames[id] ?? formatModelIdFallback(id)
+
+  // ── Spend (24 h) ───────────────────────────────────────────────────────────
+  const [spend, setSpend] = useState<PanelStatus<CostLedgerView>>(panelLoading())
+  const loadSpend = useCallback(async (): Promise<void> => {
+    setSpend(panelFromResult(await readState('spend (24 h)', (s) => fetchCostLedger(s))))
+  }, [])
 
   // ── Scheduled loops ────────────────────────────────────────────────────────
   const [schedules, setSchedules] = useState<Schedule[] | null>(null)
@@ -234,11 +450,13 @@ export function BrainStatusPanel({ embedded = false }: { embedded?: boolean } = 
   }, [])
 
   const refreshAll = useCallback((): void => {
+    void loadEngine()
+    void loadSpend()
     void loadSchedules()
     void loadLearning()
     void loadSources()
     void loadGraph()
-  }, [loadSchedules, loadLearning, loadSources, loadGraph])
+  }, [loadEngine, loadSpend, loadSchedules, loadLearning, loadSources, loadGraph])
 
   useEffect(() => {
     refreshAll()
@@ -380,47 +598,151 @@ export function BrainStatusPanel({ embedded = false }: { embedded?: boolean } = 
       </div>
 
       <div className="flex-1 space-y-1.5 overflow-y-auto">
-        {/* 5. Engine — the at-a-glance health line. THREE states, not two: a panel that only
-            knows "connected / degraded" has to call one of them while it is still loading, and
-            will call a dead backend healthy if it borrows a cached count from elsewhere. */}
+        {/* 0. Engine — the at-a-glance line, engine-derived. States: connected (router resolved
+            chat AND that provider answered a real probe), unhealthy (resolved, provider dead),
+            unknown health (resolved, no probe yet), no engine (router has no healthy candidate),
+            no bridge (preload predates the router), loading. */}
         <div className="flex items-center gap-2 px-0.5 py-1 text-[12px]">
-          {connected ? (
+          {connected && engine.phase === 'ready' ? (
             <>
               <span style={{ color: 'var(--success)' }}>●</span>
               <span className="text-[var(--text-primary)]">{t('Connected')}</span>
-              <span className="text-[var(--text-muted)]">· brain loaded</span>
+              <span className="truncate text-[var(--text-muted)]">
+                · {modelLabel(engine.resolution.modelId)} · {engine.resolution.source === 'pin' ? 'pinned' : 'auto'} ·{' '}
+                {providerLabel(engine.resolution.provider)}
+              </span>
             </>
-          ) : graphErr ? (
+          ) : engine.phase === 'ready' && engine.healthy === false ? (
             <>
               <span style={{ color: 'var(--error, var(--warning))' }}>●</span>
-              <span className="text-[var(--text-primary)]">{t('Unreachable')}</span>
-              <span className="text-[var(--text-muted)]">— the brain engine did not answer</span>
+              <span className="text-[var(--text-primary)]">{t('Engine unhealthy')}</span>
+              <span className="truncate text-[var(--text-muted)]">
+                — {providerLabel(engine.resolution.provider)}: {engine.health?.reason ?? 'unknown'}
+                {engine.health?.hint ? ` · ${engine.health.hint}` : engine.health?.detail ? ` · ${engine.health.detail}` : ''}
+              </span>
             </>
-          ) : !graphKnown ? (
+          ) : engine.phase === 'ready' ? (
+            <>
+              <span style={{ color: 'var(--warning)' }}>○</span>
+              <span className="text-[var(--text-primary)]">{modelLabel(engine.resolution.modelId)}</span>
+              <span className="text-[var(--text-muted)]">
+                · {engine.resolution.source === 'pin' ? 'pinned' : 'auto'} — provider health unknown, run Probe
+              </span>
+            </>
+          ) : engine.phase === 'no-engine' ? (
+            <>
+              <span style={{ color: 'var(--error, var(--warning))' }}>●</span>
+              <span className="text-[var(--text-primary)]">{t('No engine')}</span>
+              <span className="truncate text-[var(--text-muted)]">
+                — no healthy provider for chat
+                {engine.unhealthy[0]
+                  ? ` (${providerLabel(engine.unhealthy[0].provider)}: ${engine.unhealthy[0].reason})`
+                  : ''}
+                . Add or fix a key in Settings → Models.
+              </span>
+            </>
+          ) : engine.phase === 'no-bridge' ? (
+            <>
+              <span style={{ color: 'var(--warning)' }}>○</span>
+              <span className="text-[var(--text-primary)]">{t('Engine unknown')}</span>
+              <span className="text-[var(--text-muted)]">— the model router is not exposed by this build</span>
+            </>
+          ) : (
             <>
               <span style={{ color: 'var(--text-muted)' }}>○</span>
               <span className="text-[var(--text-muted)]">Checking the engine…</span>
             </>
+          )}
+        </div>
+
+        {/* 0b. Provider health chips — one per provider the router knows, reason on the dead ones.
+            Probe runs a real completion against each (lane A), not a key check. */}
+        {bridge && (
+          <div className={ROW}>
+            <div className="flex items-center gap-2">
+              <div className="flex min-w-0 flex-1 flex-wrap gap-1">
+                {(health ?? []).length === 0 ? (
+                  <span className="text-[11px] text-[var(--text-muted)]">
+                    {health === null ? 'Reading provider health…' : 'No provider has been probed yet.'}
+                  </span>
+                ) : (
+                  (health ?? []).map((h) => (
+                    <span
+                      key={h.provider}
+                      title={h.hint ?? h.detail ?? h.reason}
+                      className="rounded bg-[var(--bg-tertiary)] px-1.5 py-0.5 text-[11px] text-[var(--text-secondary)]"
+                    >
+                      <span style={{ color: h.healthy ? 'var(--success)' : 'var(--error, var(--warning))' }}>
+                        {h.healthy ? '●' : '○'}
+                      </span>{' '}
+                      {providerLabel(h.provider)}
+                      {!h.healthy && <span className="text-[var(--text-muted)]"> — {h.reason}</span>}
+                    </span>
+                  ))
+                )}
+              </div>
+              <button onClick={() => void probe()} disabled={probing} className={ACTION_BTN}>
+                {probing ? 'Probing…' : 'Probe'}
+              </button>
+            </div>
+            <p className="mt-1 text-[11px] text-[var(--text-muted)]">
+              {t('One real completion per provider. Dead providers are skipped by the router and greyed in the picker.')}
+            </p>
+          </div>
+        )}
+
+        {/* 0c. Spend — /debug/cost over the last 24 h: spine events (background roles) plus the
+            turn journal (chat). The caveat is rendered whenever the ledger says estimated. */}
+        <SectionTitle>{t('Spend (24 h)')}</SectionTitle>
+        <div className={ROW}>
+          {spend.phase === 'loading' ? (
+            <span className="text-[12px] text-[var(--text-muted)]">Reading the cost ledger…</span>
+          ) : spend.phase === 'error' ? (
+            <span className="text-[12px] text-[var(--warning)]">Spend unknown — {spend.error}</span>
           ) : (
             <>
-              <span style={{ color: 'var(--warning)' }}>○</span>
-              <span className="text-[var(--text-primary)]">{t('Degraded')}</span>
-              <span className="text-[var(--text-muted)]">— the engine answered with an empty graph</span>
+              <span className="font-medium text-[var(--text-primary)]">{spendLine(spend.data)}</span>
+              {spendCaveat(spend.data) && (
+                <span className="ml-1.5 text-[11px] text-[var(--warning)]" title={spendCaveat(spend.data) ?? ''}>
+                  {spendCaveat(spend.data)}
+                </span>
+              )}
+              <p className="mt-1 text-[11px] text-[var(--text-muted)]">
+                {(spend.data.sources ?? []).map((s) => `${s.name}: ${s.rows} rows, ${fmtUsd(s.costUsd)}`).join(' · ') ||
+                  'events + turn journal'}
+              </p>
             </>
           )}
         </div>
 
-        {/* 1. Knowledge graph */}
+        {/* 1. Knowledge graph — the graph's own health, separate from the engine's. */}
         <SectionTitle>{t('Knowledge graph')}</SectionTitle>
         <div className={ROW}>
           <div className="flex items-center gap-2">
             <span className="min-w-0 flex-1">
+              <span
+                style={{
+                  color: graphErr
+                    ? 'var(--error, var(--warning))'
+                    : !graphKnown
+                      ? 'var(--text-muted)'
+                      : nodeCount > 0
+                        ? 'var(--success)'
+                        : 'var(--warning)'
+                }}
+              >
+                {graphKnown && nodeCount > 0 ? '●' : '○'}
+              </span>{' '}
               <span className="font-medium text-[var(--text-primary)]">
                 {graphKnown ? `${nodeCount.toLocaleString()} nodes` : graphErr ? 'unreachable' : '…'}
               </span>
               {graphKnown && (
                 <span className="text-[var(--text-muted)]"> · {linkCount.toLocaleString()} links</span>
               )}
+              {graphKnown && nodeCount === 0 && (
+                <span className="text-[var(--text-muted)]"> — the engine answered with an empty graph</span>
+              )}
+              {graphErr && <span className="text-[var(--text-muted)]"> — the brain engine did not answer</span>}
             </span>
             <button onClick={() => void rebuild()} disabled={reindexing} className={ACTION_BTN}>
               {reindexing ? 'Rebuilding…' : 'Rebuild'}

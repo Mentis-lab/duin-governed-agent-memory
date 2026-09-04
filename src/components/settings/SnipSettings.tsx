@@ -1,290 +1,242 @@
-import { t } from '@/lib/i18n'
+import { t, tf } from '@/lib/i18n'
 import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/Button'
-import { Toggle } from '@/components/ui/Toggle'
+import { SettingsLoadError, SettingsPage, SettingsRow, SettingsSection, ToggleRow } from '@/components/ui/settings'
 import { useSettingsStore } from '@/stores/settings-store'
 import { formatCount, useSnipStore } from '@/stores/snip-store'
 import { SnipDiscoverPanel } from './SnipDiscoverPanel'
 
-// SnipSettings — gain dashboard + filter library + discover panel.
-// All numbers come from the K10 IPC; toggles flip both settings.json
-// (so the K9 shell handler picks up the change on next call) and the
-// renderer's settings store (so the toggle reflects state without a
-// reload).
+// SnipSettings — gain dashboard + filter library + discover panel. All numbers come from
+// the snip IPC; the master switch is the one settings key (`snipEnabled`) the shell
+// handler reads fresh on every call.
 
-export function SnipSettings() {
+export function SnipSettings(): React.ReactElement {
   const stats = useSnipStore((s) => s.stats)
   const recent = useSnipStore((s) => s.recent)
   const filters = useSnipStore((s) => s.filters)
   const loading = useSnipStore((s) => s.loading)
   const error = useSnipStore((s) => s.error)
   const loadAll = useSnipStore((s) => s.loadAll)
-  const setEnabledIpc = useSnipStore((s) => s.setEnabled)
-  const setVerboseIpc = useSnipStore((s) => s.setVerbose)
   const reloadFilters = useSnipStore((s) => s.reloadFilters)
   const clearHistory = useSnipStore((s) => s.clearHistory)
   const openFilterDir = useSnipStore((s) => s.openFilterDir)
 
   const enabled = useSettingsStore((s) => s.settings.snipEnabled)
-  const verbose = useSettingsStore((s) => s.settings.snipVerbose)
   const updateSettings = useSettingsStore((s) => s.updateSettings)
 
-  const [confirmClear, setConfirmClear] = useState(false)
   const [showFilters, setShowFilters] = useState(false)
+  const [resetting, setResetting] = useState(false)
 
   useEffect(() => {
     void loadAll()
   }, [loadAll])
 
-  // Hot-reload when chokidar reports a YAML change in userData.
+  // Hot-reload when the watcher reports a YAML change in the user filter folder.
   useEffect(() => {
     if (!window.api?.snip?.onFiltersChanged) return
     return window.api.snip.onFiltersChanged(() => void loadAll())
   }, [loadAll])
 
-  const onToggleEnabled = async (next: boolean): Promise<void> => {
-    await updateSettings({ snipEnabled: next })
-    await setEnabledIpc(next)
-  }
-  const onToggleVerbose = async (next: boolean): Promise<void> => {
-    await updateSettings({ snipVerbose: next })
-    await setVerboseIpc(next)
-  }
-  const onClearHistory = async (): Promise<void> => {
-    if (!confirmClear) {
-      setConfirmClear(true)
-      return
+  // The two-click "click again to confirm" button had no cancel path: the first click armed
+  // it and nothing disarmed it. A confirm dialog has both answers.
+  const onResetHistory = async (): Promise<void> => {
+    if (!window.confirm(t('Reset the snip history? Statistics and recent activity go back to zero. Filters are kept.'))) return
+    setResetting(true)
+    try {
+      await clearHistory()
+    } finally {
+      setResetting(false)
     }
-    await clearHistory()
-    setConfirmClear(false)
   }
 
   const tokensSaved = stats ? stats.totalTokensBefore - stats.totalTokensAfter : 0
   const savingsPct = stats ? Math.round(stats.avgSavings * 100) : 0
 
   return (
-    <div className="space-y-4">
-      <div>
-        <h2 className="text-[14px] font-medium text-[var(--text-primary)]">{t('Snip')}</h2>
-        <p className="mt-1 text-[12px] text-[var(--text-muted)]">
-          Shell-output token filter. Every successful tool call runs through
-          a declarative YAML pipeline before reaching the model.
-        </p>
-      </div>
+    <SettingsPage
+      purpose={t('Trims shell command output before it reaches the model, so long listings and logs cost fewer tokens. Filters are YAML rules; add your own in the user filter folder.')}
+    >
+      {error && <SettingsLoadError what={t('snip statistics')} message={error} onRetry={() => void loadAll()} />}
 
-      {error && (
-        <div className="rounded border border-[var(--error)] bg-[var(--bg-primary)] px-2 py-1 font-mono text-[11px] text-[var(--error)]">
-          {error}
-        </div>
-      )}
-
-      {/* Header card */}
-      <div className="rounded border border-[var(--panel-border)] bg-[var(--bg-primary)] p-3">
-        <div className="flex items-start justify-between">
-          <div className="flex flex-col gap-2">
-            <label className="flex cursor-pointer items-start gap-2 font-mono text-[11px]">
-              <Toggle checked={enabled} onChange={(v) => void onToggleEnabled(v)} aria-label={t('Enabled')} />
-              <div className="flex flex-col">
-                <span className="text-[var(--text-primary)]">{t('Enabled')}</span>
-                <span className="text-[var(--text-muted)]">Master switch. Off = raw shell output reaches the model.</span>
-              </div>
-            </label>
-            <label className="flex cursor-pointer items-start gap-2 font-mono text-[11px]">
-              <Toggle checked={verbose} onChange={(v) => void onToggleVerbose(v)} aria-label={t('Verbose mode')} />
-              <div className="flex flex-col">
-                <span className="text-[var(--text-primary)]">{t('Verbose mode')}</span>
-                <span className="text-[var(--text-muted)]">{t('Render per-match activity in this panel. Does NOT decorate model-facing output.')}</span>
-              </div>
-            </label>
-          </div>
-          <div className="grid grid-cols-3 gap-3 text-right font-mono text-[11px]">
-            <Stat label={t('Tokens saved')} value={formatCount(tokensSaved)} />
-            <Stat label={t('Avg savings')} value={`${savingsPct}%`} />
-            <Stat label={t('Commands')} value={formatCount(stats?.totalEvents ?? 0)} />
-          </div>
+      <ToggleRow
+        label={t('Trim shell output')}
+        hint={t('When this is off, raw shell output reaches the model.')}
+        checked={enabled}
+        onChange={(v) => updateSettings({ snipEnabled: v })}
+      >
+        <div className="grid grid-cols-3 gap-4 font-mono text-[11px]">
+          <Stat label={t('Tokens saved')} value={formatCount(tokensSaved)} />
+          <Stat label={t('Average saving')} value={`${savingsPct}%`} />
+          <Stat label={t('Commands')} value={formatCount(stats?.totalEvents ?? 0)} />
         </div>
         <div className="mt-3">
-          <Sparkline values={stats?.sparkline ?? new Array(14).fill(0)} />
+          <Sparkline values={stats?.sparkline ?? new Array<number>(14).fill(0)} />
         </div>
-      </div>
+      </ToggleRow>
 
-      {/* Top filters */}
-      <Section title={t('Top filters (by tokens saved)')}>
-        {stats && stats.topByTokens.length > 0 ? (
-          <table className="w-full font-mono text-[11px]">
-            <thead>
-              <tr className="text-left text-[var(--text-muted)]">
-                <th className="py-1">filter</th>
-                <th className="py-1 text-right">runs</th>
-                <th className="py-1 text-right">saved</th>
-                <th className="py-1">ratio</th>
-              </tr>
-            </thead>
-            <tbody>
-              {stats.topByTokens.map((row) => (
-                <tr key={row.filter} className="border-t border-[var(--panel-border)]">
-                  <td className="py-1 text-[var(--text-primary)]">{row.filter}</td>
-                  <td className="py-1 text-right text-[var(--text-secondary)]">{row.runs}</td>
-                  <td className="py-1 text-right text-[var(--text-secondary)]">
-                    {formatCount(row.tokensSaved)}
-                  </td>
-                  <td className="py-1">
-                    <Bar ratio={row.savingsRatio} />
-                  </td>
+      <SettingsSection label={t('Top filters by tokens saved')}>
+        <Card>
+          {stats && stats.topByTokens.length > 0 ? (
+            <table className="w-full font-mono text-[11px]">
+              <thead>
+                <tr className="text-left text-[var(--text-muted)]">
+                  <th scope="col" className="py-1 font-medium">{t('Filter')}</th>
+                  <th scope="col" className="py-1 text-right font-medium">{t('Runs')}</th>
+                  <th scope="col" className="py-1 text-right font-medium">{t('Tokens saved')}</th>
+                  <th scope="col" className="py-1 font-medium">{t('Ratio')}</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        ) : (
-          <EmptyState>{loading ? 'Loading…' : 'No events yet. Run a few shell commands.'}</EmptyState>
-        )}
-      </Section>
+              </thead>
+              <tbody>
+                {stats.topByTokens.map((row) => (
+                  <tr key={row.filter} className="border-t border-[var(--panel-border)]">
+                    <td className="py-1 text-[var(--text-primary)]">{row.filter}</td>
+                    <td className="py-1 text-right text-[var(--text-secondary)]">{row.runs}</td>
+                    <td className="py-1 text-right text-[var(--text-secondary)]">
+                      {formatCount(row.tokensSaved)}
+                    </td>
+                    <td className="py-1">
+                      <Bar ratio={row.savingsRatio} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <EmptyState>{loading ? t('Loading…') : t('No events yet. Run a few shell commands.')}</EmptyState>
+          )}
+        </Card>
+      </SettingsSection>
 
-      {/* Recent activity */}
-      <Section title={t('Recent activity')}>
-        {recent.length > 0 ? (
-          <ul className="space-y-1 font-mono text-[11px]">
-            {recent.map((row, i) => (
-              <li key={i} className="flex items-baseline justify-between gap-2">
-                <span className="truncate text-[var(--text-primary)]">
-                  <span className="text-[var(--text-muted)]">[{row.filter}]</span> {row.command}
-                </span>
-                <span className="shrink-0 text-[var(--text-secondary)]">
-                  {formatCount(row.tokensBefore - row.tokensAfter)} saved
-                </span>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <EmptyState>{t('No recent activity.')}</EmptyState>
-        )}
-      </Section>
-
-      {/* Discover panel — K12 */}
-      <SnipDiscoverPanel />
-
-      {/* Filter library */}
-      <Section
-        title={`Filter library (${filters.length})`}
-        action={
-          <div className="flex gap-2">
-            <Button variant="secondary" className="font-mono"
-              onClick={() => void openFilterDir()}
-            >
-              {t('Open user filter dir')}
-            </Button>
-            <Button variant="secondary" className="font-mono"
-              onClick={() => void reloadFilters()}
-            >
-              {t('Reload')}
-            </Button>
-            <Button variant="secondary" className="font-mono"
-              onClick={() => setShowFilters((s) => !s)}
-            >
-              {showFilters ? 'Hide' : 'Show'}
-            </Button>
-          </div>
-        }
-      >
-        {showFilters &&
-          (filters.length > 0 ? (
-            <ul className="max-h-64 space-y-0.5 overflow-y-auto font-mono text-[11px]">
-              {filters.map((f) => (
-                <li
-                  key={`${f.source}-${f.name}-${f.path}`}
-                  className="flex items-baseline justify-between gap-2"
-                >
-                  <span className="truncate">
-                    <span
-                      className={
-                        f.source === 'user'
-                          ? 'rounded bg-[var(--accent)] px-1 text-[11px] text-[var(--bg-primary)]'
-                          : 'rounded border border-[var(--panel-border)] px-1 text-[11px] text-[var(--text-muted)]'
-                      }
-                    >
-                      {f.source}
-                    </span>{' '}
-                    <span className="text-[var(--text-primary)]">{f.name}</span>{' '}
-                    <span className="text-[var(--text-muted)]">— {f.description}</span>
-                    {f.overriddenByUser && (
-                      <span className="ml-1 text-[11px] text-[var(--text-muted)]">
-                        (overridden by user file)
-                      </span>
-                    )}
+      <SettingsSection label={t('Recent activity')}>
+        <Card>
+          {recent.length > 0 ? (
+            <ul className="space-y-1 font-mono text-[11px]">
+              {recent.map((row, i) => (
+                <li key={i} className="flex items-baseline justify-between gap-2">
+                  <span className="truncate text-[var(--text-primary)]">
+                    <span className="text-[var(--text-muted)]">[{row.filter}]</span> {row.command}
+                  </span>
+                  <span className="shrink-0 text-[var(--text-secondary)]">
+                    {tf('{n} saved', { n: formatCount(row.tokensBefore - row.tokensAfter) })}
                   </span>
                 </li>
               ))}
             </ul>
           ) : (
-            <EmptyState>Loading…</EmptyState>
-          ))}
-      </Section>
+            <EmptyState>{t('No recent activity.')}</EmptyState>
+          )}
+        </Card>
+      </SettingsSection>
 
-      {/* Reset history */}
-      <div className="flex items-center justify-end gap-2 border-t border-[var(--panel-border)] pt-2">
-        <button
-          onClick={() => void onClearHistory()}
-          className={`rounded border px-2 py-0.5 font-mono text-[11px] ${
-            confirmClear
-              ? 'border-[var(--error)] bg-[var(--error)] text-white hover:opacity-90'
-              : 'border-[var(--panel-border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]'
-          }`}
-        >
-          {confirmClear ? 'Click again to confirm clear' : 'Reset history'}
-        </button>
-      </div>
-    </div>
+      <SnipDiscoverPanel />
+
+      <SettingsSection
+        label={t('Filter library')}
+        actions={
+          <>
+            <span className="text-[11px] text-[var(--text-muted)]">{tf('{n} filters', { n: filters.length })}</span>
+            <Button size="sm" onClick={() => void openFilterDir()}>
+              {t('Open filter folder')}
+            </Button>
+            <Button size="sm" onClick={() => void reloadFilters()}>
+              {t('Reload')}
+            </Button>
+            <Button size="sm" aria-expanded={showFilters} onClick={() => setShowFilters((s) => !s)}>
+              {showFilters ? t('Hide') : t('Show')}
+            </Button>
+          </>
+        }
+      >
+        {showFilters && (
+          <Card>
+            {filters.length > 0 ? (
+              <ul className="max-h-64 space-y-0.5 overflow-y-auto font-mono text-[11px]">
+                {filters.map((f) => (
+                  <li
+                    key={`${f.source}-${f.name}-${f.path}`}
+                    className="flex items-baseline justify-between gap-2"
+                  >
+                    <span className="truncate">
+                      <span
+                        className={
+                          f.source === 'user'
+                            ? 'rounded bg-[var(--accent)] px-1 text-[11px] text-[var(--on-accent)]'
+                            : 'rounded border border-[var(--panel-border)] px-1 text-[11px] text-[var(--text-muted)]'
+                        }
+                      >
+                        {f.source === 'user' ? t('yours') : t('built-in')}
+                      </span>{' '}
+                      <span className="text-[var(--text-primary)]">{f.name}</span>{' '}
+                      <span className="text-[var(--text-muted)]">— {f.description}</span>
+                      {f.overriddenByUser && (
+                        <span className="ml-1 text-[11px] text-[var(--text-muted)]">
+                          ({t('replaced by your file')})
+                        </span>
+                      )}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <EmptyState>{loading ? t('Loading…') : t('No filters loaded.')}</EmptyState>
+            )}
+          </Card>
+        )}
+      </SettingsSection>
+
+      <SettingsSection label={t('History')}>
+        <SettingsRow
+          tone="danger"
+          label={t('Reset history')}
+          hint={t('Clears the saved statistics and recent activity. Filters are kept.')}
+          control={
+            <Button variant="danger" size="sm" disabled={resetting} onClick={() => void onResetHistory()}>
+              {resetting ? t('Resetting…') : t('Reset history')}
+            </Button>
+          }
+        />
+      </SettingsSection>
+    </SettingsPage>
   )
 }
 
-function Section({
-  title,
-  children,
-  action
-}: {
-  title: string
-  children: React.ReactNode
-  action?: React.ReactNode
-}) {
+function Card({ children }: { children: React.ReactNode }): React.ReactElement {
   return (
-    <div>
-      <div className="mb-1 flex items-baseline justify-between">
-        <h3 className="text-[11px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
-          {title}
-        </h3>
-        {action}
-      </div>
-      <div className="flex flex-col gap-1">{children}</div>
-    </div>
+    <div className="rounded-lg border border-[var(--panel-border)] bg-[var(--bg-primary)] p-3">{children}</div>
   )
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+function Stat({ label, value }: { label: string; value: string }): React.ReactElement {
   return (
     <div>
       <div className="text-[var(--text-muted)]">{label}</div>
-      <div className="text-[12px] text-[var(--text-primary)]">{value}</div>
+      <div className="text-[13px] text-[var(--text-primary)]">{value}</div>
     </div>
   )
 }
 
-function Sparkline({ values }: { values: number[] }) {
+function Sparkline({ values }: { values: number[] }): React.ReactElement {
   const max = Math.max(1, ...values)
+  const last = values.length - 1
   return (
-    <div className="flex h-8 items-end gap-0.5">
+    <div role="img" aria-label={t('Tokens saved per day over the last 14 days')} className="flex h-8 items-end gap-0.5">
       {values.map((v, i) => (
         <div
           key={i}
           className="flex-1 rounded-t bg-[var(--accent)]"
           style={{ height: `${(v / max) * 100}%`, minHeight: v > 0 ? '2px' : '1px', opacity: v > 0 ? 0.9 : 0.2 }}
-          title={`${v} tokens saved (day ${i - 13 || 'today'})`}
+          title={
+            i === last
+              ? tf('{n} tokens saved today', { n: v })
+              : tf('{n} tokens saved {d} days ago', { n: v, d: last - i })
+          }
         />
       ))}
     </div>
   )
 }
 
-function Bar({ ratio }: { ratio: number }) {
+function Bar({ ratio }: { ratio: number }): React.ReactElement {
   return (
     <div className="h-1.5 w-full overflow-hidden rounded bg-[var(--bg-tertiary)]">
       <div
@@ -295,9 +247,9 @@ function Bar({ ratio }: { ratio: number }) {
   )
 }
 
-function EmptyState({ children }: { children: React.ReactNode }) {
+function EmptyState({ children }: { children: React.ReactNode }): React.ReactElement {
   return (
-    <div className="rounded border border-dashed border-[var(--panel-border)] px-3 py-4 text-center font-mono text-[11px] text-[var(--text-muted)]">
+    <div className="rounded-md border border-dashed border-[var(--panel-border)] px-3 py-4 text-center font-mono text-[11px] text-[var(--text-muted)]">
       {children}
     </div>
   )

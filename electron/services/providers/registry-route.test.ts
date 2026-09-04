@@ -5,16 +5,22 @@ vi.mock('../keychain', () => ({ getKey: vi.fn(() => 'test-key'), hasKey: vi.fn((
 vi.mock('../event-log', () => ({ recordEvent: vi.fn() }))
 // Controllable settings so the Background-model setting can be armed per test. Hermetic: the
 // real reader would consult the electron stub's userData settings.json.
-vi.mock('../settings-helper', () => ({ readSettings: vi.fn(() => ({})), patchSettings: vi.fn() }))
+vi.mock('../settings-helper', () => ({
+  readSettings: vi.fn(() => ({})),
+  patchSettings: vi.fn(),
+  registerLegacyModelSettingsDeps: vi.fn()
+}))
 
 import {
   routeModel,
+  resolveRole,
   resolveModel,
   isUsableModel,
   detectOllama,
   describeBackgroundModel,
   MODEL_CATALOG,
-  PROVIDERS
+  PROVIDERS,
+  LEGACY_MODEL_SETTINGS_DEPS
 } from './registry'
 import { getKey } from '../keychain'
 import { readSettings } from '../settings-helper'
@@ -64,14 +70,32 @@ describe('routeModel — native task-aware routing', () => {
     expect(picked).not.toBe('duin-brain')
   })
 
-  it('routes extraction to a cheap tier and chat to a strong tier (all keyed)', () => {
+  it('routes extraction to a cheap tier; chat follows the policy speed (fast by default → cheap)', () => {
     const ext = routeModel('extraction')
     const chat = routeModel('chat')
     expect(ext).toBeTruthy()
     expect(chat).toBeTruthy()
     if (hasCheap) expect(CHEAP.has(resolveModel(ext as string).tier)).toBe(true)
-    if (hasStrong) expect(STRONG.has(resolveModel(chat as string).tier)).toBe(true)
-    if (hasCheap && hasStrong) expect(ext).not.toBe(chat) // different model per task
+    // speed 'fast' (the default): chat takes the flash tier first — the 2026-09-02 evaluation's
+    // pick (deepseek-v4-flash won on cost and speed with task success tied).
+    if (hasCheap) expect(CHEAP.has(resolveModel(chat as string).tier)).toBe(true)
+  })
+
+  it('speed balanced / strong route chat to a strong tier; extraction stays cheap', () => {
+    for (const speed of ['balanced', 'strong'] as const) {
+      vi.mocked(readSettings).mockReturnValue({ providerPolicy: { speed } } as Record<string, unknown>)
+      const chat = routeModel('chat')!
+      const ext = routeModel('extraction')!
+      if (hasStrong) expect(STRONG.has(resolveModel(chat).tier), speed).toBe(true)
+      if (hasCheap) expect(CHEAP.has(resolveModel(ext).tier), speed).toBe(true)
+      if (hasCheap && hasStrong) expect(ext).not.toBe(chat)
+    }
+    // strong prefers a reasoner over a pro model when the head provider ships both
+    vi.mocked(readSettings).mockReturnValue({ providerPolicy: { speed: 'strong' } } as Record<string, unknown>)
+    const strong = resolveModel(routeModel('chat')!)
+    const headHasReasoner = MODEL_CATALOG.some((m) => m.provider === strong.provider && m.tier === 'reasoner' && !m.hidden)
+    if (headHasReasoner) expect(strong.tier).toBe('reasoner')
+    vi.mocked(readSettings).mockReturnValue({})
   })
 
   it('falls back to a local Ollama model when no provider key is set', async () => {
@@ -111,11 +135,14 @@ describe('routeModel — precedence: explicit preferred vs env pin', () => {
   })
 })
 
-describe('routeModel — the Background-model setting (Settings → Models)', () => {
-  // Live, pickable ids: not the connector, not a benchmark-only hidden entry.
+describe('routeModel — the provider policy (Settings → Models), P0 model plane', () => {
+  // The Background-model SETTING (a stored model id) is gone: a stored id was a claim the account
+  // is funded and the id still exists (S2, 2026-09-02). Its replacement is the extraction ROLE
+  // override in `providerPolicy.roles` — a provider preference, resolved against live health.
+  // Every assertion the old suite made about the setting is kept here in policy terms.
   const pickable = MODEL_CATALOG.filter((m) => m.id !== 'duin-brain' && !m.hidden)
-  const store = (value: unknown): void => {
-    vi.mocked(readSettings).mockReturnValue({ backgroundModel: value } as Record<string, unknown>)
+  const policy = (p: Record<string, unknown>): void => {
+    vi.mocked(readSettings).mockReturnValue({ providerPolicy: p } as Record<string, unknown>)
   }
   afterEach(() => {
     vi.mocked(readSettings).mockReturnValue({})
@@ -124,97 +151,146 @@ describe('routeModel — the Background-model setting (Settings → Models)', ()
     __resetProviderHealth()
   })
 
-  it('a stored model wins over the tier policy for extraction AND titles', () => {
-    const auto = routeModel('extraction')
-    // Deliberately NOT what Auto picks — a strong-tier model — so this cannot pass by coincidence.
-    const chosen = pickable.find((m) => m.id !== auto && STRONG.has(m.tier))!.id
-    store(chosen)
-    expect(routeModel('extraction')).toBe(chosen)
-    expect(routeModel('title')).toBe(chosen)
+  it('a role override wins over the general order for THAT role — extraction and title each carry their own', () => {
+    const auto = routeModel('extraction')!
+    const autoProvider = resolveModel(auto).provider
+    // Deliberately NOT what Auto picks, so this cannot pass by coincidence.
+    const other = pickable.find((m) => m.provider !== autoProvider)!.provider
+    policy({ order: [], roles: { extraction: [other], title: [other] } })
+    expect(resolveModel(routeModel('extraction')!).provider).toBe(other)
+    expect(resolveModel(routeModel('title')!).provider).toBe(other)
+    // Per-role by contract (roles.ts): an extraction override says nothing about titles. (The old
+    // Background-model SETTING governed both; the migration seeds extraction only.)
+    policy({ order: [], roles: { extraction: [other] } })
+    expect(resolveModel(routeModel('title')!).provider).toBe(autoProvider)
   })
 
-  it('leaves chat routing alone — the setting governs background work only', () => {
-    const before = routeModel('chat')
-    store(pickable.find((m) => m.id !== before)!.id)
+  it('leaves chat routing alone — the extraction override governs background work only', () => {
+    const before = routeModel('chat')!
+    const other = pickable.find((m) => m.provider !== resolveModel(before).provider)!.provider
+    policy({ order: [], roles: { extraction: [other] } })
     expect(routeModel('chat')).toBe(before)
   })
 
-  it("'' / 'auto' / blank / absent / non-string all mean Auto", () => {
+  it('the general order is the primary key for every role (D2)', () => {
+    const auto = routeModel('chat')!
+    const other = pickable.find((m) => m.provider !== resolveModel(auto).provider)!.provider
+    policy({ order: [other] })
+    expect(resolveModel(routeModel('chat')!).provider).toBe(other)
+    expect(resolveModel(routeModel('extraction')!).provider).toBe(other)
+  })
+
+  it('an empty / absent / malformed policy means Auto — every keyed provider in catalog order', () => {
     const auto = routeModel('extraction')
-    for (const value of ['', 'auto', '   ', undefined, null, 42]) {
-      store(value)
+    for (const value of [{}, { order: [] }, { order: 'nope' }, { order: ['no-such-provider'] }, undefined, null, 42]) {
+      vi.mocked(readSettings).mockReturnValue({ providerPolicy: value } as Record<string, unknown>)
       expect(routeModel('extraction'), `value ${JSON.stringify(value)}`).toBe(auto)
     }
   })
 
-  it('an explicit usable preferred still wins over the setting', () => {
-    const [a, b] = pickable
-    store(a.id)
+  it('an explicit usable preferred still wins over the policy', () => {
+    const auto = routeModel('extraction')!
+    const b = pickable.find((m) => m.provider !== resolveModel(auto).provider)!
+    policy({ order: [resolveModel(auto).provider] })
     expect(routeModel('extraction', b.id)).toBe(b.id)
   })
 
-  it('beats an armed DUIN_ROUTE_EXTRACTION pin — a choice made in the product is not overridden by deploy config', () => {
-    const [a, b] = pickable
-    process.env.DUIN_ROUTE_EXTRACTION = a.id
-    store(b.id)
-    expect(routeModel('extraction')).toBe(b.id)
+  it('an armed DUIN_ROUTE_EXTRACTION pin still applies over the policy pick (deploy-time ops config)', () => {
+    // The old model SETTING sat above the pin; a provider PREFERENCE is not a model pin, so the
+    // env pin — a specific usable id — outranks the automatic pick and loses only to health.
+    const auto = routeModel('extraction')!
+    const pinned = pickable.find((m) => m.provider !== resolveModel(auto).provider)!
+    process.env.DUIN_ROUTE_EXTRACTION = pinned.id
+    policy({ order: [resolveModel(auto).provider] })
+    expect(routeModel('extraction')).toBe(pinned.id)
   })
 
-  it('a retired id follows RETIRED_MODEL_MAP to its successor, as a saved conversation would', () => {
-    store('qwen3.5-flash') // retired in the 2026-08-21 catalog redo → qwen3.7-flash
+  it('a retired env pin follows RETIRED_MODEL_MAP to its successor (S20: duin-launch.bat names glm-4.5-airx)', () => {
+    process.env.DUIN_ROUTE_EXTRACTION = 'qwen3.5-flash' // retired in the 2026-08-21 catalog redo → qwen3.7-flash
     expect(routeModel('extraction')).toBe('qwen3.7-flash')
   })
 
-  it('an unknown id falls through to Auto rather than routing nowhere', () => {
+  it('an unknown provider in the order falls through to Auto rather than routing nowhere', () => {
     const auto = routeModel('extraction')
-    store('no-such-model')
+    policy({ order: ['no-such-provider'], roles: { extraction: ['also-unknown'] } })
     expect(routeModel('extraction')).toBe(auto)
     expect(routeModel('extraction')).not.toBeNull()
   })
 
-  it("falls through to Auto when the chosen model's provider has no key", () => {
+  it('falls through to Auto when the preferred provider has no key', () => {
     const auto = routeModel('extraction')!
-    const autoProvider = MODEL_CATALOG.find((m) => m.id === auto)!.provider
+    const autoProvider = resolveModel(auto).provider
     const chosen = pickable.find((m) => m.provider !== autoProvider)!
     vi.mocked(getKey).mockImplementation((provider: string) =>
       provider === PROVIDERS[chosen.provider].keyEnv ? null : 'test-key'
     )
-    store(chosen.id)
+    policy({ order: [chosen.provider] })
     expect(routeModel('extraction')).toBe(auto)
   })
 
-  it('steps over the chosen model while its account is refusing, and comes back after', () => {
+  it('steps over the preferred provider while its account is refusing, and comes back after', () => {
     const auto = routeModel('extraction')!
-    const autoProvider = MODEL_CATALOG.find((m) => m.id === auto)!.provider
+    const autoProvider = resolveModel(auto).provider
     const chosen = pickable.find((m) => m.provider !== autoProvider)!
-    store(chosen.id)
-    expect(routeModel('extraction')).toBe(chosen.id)
+    policy({ order: [chosen.provider] })
+    expect(resolveModel(routeModel('extraction')!).provider).toBe(chosen.provider)
     noteProviderRefusal(chosen.provider, 'insufficient balance')
     expect(routeModel('extraction')).toBe(auto)
     __resetProviderHealth()
-    expect(routeModel('extraction')).toBe(chosen.id)
+    expect(resolveModel(routeModel('extraction')!).provider).toBe(chosen.provider)
+  })
+
+  it('an unhealthy preferred provider is still in the CHAIN, at the end — never dropped', () => {
+    const auto = resolveRole('extraction')!
+    const chosen = pickable.find((m) => m.provider !== auto.provider)!
+    policy({ order: [chosen.provider] })
+    noteProviderRefusal(chosen.provider, 'insufficient balance')
+    const r = resolveRole('extraction')!
+    expect(r.provider).not.toBe(chosen.provider)
+    expect(r.chain.map((id) => resolveModel(id).provider)).toContain(chosen.provider)
+    expect(resolveModel(r.chain[r.chain.length - 1]).provider).toBe(chosen.provider)
   })
 
   it('describeBackgroundModel reports what applies and why', () => {
-    const auto = routeModel('extraction')
+    const auto = routeModel('extraction')!
     expect(describeBackgroundModel()).toEqual({ chosen: null, effective: auto, automatic: auto, source: 'auto' })
 
-    const chosen = pickable.find((m) => m.id !== auto)!.id
-    store(chosen)
-    expect(describeBackgroundModel()).toEqual({ chosen, effective: chosen, automatic: auto, source: 'setting' })
+    const other = pickable.find((m) => m.provider !== resolveModel(auto).provider)!.provider
+    policy({ order: [], roles: { extraction: [other] } })
+    const d = describeBackgroundModel()
+    expect(d.source).toBe('setting')
+    expect(d.chosen).toBe(d.effective)
+    expect(resolveModel(d.effective!).provider).toBe(other)
+    expect(d.automatic).toBe(auto)
 
-    // Pinned but unusable: the pane must see the fallback, not the wish.
-    store('no-such-model')
-    expect(describeBackgroundModel()).toEqual({
-      chosen: 'no-such-model',
-      effective: auto,
-      automatic: auto,
-      source: 'auto'
-    })
+    // Preferred but unusable (no key): the pane must see the fallback, not the wish.
+    vi.mocked(getKey).mockImplementation((provider: string) => (provider === PROVIDERS[other].keyEnv ? null : 'test-key'))
+    expect(describeBackgroundModel()).toEqual({ chosen: null, effective: auto, automatic: auto, source: 'auto' })
 
+    vi.mocked(getKey).mockReturnValue('test-key')
     vi.mocked(readSettings).mockReturnValue({})
     const pinned = pickable.find((m) => m.id !== auto)!.id
     process.env.DUIN_ROUTE_EXTRACTION = pinned
     expect(describeBackgroundModel()).toEqual({ chosen: null, effective: pinned, automatic: pinned, source: 'env' })
+  })
+})
+
+// ── The migration lookups main.ts registers at boot (P0 audit A2, 2026-09-03) ──
+describe('LEGACY_MODEL_SETTINGS_DEPS — catalog lookups for the providerPolicy migration', () => {
+  it('maps a catalog id to its provider, the connector and unknown ids to null, prefixed ids by prefix', () => {
+    vi.mocked(readSettings).mockReturnValue({})
+    const catalogId = MODEL_CATALOG.find((m) => !m.hidden && !m.internal && m.id !== 'duin-brain' && m.provider === 'deepseek')!.id
+    expect(LEGACY_MODEL_SETTINGS_DEPS.providerOf(catalogId)).toBe('deepseek')
+    expect(LEGACY_MODEL_SETTINGS_DEPS.providerOf('duin-brain')).toBeNull()
+    expect(LEGACY_MODEL_SETTINGS_DEPS.providerOf('no-such-model-id')).toBeNull()
+    expect(LEGACY_MODEL_SETTINGS_DEPS.providerOf('ollama:llama3')).toBe('ollama')
+    expect(LEGACY_MODEL_SETTINGS_DEPS.providerOf('openrouter:x/y')).toBe('openrouter')
+  })
+
+  it('keyedProviders lists only providers with a stored key, each a known provider id', () => {
+    vi.mocked(getKey).mockReturnValue('test-key')
+    const keyed = LEGACY_MODEL_SETTINGS_DEPS.keyedProviders()
+    expect(keyed.length).toBeGreaterThan(0)
+    for (const p of keyed) expect(p in PROVIDERS).toBe(true)
   })
 })

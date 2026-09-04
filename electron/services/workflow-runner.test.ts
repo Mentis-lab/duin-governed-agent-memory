@@ -35,7 +35,7 @@ function makeSeam(
   return {
     forkAgent,
     forkDeps: {
-      defaultModel: 'test-model',
+      model: 'test-model',
       loadType: (name) =>
         Object.prototype.hasOwnProperty.call(BUILT_IN_SUBAGENT_TYPES, name)
           ? BUILT_IN_SUBAGENT_TYPES[name]

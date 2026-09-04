@@ -26,6 +26,7 @@
 // See the header note in the test for the exact parity boundary.
 
 import { RELATION_TO_EDGE } from './construct'
+import { mergeKey, ID_SHAPED } from './entity-key'
 import { normalizeStoreId, normalizeEdgeEndpoint } from './canonical-id'
 import type { ConstructedData, ConstructedEdge } from './types'
 import type { GraphReadResult } from './graph-native'
@@ -166,8 +167,9 @@ export function buildDuinGraph(opts: BuildDuinGraphOpts): BuiltGraph {
   // tethered to its parent is structure. Cull on the final picture, never the intermediate one.
   if (opts.pruneUnstructuredTopics) {
     let g: BuiltGraph = { nodes, edges }
-    if (graphDedupeEnabled()) g = mergeMechanicalDuplicates(g)
+    if (graphDedupeEnabled()) g = foldEventFamilies(mergeMechanicalDuplicates(g))
     if (subtopicEdgesEnabled()) g = linkSubtopicsToParents(g)
+    if (graphDedupeEnabled()) g = dropUnanchoredEntities(g)
     if (topicFloorEnabled()) g = pruneUnstructuredTopics(g)
     return g
   }
@@ -183,6 +185,23 @@ const BULK_EDGE_TYPES = new Set(['mentions', 'synonym'])
 /** A node id that names a file — the note ids the vault contributes. Same shape test the
  *  entity→note spine resolver above uses, so "has provenance" means the same thing twice. */
 const isFileId = (id: string): boolean => /\.[^./\\]+$/.test(id)
+
+/** The map's SKELETON: the core, the folder hubs and the project indexes brain-graph-native
+ *  mints. Structure the operator navigates by, never extracted. A fold judges by LABEL, and
+ *  "DUIN" the folder and "DUIN" the extracted person look identical to it; KIND_RANK has no
+ *  entry for `core`/`folder`/`index`, so the skeleton always LOST. Measured on the live map
+ *  before this guard (2026-09-02): the core had folded onto `topic:duin-core` (which then
+ *  carried the core's domain/anchor edges) and 8 of 11 folder hubs onto same-label entities,
+ *  so the map rendered with no centre, a two-folder legend and an extracted topic
+ *  impersonating the core. The skeleton never enters a fold group. */
+const STRUCTURAL_ID = /^__(?:core|folder|projidx)__/
+const STRUCTURAL_KINDS = new Set(['core', 'folder', 'index'])
+export const isStructuralNode = (n: Record<string, unknown>): boolean =>
+  STRUCTURAL_ID.test(str(n.id)) || STRUCTURAL_KINDS.has(str(n.kind)) || str(n.layer) === 'folder' || str(n.layer) === 'core'
+/** A product-store node (project, track, goal, KR, milestone) is the DECLARED thing an extracted
+ *  duplicate is a mention of; it stays in the fold so the mention collapses INTO it, and it
+ *  always wins, whatever KIND_RANK says about the mention's kind. */
+const isProductNode = (n: Record<string, unknown>): boolean => str(n.layer) === 'product'
 
 /** `DUIN_GRAPH_TOPIC_FLOOR=0` disables the floor and restores the prior graph byte-for-byte. */
 export function topicFloorEnabled(): boolean {
@@ -206,40 +225,54 @@ const NAME_KINDS = new Set(['person', 'org', 'project', 'topic'])
  *  specific first — so the map and the store agree on which kind wins a label. */
 const KIND_RANK = ['person', 'org', 'project', 'event', 'decision', 'topic']
 
-/** An id-shaped string the extractor echoed back as a NAME (`'project:duin'`, `'person:theo-quill'`).
- *  1,069 live store nodes carry one. It is never a real name. */
-const ID_SHAPED = /^(?:person|org|topic|project|event|decision|entity|concept|place|product):/i
-/** A trailing gloss: `Acme (ACM)`, `张三 (Zhang San)` — a rendering of the SAME name, not a qualifier. */
-const APPOSITIVE = /\s*[（(][^)）]*[)）]\s*$/
-
-/** Traditional→simplified for the characters this vault actually collides on. NOT a full OpenCC
- *  table and not meant to be — a starter set, extended when a real collision shows up. It exists
- *  because a name written in traditional and in simplified is ONE person, and no amount of
- *  case-folding will tell you so. */
-const TRAD_SIMP: Record<string, string> = {
-  慶: '庆', 國: '国', 華: '华', 東: '东', 傳: '传', 語: '语', 會: '会', 學: '学', 實: '实',
-  點: '点', 開: '开', 關: '关', 專: '专', 業: '业', 產: '产', 動: '动', 發: '发', 遊: '游',
-  戲: '戏', 網: '网', 電: '电', 際: '际', 龍: '龙', 鳳: '凤', 陳: '陈', 張: '张'
-}
+// The merge key (ID_SHAPED, the gloss strip, traditional→simplified, letters-and-digits) lives in
+// entity-key.ts, shared with the construction store's convergence and batch merge so the store and
+// the map agree on what is one thing. Re-exported here for the callers and tests that knew it here.
+export { mergeKey }
 
 /**
- * The MERGE KEY — what makes two nodes the same real thing. Four mechanical rules, no inference:
- * strip an echoed id prefix, strip a parenthetical gloss, fold traditional→simplified, then the
- * case/whitespace collapse `normName` already does.
- *
- * Measured on one live store, these four alone collapse 759 clusters over 1,681 nodes: a single
- * project was living under its bare name, its romanised gloss, and three kind-prefixed echoes of
- * its own id at once (`'project:x'` / `'org:x'` / `'person:x'`), and one person existed as
- * five nodes across simplified/traditional, a gloss, and an echoed id.
- *
- * This is a KEY, not a rename — the surviving node keeps its own display label untouched.
+ * Date and range tokens an event label may carry: `2026-06-19`, `2026-06-19/20`, `6/19-20`,
+ * `2026`, `8月`, `5月18日`, `Q3`. The BASE of an event is its label without these and without a
+ * trailing `× qualifier`; two events with one base and no conflicting date are one event.
  */
-export function mergeKey(label: string): string {
-  let s = String(label ?? '').trim()
-  s = s.replace(ID_SHAPED, '')
-  s = s.replace(APPOSITIVE, '')
-  s = s.replace(/[一-鿿]/g, (ch) => TRAD_SIMP[ch] ?? ch)
-  return s.replace(/\s+/g, ' ').trim().toLowerCase()
+const EVENT_DATE = /(?:\d{4}[-/.年]\s*)?\d{1,2}\s*[-/.月]\s*\d{1,2}\s*(?:[-/~～至]\s*\d{1,2})?\s*日?|\d{4}\s*年?|\d{1,2}\s*月|\d{1,2}\s*\/\s*\d{1,2}(?:\s*[-~～]\s*\d{1,2})?|\b[qh][1-4]\b/giu
+
+/** A leading book-title qualifier: `《示例项目》端午试玩会` is the 端午试玩会 of the project, not another event. */
+const LEADING_TITLE = /^\s*《[^》]*》\s*/u
+
+export interface EventBase {
+  base: string
+  year: string | null
+  /** Day-of-year span of the month-day mention, when there is one: `6/19-21` → [170, 172]. */
+  span: [number, number] | null
+  /** Kept for readers of the earlier shape; the first day of the span as "m-d". */
+  monthDay: string | null
+}
+
+const dayOfYear = (m: number, d: number): number => [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334][Math.max(1, Math.min(12, m)) - 1] + d
+
+export function eventBase(label: string): EventBase {
+  const k = String(label ?? '').normalize('NFKC').toLowerCase().replace(LEADING_TITLE, '')
+  const dates = k.match(EVENT_DATE) ?? []
+  const joined = dates.join(' ')
+  const year = (joined.match(/\d{4}/) ?? [null])[0]
+  // Month-day is read with the year blanked first: `2026-06-19` would otherwise yield "26-06".
+  const md = joined.replace(/\d{4}/g, ' ').match(/(\d{1,2})\s*[-/.月]\s*(\d{1,2})(?:\s*[-/~～至]\s*(\d{1,2}))?/)
+  const base = mergeKey(k.replace(EVENT_DATE, ' ').replace(/[×x]\s*\S+$/u, ' '))
+  if (!md) return { base, year, span: null, monthDay: null }
+  const m = Number(md[1]), d0 = Number(md[2]), d1 = md[3] ? Number(md[3]) : d0
+  const a = dayOfYear(m, d0), b = Math.max(a, dayOfYear(m, d1))
+  return { base, year, span: [a, b], monthDay: `${m}-${d0}` }
+}
+
+/** Two dated mentions are the same occasion when their day spans overlap, one day of slack:
+ *  `6/19-21`, `2026-06-19/20` and `6/20` are one weekend; `5/18` and `7/07` are two trips. */
+export function spansCompatible(spans: [number, number][]): boolean {
+  for (let i = 0; i < spans.length; i++) for (let j = i + 1; j < spans.length; j++) {
+    const [a0, a1] = spans[i], [b0, b1] = spans[j]
+    if (a1 + 1 < b0 || b1 + 1 < a0) return false
+  }
+  return true
 }
 
 /**
@@ -248,19 +281,16 @@ export function mergeKey(label: string): string {
  * Edges are rewired onto the winner, self-edges dropped, and the result deduped by
  * (source, target, type) so a fold cannot inflate degree.
  *
- * Winner: a real name beats an echoed id, then KIND_RANK (most specific kind wins, matching
- * entity-kind-collapse), then higher degree, then id — so the choice is deterministic.
+ * Winner: a product-store node beats a mention of it, then a real name beats an echoed id, then
+ * KIND_RANK (most specific kind wins, matching entity-kind-collapse), then higher degree, then id
+ * (the core, folder hubs and project indexes never enter a group at all: isStructuralNode) — so the choice is deterministic.
  */
 export function mergeMechanicalDuplicates(g: BuiltGraph): BuiltGraph {
-  const degree = new Map<string, number>()
-  for (const e of g.edges) {
-    degree.set(str(e.source), (degree.get(str(e.source)) ?? 0) + 1)
-    degree.set(str(e.target), (degree.get(str(e.target)) ?? 0) + 1)
-  }
+  const degree = degreeOf(g)
   const groups = new Map<string, Record<string, unknown>[]>()
   for (const n of g.nodes) {
     const id = str(n.id)
-    if (!id || isFileId(id)) continue // documents are identified by path, never folded
+    if (!id || isStructuralNode(n)) continue // the skeleton never enters a fold group
     const k = mergeKey(str(n.label ?? id))
     if (k.length < 2) continue // too short to be a safe key
     const arr = groups.get(k)
@@ -275,6 +305,14 @@ export function mergeMechanicalDuplicates(g: BuiltGraph): BuiltGraph {
       return i < 0 ? KIND_RANK.length : i
     }
     const winner = members.reduce((a, b) => {
+      // A DOCUMENT wins its own name: an extracted `person:张三` next to the note 团队/张三.md is
+      // the note's subject, not a second thing (252 such entities on the live map, 2026-09-03).
+      // Two documents never fold into each other; only extracted nodes fold into the document.
+      const af = isFileId(str(a.id)), bf = isFileId(str(b.id))
+      if (af !== bf) return af ? a : b
+      if (af && bf) return str(a.id) <= str(b.id) ? a : b
+      const ap = isProductNode(a), bp = isProductNode(b)
+      if (ap !== bp) return ap ? a : b // the declared product node beats any mention of it
       const ai = ID_SHAPED.test(str(a.label)) ? 1 : 0
       const bi = ID_SHAPED.test(str(b.label)) ? 1 : 0
       if (ai !== bi) return ai < bi ? a : b
@@ -284,22 +322,126 @@ export function mergeMechanicalDuplicates(g: BuiltGraph): BuiltGraph {
       if (ad !== bd) return ad > bd ? a : b
       return str(a.id) <= str(b.id) ? a : b
     })
-    for (const m of members) if (m !== winner) rewrite.set(str(m.id), str(winner.id))
+    for (const m of members) {
+      if (m === winner) continue
+      if (isFileId(str(m.id))) continue // a document is identified by its path, never folded away
+      rewrite.set(str(m.id), str(winner.id))
+    }
   }
-  if (rewrite.size === 0) return g
+  return foldNodes(g, rewrite, { dropBulkIntoDocuments: true })
+}
 
+/** Undirected degree per node id. */
+function degreeOf(g: BuiltGraph): Map<string, number> {
+  const degree = new Map<string, number>()
+  for (const e of g.edges) {
+    degree.set(str(e.source), (degree.get(str(e.source)) ?? 0) + 1)
+    degree.set(str(e.target), (degree.get(str(e.target)) ?? 0) + 1)
+  }
+  return degree
+}
+
+/** Apply a loser→winner rewrite: losers leave, their edges land on the winner, self-loops drop,
+ *  and (source, target, type) dedups so a fold cannot inflate degree.
+ *
+ *  `dropBulkIntoDocuments`: when the winner is a DOCUMENT, the loser's bulk edges (`mentions`,
+ *  `synonym`: co-mention and alias bookkeeping between entities) are dropped rather than rewired.
+ *  Rewired, they become entity→note edges, and the floor reads an entity→note `mentions` as
+ *  provenance ("this note mentions it"). Measured on the first deploy of the document-wins fold
+ *  (2026-09-03 01:19): absorbing hubs like `topic:duin` into DUIN.md handed 981 floored topics a
+ *  second "note" and the construction layer GREW by 938. Hard relations still follow the winner. */
+function foldNodes(g: BuiltGraph, rewrite: Map<string, string>, opts: { dropBulkIntoDocuments?: boolean } = {}): BuiltGraph {
+  if (rewrite.size === 0) return g
   const to = (id: string): string => rewrite.get(id) ?? id
   const seen = new Set<string>()
   const outEdges: Record<string, unknown>[] = []
   for (const e of g.edges) {
-    const s = to(str(e.source)), t = to(str(e.target))
+    const s0 = str(e.source), t0 = str(e.target)
+    const s = to(s0), t = to(t0)
     if (!s || !t || s === t) continue // a fold can turn a real edge into a self-loop
+    if (opts.dropBulkIntoDocuments && BULK_EDGE_TYPES.has(str(e.type))) {
+      const sFolded = s !== s0 && isFileId(s), tFolded = t !== t0 && isFileId(t)
+      if (sFolded || tFolded) continue
+    }
     const k = `${s}\0${t}\0${str(e.type)}`
     if (seen.has(k)) continue
     seen.add(k)
     outEdges.push({ ...e, source: s, target: t })
   }
   return { nodes: g.nodes.filter((n) => !rewrite.has(str(n.id))), edges: outEdges }
+}
+
+/**
+ * EVENT FAMILIES. The extractor names one event many ways across notes: `端午试玩会`,
+ * `端午试玩会 2026-06-19`, `端午试玩会 2026-06-19/20`, `2026端午试玩会`, `《示例项目》端午试玩会 × 示例渠道专项`.
+ * Ten nodes for one weekend (measured 2026-09-03: 97 event nodes on the live map fold this way).
+ * Two events are one when their BASE (label minus date tokens and a trailing `× qualifier`) is the
+ * same and their dates do not conflict: a dated and an undated member agree; two dated members
+ * must agree on year and on month-day. `上海差旅 2026-05-18` and `上海差旅 2026-07-07` stay two trips.
+ * The winner is the most connected member, then the one carrying a date (the most specific name).
+ */
+export function foldEventFamilies(g: BuiltGraph): BuiltGraph {
+  const degree = degreeOf(g)
+  const fam = new Map<string, { n: Record<string, unknown>; year: string | null; span: [number, number] | null }[]>()
+  for (const n of g.nodes) {
+    if (str(n.kind) !== 'event') continue
+    const id = str(n.id)
+    if (!id || isFileId(id) || isStructuralNode(n)) continue
+    const { base, year, span } = eventBase(str(n.label ?? id))
+    if (base.length < 2) continue
+    const arr = fam.get(base)
+    const m = { n, year, span }
+    if (arr) arr.push(m)
+    else fam.set(base, [m])
+  }
+  const rewrite = new Map<string, string>()
+  for (const members of fam.values()) {
+    if (members.length < 2) continue
+    const years = new Set(members.map((m) => m.year).filter((y): y is string => !!y))
+    const spans = members.map((m) => m.span).filter((d): d is [number, number] => !!d)
+    if (years.size > 1 || !spansCompatible(spans)) continue // different dates: different events
+    const winner = members.reduce((a, b) => {
+      const ad = degree.get(str(a.n.id)) ?? 0, bd = degree.get(str(b.n.id)) ?? 0
+      if (ad !== bd) return ad > bd ? a : b
+      const as = (a.year ? 1 : 0) + (a.span ? 1 : 0), bs = (b.year ? 1 : 0) + (b.span ? 1 : 0)
+      if (as !== bs) return as > bs ? a : b
+      return str(a.n.id) <= str(b.n.id) ? a : b
+    })
+    for (const m of members) if (m !== winner) rewrite.set(str(m.n.id), str(winner.n.id))
+  }
+  return foldNodes(g, rewrite)
+}
+
+/**
+ * UNANCHORED ENTITIES. Every extracted node arrived through some note; a node with no edge to
+ * any document that is on the map has lost its provenance: the note was deleted or moved, or
+ * it was one of DUIN's own machine-written files (`.brain/memory/*`), which the map never
+ * shows. 193 such nodes on the live map (2026-09-03), 35 of them extracted from DUIN's own
+ * memory projections ("Promoted operator fact", "Deployment process") — the brain reading its
+ * own notes back as knowledge. They stay in the store; they do not get a node.
+ */
+export function dropUnanchoredEntities(g: BuiltGraph): BuiltGraph {
+  const anchored = new Set<string>()
+  for (const e of g.edges) {
+    const s = str(e.source), t = str(e.target)
+    if (isFileId(s)) anchored.add(t)
+    if (isFileId(t)) anchored.add(s)
+  }
+  const dropped = new Set<string>()
+  for (const n of g.nodes) {
+    const id = str(n.id)
+    if (!id || isFileId(id) || isStructuralNode(n) || isProductNode(n)) continue
+    // Only EXTRACTED nodes carry a `note` (the builder stamps it, line ~136); the builder also
+    // mints the `mentions` edge to that note whenever the note is on the map. No note edge on a
+    // node that names its note = the note is not on the map.
+    if (!str(n.note)) continue
+    if (!anchored.has(id)) dropped.add(id)
+  }
+  if (dropped.size === 0) return g
+  return {
+    nodes: g.nodes.filter((n) => !dropped.has(str(n.id))),
+    edges: g.edges.filter((e) => !dropped.has(str(e.source)) && !dropped.has(str(e.target)))
+  }
 }
 
 /** A boundary between a parent name and its qualifier. */
@@ -431,12 +573,15 @@ export function pruneUnstructuredTopics(g: BuiltGraph): BuiltGraph {
     const s = str(e.source), t = str(e.target)
     if (!s || !t) continue
     if (BULK_EDGE_TYPES.has(str(e.type))) {
-      // Provenance breadth: a bulk edge still tells us WHICH note mentioned the topic.
-      for (const [a, b] of [[s, t], [t, s]] as const) {
-        if (!isFileId(b)) continue
-        let set = notesSeen.get(a)
-        if (!set) { set = new Set(); notesSeen.set(a, set) }
-        set.add(b)
+      // Provenance breadth: a `mentions` edge still tells us WHICH note mentioned the topic.
+      // `synonym` is an entity↔entity alias bridge and never provenance, whatever its endpoints.
+      if (str(e.type) === 'mentions') {
+        for (const [a, b] of [[s, t], [t, s]] as const) {
+          if (!isFileId(b)) continue
+          let set = notesSeen.get(a)
+          if (!set) { set = new Set(); notesSeen.set(a, set) }
+          set.add(b)
+        }
       }
       continue
     }

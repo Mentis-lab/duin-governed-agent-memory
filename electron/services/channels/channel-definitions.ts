@@ -159,7 +159,7 @@ const FEISHU_CLI = defineChannel({
   id: 'feishu',
   label: 'Feishu / Lark (via lark-cli)',
   description:
-    'Polls watched chats through your own lark-cli login. Being replaced by the app-credential version below.',
+    'Polls watched chats through your own lark-cli login. Being replaced by the app-credential version alongside.',
   region: 'cn',
   authMode: 'external',
   ingress: 'poll',

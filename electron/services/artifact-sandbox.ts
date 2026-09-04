@@ -9,12 +9,25 @@ import { CANVAS_STYLES, canvasToHtmlFragment, esc as escapeCanvasError } from '.
 // In dev, vendor lives under <repo>/resources/vendor relative to the app path.
 // In production, electron-builder's extraResources mapping (from: resources/vendor → to: vendor)
 // places it directly under process.resourcesPath/vendor.
-const VENDOR_DIR = app.isPackaged
-  ? join(process.resourcesPath, 'vendor')
-  : join(app.getAppPath(), 'resources', 'vendor')
+//
+// Resolved LAZILY, on the first artifact that needs it — never at import time. This module is
+// reached by local-brain/server.ts (validateArtifact), which brain-native-routes.ts and, through
+// it, ipc/settings.ts import (trunk 22e03bd); a module-load `app.getAppPath()` died at import in
+// every suite that loads ipc/settings with a partial `electron.app` mock ("app.getAppPath is not
+// a function", 7 files on 2026-09-03). Work that belongs to a call, done at load — the same class
+// as the boot-path side effects the P0 wiring audit removes.
+let vendorDirCache: string | null = null
+function vendorDir(): string {
+  if (vendorDirCache === null) {
+    vendorDirCache = app.isPackaged
+      ? join(process.resourcesPath, 'vendor')
+      : join(app.getAppPath(), 'resources', 'vendor')
+  }
+  return vendorDirCache
+}
 
 function vendorFileUrl(filename: string): string {
-  return `file:///${VENDOR_DIR.replace(/\\/g, '/')}/${filename}`
+  return `file:///${vendorDir().replace(/\\/g, '/')}/${filename}`
 }
 
 const CSP = "default-src 'self' 'unsafe-inline' 'unsafe-eval'; connect-src 'none'; img-src 'self' data:;"

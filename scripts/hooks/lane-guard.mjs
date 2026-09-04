@@ -42,7 +42,23 @@ const ALWAYS_ALLOWED = [/^SESSION-LANES\.md$/]
 // Branch names that are never a lane. `main` used to inherit the MERGED `executor-p1` row
 // by bare substring (its file list names `electron/main.ts`), which blocked every ordinary
 // commit on the public default branch with "README.md outside lane".
-const NOT_A_LANE = new Set(['main', 'master', 'trunk', 'develop', 'HEAD'])
+//
+// THE CANONICAL TRUNK BELONGS HERE TOO, and its absence was that same bug under a different
+// name (found 2026-09-03). Every row's prose names the trunk it branched from — "trunk
+// `duin/unify-backend-ui`" — so a commit made ON trunk matched the FIRST row that mentions
+// it and inherited THAT lane's file list as trunk's scope. Observed: a three-path board and
+// allowlist commit on trunk was refused against the MERGED `reading-surfaces` row, which
+// owns markdown.css and main.ts and has nothing to do with either file.
+//
+// The refusal is the harmless direction. The other one is that any trunk commit touching a
+// path that arbitrary row happens to list passed while LOOKING checked, which is worse than
+// no check at all. Trunk is resolved from $DUIN_TRUNK exactly as scripts/lane-lint.mjs does
+// it, so the two tools cannot disagree about what trunk is, and the short form is included
+// because laneKey() falls back to it.
+const TRUNK_REF = (process.env.DUIN_TRUNK || 'duin/unify-backend-ui').trim()
+const NOT_A_LANE = new Set(
+  ['main', 'master', 'trunk', 'develop', 'HEAD', TRUNK_REF, TRUNK_REF.replace(/^.*\//, '')].filter(Boolean)
+)
 
 function git(args) {
   return execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })

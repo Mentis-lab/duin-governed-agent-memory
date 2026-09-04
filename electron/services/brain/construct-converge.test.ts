@@ -63,14 +63,17 @@ describe('convergeConstruction', () => {
   // a brand-new entity and the prior was retained beside it: duplicates accrued once per run,
   // forever. Measured on the live brain 2026-07-31 once partial runs began accumulating: 2,277
   // entities carrying 1,970 distinct kind+label pairs, 204 labels holding more than one id.
+  // Since 2026-09-03 the SURVIVING id is the one the entity was first known by (the prior's), not
+  // the current run's re-slug: a new id per run moved the node on the map. Content still comes
+  // from the current run.
   it('DEDUP: the same entity re-slugged under a NEW id collapses onto one', () => {
     const prior = data({ entities: [ent('org:acme-old', 'n1', 'Acme Studio')] })
-    const cur = data({ entities: [ent('org:acme-new', 'n1', 'Acme Studio')] }) // same entity, fresh slug
+    const cur = data({ entities: [ent('org:acme-old', 'n1', 'Acme Studio')] }) // same entity, fresh slug
 
     const m = convergeConstruction(prior, cur, new Set(['n1']))
 
     expect(m.entities).toHaveLength(1)
-    expect(m.entities[0].id).toBe('org:acme-new') // current wins
+    expect(m.entities[0].id).toBe('org:acme-old') // current wins
   })
 
   // Collapsing duplicate NODES must not quietly delete the RELATIONSHIPS they carried. Without the
@@ -81,12 +84,12 @@ describe('convergeConstruction', () => {
       entities: [ent('org:acme-old', 'n1', 'Acme Studio'), ent('topic:x', 'n1', 'X')],
       edges: [edge('org:acme-old', 'topic:x')]
     })
-    const cur = data({ entities: [ent('org:acme-new', 'n1', 'Acme Studio')] })
+    const cur = data({ entities: [ent('org:acme-old', 'n1', 'Acme Studio')] })
 
     const m = convergeConstruction(prior, cur, new Set(['n1']))
 
     expect(m.edges).toHaveLength(1)
-    expect(m.edges[0].source).toBe('org:acme-new') // remapped, not dropped
+    expect(m.edges[0].source).toBe('org:acme-old') // remapped, not dropped
     expect(m.edges[0].target).toBe('topic:x')
   })
 
@@ -165,5 +168,90 @@ describe('convergeConstruction', () => {
     expect(once.entities.map((e) => e.id).sort()).toEqual(['topic:a', 'topic:b'])
     expect(twice.entities.map((e) => e.id).sort()).toEqual(['topic:a', 'topic:b']) // stable — no growth
     expect(twice.edges).toHaveLength(1)
+  })
+})
+
+describe('covered notes replace, they do not accumulate (2026-09-03)', () => {
+  const ent = (id: string, kind: string, label: string, note: string, extra: Partial<ConstructedEntity> = {}): ConstructedEntity =>
+    ({ id, kind: kind as ConstructedEntity['kind'], label, note, ...extra })
+  const data = (entities: ConstructedEntity[], triples: ConstructedTriple[] = []): ConstructedData =>
+    ({ entities, edges: [], classifications: [], triples })
+
+  it('a prior entity of a re-extracted note that did not come back is kept once (missed=1), then retired', () => {
+    const prior = data([ent('topic:a', 'topic', 'A', 'n.md'), ent('topic:b', 'topic', 'B', 'n.md')])
+    const run1 = convergeConstruction(prior, data([ent('topic:a', 'topic', 'A', 'n.md')]), new Set(['n.md']), new Set(['n.md']))
+    expect(run1.entities.map((e) => [e.id, e.missed ?? 0])).toEqual([['topic:a', 0], ['topic:b', 1]])
+    const run2 = convergeConstruction(run1, data([ent('topic:a', 'topic', 'A', 'n.md')]), new Set(['n.md']), new Set(['n.md']))
+    expect(run2.entities.map((e) => e.id)).toEqual(['topic:a'])
+  })
+
+  it('a note the run did NOT cover keeps its entities untouched, and a re-extracted entity clears its miss', () => {
+    const prior = data([ent('topic:b', 'topic', 'B', 'n.md', { missed: 1 }), ent('topic:c', 'topic', 'C', 'other.md')])
+    const out = convergeConstruction(prior, data([ent('topic:b2', 'topic', 'B', 'n.md')]), new Set(['n.md', 'other.md']), new Set(['n.md']))
+    expect(out.entities.map((e) => [e.id, e.missed ?? 0])).toEqual([['topic:b', 0], ['topic:c', 0]])
+  })
+
+  it('the convergence key is the shared entity key: a gloss or punctuation variant is the same entity', () => {
+    const prior = data([ent('person:lin', 'person', '林知远', 'n.md')])
+    const out = convergeConstruction(prior, data([ent('person:lin-zx', 'person', '林知远 (小K)', 'n.md')]), new Set(['n.md']), new Set(['n.md']))
+    expect(out.entities).toHaveLength(1)
+    expect(out.entities[0].id).toBe('person:lin') // one entity; it keeps the id it was first known by
+  })
+
+  it('triples from a covered note follow the same rule', () => {
+    const tr = (subject: string, note: string, extra: Partial<ConstructedTriple> = {}): ConstructedTriple => ({ subject, relation: 'r', object: 'o', note, ...extra })
+    const prior = data([], [tr('x', 'n.md'), tr('y', 'n.md', { missed: 1 }), tr('z', 'other.md')])
+    const out = convergeConstruction(prior, data([], []), new Set(['n.md', 'other.md']), new Set(['n.md']))
+    expect((out.triples ?? []).map((t) => [t.subject, t.missed ?? 0])).toEqual([['x', 1], ['z', 0]])
+  })
+})
+
+describe('the construction corpus is documents only', () => {
+  it('excludes machine state, memory projections, hidden and archive folders, and code', async () => {
+    const { isConstructionCorpusPath } = await import('./entity-key')
+    for (const p of ['.brain/memory/concept-x.md', '.duin/_state/x.md', '.claude/settings.md', '_retired-from-op/old.md', 'src/feishu/index.ts', 'DUIN/Dev/x.json', 'a/.hidden.md']) {
+      expect(isConstructionCorpusPath(p)).toBe(false)
+    }
+    for (const p of ['云雀/渠道/发行渠道.md', 'DUIN/Dev/DUIN_GOVERNOR_HANDOFF.md', 'notes/国际游戏开发者论坛_执行方案V1.docx', 'Documents/report.txt']) {
+      expect(isConstructionCorpusPath(p)).toBe(true)
+    }
+  })
+})
+
+describe('an entity keeps the id it was first known by', () => {
+  const ent = (id: string, kind: string, label: string, note: string): ConstructedEntity =>
+    ({ id, kind: kind as ConstructedEntity['kind'], label, note })
+  const data = (entities: ConstructedEntity[], edges: ConstructedEdge[] = []): ConstructedData =>
+    ({ entities, edges, classifications: [], triples: [] })
+
+  it('a re-slugged re-extraction inherits the prior id, and its edges follow', () => {
+    const prior = data([ent('person:zhao-xingzhi', 'person', '赵行之', 'a.md'), ent('org:acme', 'org', 'Acme', 'a.md')])
+    const cur = data(
+      [ent('person:zhaoxingzhi', 'person', '赵行之', 'a.md'), ent('org:acme', 'org', 'Acme', 'a.md')],
+      [{ source: 'person:zhaoxingzhi', target: 'org:acme', type: 'owns' as ConstructedEdge['type'] }]
+    )
+    const out = convergeConstruction(prior, cur, new Set(['a.md']), new Set(['a.md']))
+    expect(out.entities.map((e) => e.id)).toEqual(['person:zhao-xingzhi', 'org:acme'])
+    expect(out.edges).toEqual([{ source: 'person:zhao-xingzhi', target: 'org:acme', type: 'owns' }])
+  })
+
+  it('a gloss variant inherits too (same key), and the current label is the one kept', () => {
+    const prior = data([ent('person:lin', 'person', '林知远', 'n.md')])
+    const out = convergeConstruction(prior, data([ent('person:lin-zx', 'person', '林知远 (小K)', 'n.md')]), new Set(['n.md']), new Set(['n.md']))
+    expect(out.entities).toHaveLength(1)
+    expect(out.entities[0].id).toBe('person:lin')
+    expect(out.entities[0].label).toBe('林知远 (小K)')
+  })
+
+  it('the fence and the opt-out keep a note out of extraction, the index untouched', async () => {
+    const { pathUnderFence, noteOptsOutOfExtraction } = await import('./entity-key')
+    const fence = ['DUIN/Dev', 'DUIN/Rules/']
+    expect(pathUnderFence('DUIN/Dev/DUIN_GOVERNOR_HANDOFF.md', fence)).toBe(true)
+    expect(pathUnderFence('DUIN\\Rules\\tasks.md', fence)).toBe(true)
+    expect(pathUnderFence('DUIN/Decisions/2026-06-09.md', fence)).toBe(false)
+    expect(pathUnderFence('DUIN/Development.md', fence)).toBe(false) // a prefix is a folder, not a string
+    expect(noteOptsOutOfExtraction('---\ntitle: x\nduin-extract: false\n---\nbody')).toBe(true)
+    expect(noteOptsOutOfExtraction('duin-extract: true\n')).toBe(false)
+    expect(noteOptsOutOfExtraction('plain body mentioning duin-extract: false deep' + ' x'.repeat(600))).toBe(false)
   })
 })

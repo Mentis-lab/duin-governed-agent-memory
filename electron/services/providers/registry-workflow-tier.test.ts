@@ -7,7 +7,7 @@ vi.mock('../event-log', () => ({ recordEvent: vi.fn() }))
 
 import { resolveWorkflowTierModel, detectOllama, MODEL_CATALOG } from './registry'
 import { getKey } from '../keychain'
-import { resolveModelId, setTierModelResolver, TIER_MODEL_MAP } from '../workflow-budget'
+import { resolveModelId, setTierModelResolver } from '../workflow-budget'
 
 afterEach(() => {
   vi.mocked(getKey).mockReset()
@@ -107,8 +107,9 @@ describe('workflow tier wiring: registry resolver -> workflow-budget', () => {
   afterEach(() => setTierModelResolver(null))
 
   it('routes a workflow tier to Ollama once the async probe lands, mid-session', async () => {
-    // At "boot" nothing is usable, so the shipped last-resort default stands.
-    expect(resolveModelId('cheap', 'default-model')).toBe(TIER_MODEL_MAP.cheap)
+    // At "boot" nothing is usable, so the caller's own engine stands — workflow-budget ships
+    // no last-resort model id any more (P0 model plane: no default model).
+    expect(resolveModelId('cheap', 'default-model')).toBe('default-model')
 
     // startLocalBrain's `void detectOllama()` resolves a second after whenReady.
     global.fetch = vi.fn(async () => ({
@@ -123,7 +124,7 @@ describe('workflow tier wiring: registry resolver -> workflow-budget', () => {
   })
 
   it('routes a workflow tier to a provider key pasted after launch, without a restart', () => {
-    expect(resolveModelId('pro', 'default-model')).toBe(TIER_MODEL_MAP.pro)
+    expect(resolveModelId('pro', 'default-model')).toBe('default-model')
 
     // settings:saveProviderKey lands a Zhipu key post-onboarding.
     vi.mocked(getKey).mockImplementation((provider: string) => (provider === 'zhipu' ? 'test-key' : null))

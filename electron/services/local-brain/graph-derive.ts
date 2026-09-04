@@ -308,12 +308,39 @@ let _deriveCache: { key: string; graph: CausalGraph; t: number } | null = null
 const DERIVE_TTL_MS = 30_000
 
 export function deriveGraph(notesDir?: string | null): CausalGraph {
+  return structuredClone(deriveGraphCached(notesDir))
+}
+
+/** The cached graph itself — no clone. Private, because a caller that mutates it
+ *  corrupts every later deriveGraph(). Everything reachable from here must READ. */
+function deriveGraphCached(notesDir?: string | null): CausalGraph {
   const key = `${notesDir ?? ''}:${notesChunksVersion()}`
   const now = Date.now()
   if (!_deriveCache || _deriveCache.key !== key || now - _deriveCache.t >= DERIVE_TTL_MS) {
     _deriveCache = { key, graph: deriveGraphUncached(notesDir), t: now }
   }
-  return structuredClone(_deriveCache.graph)
+  return _deriveCache.graph
+}
+
+/**
+ * id → mtime for the derived nodes, WITHOUT cloning the graph.
+ *
+ * The brain-graph rebuild called deriveGraph() to read two fields per node, and
+ * deriveGraph hands out a structuredClone of the whole causal graph so callers cannot
+ * mutate the memo. That clone is the entire cost of the call here and none of its
+ * value: the result was read once, for `mtime`, and dropped. On a vault of this size
+ * the rebuild is a 2.8-3.5s main-thread block (/debug/stalls, 2026-09-02) and this was
+ * inside it.
+ *
+ * Returning a fresh Map of primitives keeps the memo unmutatable — the guarantee the
+ * clone existed for — at the cost of one pass instead of a deep copy.
+ */
+export function deriveNodeMtimes(notesDir?: string | null): Map<string, number> {
+  const out = new Map<string, number>()
+  for (const n of deriveGraphCached(notesDir).nodes as Array<{ id: string; mtime?: number }>) {
+    if (n.mtime) out.set(n.id, n.mtime)
+  }
+  return out
 }
 
 function deriveGraphUncached(notesDir?: string | null): CausalGraph {

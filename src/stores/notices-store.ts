@@ -39,6 +39,9 @@ interface NoticesState {
   setCounts: (counts: NoticeCounts) => void
   markRead: (ids: string[]) => Promise<void>
   markAllRead: () => Promise<void>
+  /** Close an owed row by hand. Resolves false when the main side refused, so the caller
+   *  can say so rather than leaving a row that looks dismissed and is not. */
+  dismiss: (ids: string[]) => Promise<boolean>
 }
 
 export const useNoticesStore = create<NoticesState>((set, get) => ({
@@ -92,5 +95,19 @@ export const useNoticesStore = create<NoticesState>((set, get) => ({
     }))
     await window.api?.notices?.markAllRead?.()
     await get().refreshCounts()
+  },
+
+  dismiss: async (ids) => {
+    if (ids.length === 0) return false
+    const r = await window.api?.notices?.resolve?.(ids)
+    if (!r?.success) return false
+    const now = Date.now()
+    set((s) => ({
+      notices: s.notices.map((n) =>
+        ids.includes(n.id) && n.resolvedAt === null ? { ...n, resolvedAt: now, readAt: n.readAt ?? now } : n
+      )
+    }))
+    await get().refreshCounts()
+    return true
   }
 }))

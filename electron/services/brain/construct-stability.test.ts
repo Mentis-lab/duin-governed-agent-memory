@@ -297,8 +297,12 @@ describe('constructBrain — P3 construction stability (clobber guard + per-batc
     respond = (batch) => ({ kind: 'ok', ids: batch === 'b0' ? ['person:new-0'] : ['person:new-1'] })
     const res2 = await constructBrain()
     if (!res2) throw new Error('expected a ConstructResult, got null')
-    expect(res2.entities).toBe(7) // converged: 5 prior + 2 new — the clean run always contributes
-    expect(readCacheEntityCount(vault)).toBe(7)
+    // Since 2026-09-03 convergence REPLACES what a covered note yields instead of unioning it: the
+    // five seeded entities sit in notes both runs re-read and never came back, so the degraded run
+    // tolerated one miss (kept them, 6 above) and the clean run retired them. 2 = what the notes
+    // actually contain now; the old `7` was the monotone union this rule exists to end.
+    expect(res2.entities).toBe(2)
+    expect(readCacheEntityCount(vault)).toBe(2)
   })
 
   // ── truncation is a SIZE problem, so the answer is size, not repetition ──

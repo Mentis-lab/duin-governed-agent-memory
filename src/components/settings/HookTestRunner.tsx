@@ -1,5 +1,7 @@
-import { t } from '@/lib/i18n'
-import { useMemo, useState } from 'react'
+import { t, tf } from '@/lib/i18n'
+import { useId, useMemo, useState } from 'react'
+import { Button } from '@/components/ui/Button'
+import { Select } from '@/components/ui/Select'
 import type {
   HookEvent,
   HookLanguage,
@@ -9,6 +11,7 @@ import type {
 
 interface SamplePayload {
   id: string
+  /** English; rendered through sampleLabel(). */
   label: string
   context: HookSampleContext
 }
@@ -88,12 +91,70 @@ const SAMPLE_PAYLOADS: Record<HookEvent, SamplePayload[]> = {
     { id: 'complete', label: 'Completed run', context: { conversationId: 'sample-conv' } },
     { id: 'review', label: 'Review run', context: { conversationId: 'review-conv' } }
   ],
-  loopStarted: [{ id: 'loopstarted', label: 'Loop iteration start', context: { sourceId: 'loop-1', label: 'Nightly digest', promptBody: 'Continue the loop.' } }],
-  loopIterationDone: [{ id: 'loopiterationdone', label: 'Loop iteration end', context: { sourceId: 'loop-1', label: 'Nightly digest' } }],
-  automationStarted: [{ id: 'automationstarted', label: 'Automation start', context: { sourceId: 'auto-1', label: 'Morning brief', promptBody: 'Summarise overnight.' } }],
-  automationDone: [{ id: 'automationdone', label: 'Automation end', context: { sourceId: 'auto-1', label: 'Morning brief' } }],
-  workflowStarted: [{ id: 'workflowstarted', label: 'Workflow start', context: { sourceId: 'run-1', label: 'review-changes' } }],
-  workflowFinished: [{ id: 'workflowfinished', label: 'Workflow end', context: { sourceId: 'run-1', label: 'review-changes' } }]
+  automationStarted: [
+    {
+      id: 'automationstarted',
+      label: 'Automation start',
+      context: { sourceId: 'auto-1', label: 'Morning brief', promptBody: 'Summarise overnight.' }
+    }
+  ],
+  automationDone: [
+    {
+      id: 'automationdone',
+      label: 'Automation end',
+      context: { sourceId: 'auto-1', label: 'Morning brief' }
+    }
+  ],
+  workflowStarted: [
+    {
+      id: 'workflowstarted',
+      label: 'Workflow start',
+      context: { sourceId: 'run-1', label: 'review-changes' }
+    }
+  ],
+  workflowFinished: [
+    {
+      id: 'workflowfinished',
+      label: 'Workflow end',
+      context: { sourceId: 'run-1', label: 'review-changes' }
+    }
+  ]
+}
+
+// Sample names as literal t() calls so the coverage test sees every key.
+function sampleLabel(sample: SamplePayload): string {
+  switch (sample.id) {
+    case 'workspace':
+      return t('Workspace launch')
+    case 'project':
+      return t('Project launch')
+    case 'refactor':
+      return t('Refactor prompt')
+    case 'prod':
+      return t('Production request')
+    case 'risky-shell':
+      return t('Risky shell')
+    case 'read-file':
+      return t('Read file')
+    case 'shell-result':
+      return t('Shell result')
+    case 'write-result':
+      return t('File write')
+    case 'complete':
+      return t('Completed run')
+    case 'review':
+      return t('Review run')
+    case 'automationstarted':
+      return t('Automation start')
+    case 'automationdone':
+      return t('Automation end')
+    case 'workflowstarted':
+      return t('Workflow start')
+    case 'workflowfinished':
+      return t('Workflow end')
+    default:
+      return t(sample.label)
+  }
 }
 
 interface HookTestRunnerProps {
@@ -105,6 +166,8 @@ interface HookTestRunnerProps {
   lastTest: { code: string; event: HookEvent; result: HookTestResult } | null
   onRun: (context: HookSampleContext) => void
   onClear: () => void
+  /** Hooks are switched off under General: a run would only report "disabled". */
+  disabled?: boolean
 }
 
 export function HookTestRunner({
@@ -115,10 +178,13 @@ export function HookTestRunner({
   testing,
   lastTest,
   onRun,
-  onClear
-}: HookTestRunnerProps) {
-  const samples = SAMPLE_PAYLOADS[event]
+  onClear,
+  disabled
+}: HookTestRunnerProps): React.ReactElement {
+  // A hook stored against an event this build no longer offers has no samples.
+  const samples = SAMPLE_PAYLOADS[event] ?? []
   const [sampleId, setSampleId] = useState(samples[0]?.id ?? '')
+  const selectId = useId()
 
   const sample = useMemo(
     () => samples.find((item) => item.id === sampleId) ?? samples[0],
@@ -130,66 +196,78 @@ export function HookTestRunner({
   const blocked = Boolean(lastTest?.result.thrown)
   const hasLogs = Boolean(lastTest?.result.logs.length)
 
+  const runTitle = disabled
+    ? t('Hooks are switched off under General.')
+    : language !== 'js'
+      ? t('Only JavaScript hooks can be test-run.')
+      : undefined
+
   return (
-    <div className="mt-3 rounded border border-[var(--panel-border)] bg-[var(--bg-secondary)] p-2">
+    <div className="mt-3 rounded-lg border border-[var(--panel-border)] bg-[var(--bg-secondary)] p-3">
       <div className="mb-2 flex flex-wrap items-center gap-2">
-        <span className="font-mono text-[11px] uppercase tracking-wider text-[var(--text-muted)]">
+        <span className="font-mono text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
           {t('Test runner')}
         </span>
-        <select
+        <label htmlFor={selectId} className="text-[11px] text-[var(--text-muted)]">
+          {t('Sample')}
+        </label>
+        <Select
+          id={selectId}
           value={sample?.id ?? ''}
           onChange={(e) => setSampleId(e.target.value)}
-          className="rounded border border-[var(--panel-border)] bg-[var(--bg-primary)] px-2 py-1 text-[11px] text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+          className="py-1 text-[11px]"
         >
           {samples.map((item) => (
             <option key={item.id} value={item.id}>
-              {item.label}
+              {sampleLabel(item)}
             </option>
           ))}
-        </select>
-        <button
+        </Select>
+        <Button
+          size="sm"
           onClick={() => sample && onRun(sample.context)}
-          disabled={testing || language !== 'js' || !code.trim()}
-          title={language !== 'js' ? 'test-run is JS-only' : undefined}
-          className="rounded border border-[var(--panel-border)] bg-[var(--bg-primary)] px-3 py-1 text-[12px] hover:border-[var(--accent)] disabled:opacity-50"
+          disabled={disabled || testing || language !== 'js' || !code.trim() || !sample}
+          title={runTitle}
         >
-          {testing ? 'Running...' : 'Run sample'}
-        </button>
-        <span className="text-[11px] text-[var(--text-muted)]">{timeoutMs} ms timeout</span>
+          {testing ? t('Running…') : t('Run sample')}
+        </Button>
+        <span className="text-[11px] text-[var(--text-muted)]">
+          {tf('{ms} ms timeout', { ms: timeoutMs })}
+        </span>
       </div>
 
-      <pre className="max-h-28 overflow-auto rounded border border-[var(--panel-border)] bg-[var(--bg-primary)] p-2 font-mono text-[11px] leading-relaxed text-[var(--text-muted)]">
+      <pre className="max-h-28 overflow-auto rounded-md border border-[var(--panel-border)] bg-[var(--bg-primary)] p-2 font-mono text-[11px] leading-relaxed text-[var(--text-muted)]">
         {payloadText}
       </pre>
 
       {lastTest && (
-        <div className="mt-2 rounded border border-[var(--panel-border)] bg-[var(--bg-primary)] p-2 text-[11px]">
+        <div
+          role="status"
+          className="mt-2 rounded-md border border-[var(--panel-border)] bg-[var(--bg-primary)] p-2 text-[11px]"
+        >
           <div className="mb-1 flex items-center gap-2">
             <span className="font-mono text-[11px] uppercase tracking-wider text-[var(--accent)]">
-              result {lastTest.event}
+              {t('Result')} · {lastTest.event}
             </span>
             {blocked ? (
-              <span className="rounded bg-[var(--error)] px-1.5 py-0.5 text-[11px] text-white">
-                BLOCKED
+              <span className="rounded bg-[var(--error)] px-1.5 py-0.5 text-[11px] text-[var(--on-accent)]">
+                {t('Blocked')}
               </span>
             ) : (
-              <span className="rounded bg-[var(--success)] px-1.5 py-0.5 text-[11px] text-white">
-                OK
+              <span className="rounded bg-[var(--success)] px-1.5 py-0.5 text-[11px] text-[var(--on-accent)]">
+                {t('OK')}
               </span>
             )}
-            <button
-              onClick={onClear}
-              className="ml-auto text-[11px] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-            >
-              clear
-            </button>
+            <Button variant="ghost" size="sm" onClick={onClear} className="ml-auto">
+              {t('Clear')}
+            </Button>
           </div>
           {lastTest.result.thrown && (
             <pre className="m-0 mb-1 whitespace-pre-wrap break-all font-mono text-[11px] text-[var(--error)]">
-              sandbox error: {lastTest.result.thrown}
+              {t('Sandbox error')}: {lastTest.result.thrown}
             </pre>
           )}
-          {!hasLogs && !blocked && <p className="m-0 text-[var(--text-muted)]">(no log output)</p>}
+          {!hasLogs && !blocked && <p className="m-0 text-[var(--text-muted)]">{t('No log output.')}</p>}
           {lastTest.result.logs.map((line, index) => (
             <pre
               key={index}

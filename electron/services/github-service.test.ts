@@ -8,8 +8,10 @@ import {
   isPortInUseError,
   isValidBranchName,
   isValidSlug,
+  parseLatestRelease,
   parsePullRequest,
   parseRepoList,
+  parseRepoUrl,
   parseReviewComment,
   planPushBranch,
   resolveOAuthCredentials,
@@ -406,5 +408,64 @@ describe('parseReviewComment', () => {
     expect(out.line).toBeNull()
     expect(out.startLine).toBeNull()
     expect(out.side).toBeNull()
+  })
+})
+
+// DUIN's own repository (Settings → GitHub, "DUIN on GitHub"): the two pure halves of the
+// release read. The fetch itself is exercised by hand against the public endpoint.
+
+describe('parseRepoUrl', () => {
+  it('reads owner and repo off the product repository URL', () => {
+    expect(parseRepoUrl('https://github.com/Mentis-lab/duin-governed-agent-memory')).toEqual({
+      owner: 'Mentis-lab',
+      repo: 'duin-governed-agent-memory'
+    })
+    expect(parseRepoUrl('https://github.com/Mentis-lab/duin-governed-agent-memory.git')).toEqual({
+      owner: 'Mentis-lab',
+      repo: 'duin-governed-agent-memory'
+    })
+  })
+
+  it('is null for a private fork (empty URL) and for anything that is not a github.com repository', () => {
+    expect(parseRepoUrl('')).toBeNull()
+    expect(parseRepoUrl('https://github.com/Mentis-lab')).toBeNull()
+    expect(parseRepoUrl('http://github.com/a/b')).toBeNull()
+    expect(parseRepoUrl('https://example.com/a/b')).toBeNull()
+    expect(parseRepoUrl('https://github.com/a/..')).toBeNull()
+  })
+})
+
+describe('parseLatestRelease', () => {
+  const raw = {
+    tag_name: 'v0.1.0',
+    name: 'DUIN v0.1.0',
+    published_at: '2026-09-01T06:01:30Z',
+    html_url: 'https://github.com/Mentis-lab/duin-governed-agent-memory/releases/tag/v0.1.0',
+    body: '# notes',
+    draft: false
+  }
+
+  it('keeps the fields Settings shows and pairs them with the running version', () => {
+    expect(parseLatestRelease(raw, '0.1.0')).toEqual({
+      tag: 'v0.1.0',
+      name: 'DUIN v0.1.0',
+      publishedAt: '2026-09-01T06:01:30Z',
+      htmlUrl: raw.html_url,
+      current: '0.1.0'
+    })
+  })
+
+  it('tolerates a missing name and date, but not a missing tag or page', () => {
+    expect(parseLatestRelease({ tag_name: 'v1', html_url: 'https://x' }, '0')).toEqual({
+      tag: 'v1',
+      name: null,
+      publishedAt: null,
+      htmlUrl: 'https://x',
+      current: '0'
+    })
+    expect(parseLatestRelease({ html_url: 'https://x' }, '0')).toBeNull()
+    expect(parseLatestRelease({ tag_name: 'v1' }, '0')).toBeNull()
+    expect(parseLatestRelease(null, '0')).toBeNull()
+    expect(parseLatestRelease('v1', '0')).toBeNull()
   })
 })

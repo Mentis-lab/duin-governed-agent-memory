@@ -4,7 +4,11 @@
 export const CONTROLLED_GET_PATHS = new Set([
   '/debug/self-improve-bench',
   '/state/futures',
-  '/state/predicted-risks'
+  '/state/predicted-risks',
+  // Not effectful, but they expose the main-process log and the spend ledger — more than a
+  // status probe should hand to any local process. Same admission as the bench route.
+  '/debug/log-tail',
+  '/debug/cost'
 ])
 
 export function isControlledGetPath(path: string): boolean {

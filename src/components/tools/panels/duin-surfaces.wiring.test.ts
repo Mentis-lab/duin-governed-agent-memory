@@ -22,7 +22,14 @@ const PANELS = ['LearningPanel', 'RelationsPanel']
 // relations (2026-08-13) is the seam-edges ego-centric entity/belief surface — a
 // Brain-room pill beside the Explorer.
 // Decision Sim and Active Work were retired from the UI (see the removal assertion below).
-const PILL_SURFACES = ['homeStatus', 'learning', 'graphReport', 'afterAction', 'relations'] as const
+// 2026-09-03: Status, Learning, Automations, Background tasks and After action FOLDED INTO
+// HOME (see FOLDED_INTO_HOME below). Home leads the Brain room and is the default surface.
+const PILL_SURFACES = ['home', 'graphReport', 'relations'] as const
+// Folded into Home: still routed (ToolId + ToolsPanel case) and reached from Home's lines
+// and its Details row, but with NO launcher pill. Routing without a pill is exactly the
+// half-wired state the retired blocks below guard against, so Home itself is asserted to
+// name each one.
+const FOLDED_INTO_HOME = ['homeStatus', 'learning', 'automations', 'background', 'afterAction'] as const
 // Folded into the homeStatus hub — still route (ToolId + ToolsPanel case) and are
 // reached as hub tabs; they have no standalone launcher pill. (QuickOpen opens
 // files only, so it does NOT reach these — routing here means wiring, not a UI path.)
@@ -65,6 +72,20 @@ describe('DUIN native surfaces are wired', () => {
       expect(rightHome).toContain(`id: '${id}'`)
       expect(toolsPanel).toContain(`case '${id}':`)
     }
+  })
+
+  it('folds the monitoring surfaces into Home: routed, reachable from Home, no pill, Home is the default', () => {
+    const home = read('./HomePanel.tsx')
+    for (const id of FOLDED_INTO_HOME) {
+      expect(uiStore).toContain(`| '${id}'`)
+      expect(toolsPanel).toContain(`case '${id}':`)
+      expect(rightHome).not.toContain(`id: '${id}'`)
+      expect(home).toContain(`'${id}'`)
+    }
+    expect(uiStore).toContain(`| 'home'`)
+    expect(uiStore).toContain(`activeTool: 'home',`)
+    expect(toolsPanel).toContain(`case 'home':`)
+    expect(rightHome).toContain(`id: 'home'`)
   })
 
   it('reaches status/calibration ONLY as homeStatus hub tabs — the ToolIds are gone', () => {

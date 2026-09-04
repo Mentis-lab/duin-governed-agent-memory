@@ -456,10 +456,14 @@ export function registerFilesHandlers(): void {
   ipcMain.handle('files:openInExplorer', async (_event, args?: { targetPath?: string }) => {
     try {
       const target = assertConfined(args?.targetPath || getActiveWorkspace())
-      if (!(await fs.stat(target)).isDirectory()) {
-        throw new Error('Explorer target must be a directory.')
+      // A directory opens in the file manager; a file is revealed (selected) inside its
+      // folder. Refusing files left Settings → Foundations' "Reveal in files" a button that
+      // never worked and never said why.
+      if ((await fs.stat(target)).isDirectory()) {
+        await shell.openPath(target)
+      } else {
+        shell.showItemInFolder(target)
       }
-      await shell.openPath(target)
       return { success: true, data: { path: target } }
     } catch (err) {
       return { success: false, error: friendly(err, 'Could not open file explorer') }

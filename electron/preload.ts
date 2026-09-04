@@ -244,14 +244,48 @@ const api = {
       return () => {
         ipcRenderer.removeListener('keychain:changed', listener)
       }
-    }
+    },
+    fileState: () => ipcRenderer.invoke('settings:fileState'),
+    exportBundle: () => ipcRenderer.invoke('settings:exportBundle'),
+    importBundle: () => ipcRenderer.invoke('settings:importBundle'),
+    resetToDefaults: () => ipcRenderer.invoke('settings:resetToDefaults'),
   },
 
   model: {
     list: () => ipcRenderer.invoke('model:list'),
     listProviders: () => ipcRenderer.invoke('model:listProviders'),
+    // DEPRECATED (P0 model plane, one phase): getActive = what the chat ROLE resolves to now
+    // (or 'duin-brain' for "auto"); setActive(id) = move id's provider to the front of the
+    // policy order. New callers use policyGet/policySet/resolve below.
     getActive: () => ipcRenderer.invoke('model:getActive'),
     setActive: (id: string) => ipcRenderer.invoke('model:setActive', id),
+    // ── P0 model plane (electron/services/providers/roles.ts MODEL_IPC) ──
+    // Operator-ordered provider preference (+ per-role overrides, local-only switch).
+    policyGet: () => ipcRenderer.invoke('model:policy:get'),
+    policySet: (patch: {
+      order?: string[]
+      roles?: Record<string, string[]>
+      localOnlyBackground?: boolean
+      /** chat/agentic tier preference: 'fast' (flash first, the default) | 'balanced' | 'strong'. */
+      speed?: 'fast' | 'balanced' | 'strong'
+    }) => ipcRenderer.invoke('model:policy:set', patch),
+    // Provider health = a real 1-token completion, not a key check. healthList is the cached
+    // view (≤10 min stale); healthProbe(provider | 'all') forces a fresh completion.
+    healthList: () => ipcRenderer.invoke('model:health:list'),
+    healthProbe: (target: string) => ipcRenderer.invoke('model:health:probe', target),
+    // What a ROLE ('chat' | 'agentic' | 'extraction' | 'reviewer' | 'jury' | 'title' | 'embed')
+    // resolves to right now: { modelId, provider, chain, source } or null. `pin` = a
+    // per-conversation model id; 'duin-brain' means "no pin".
+    resolve: (task: string, pin?: string) => ipcRenderer.invoke('model:resolve', task, pin),
+    // Push: fires with the full ProviderHealth[] whenever any provider's health or cooldown
+    // changes (probe, key save, classified failure, served request). keychain:changed pattern.
+    onHealthChanged: (cb: (list: unknown[]) => void) => {
+      const listener = (_: unknown, list: unknown[]): void => cb(list)
+      ipcRenderer.on('model:health-changed', listener)
+      return () => {
+        ipcRenderer.removeListener('model:health-changed', listener)
+      }
+    },
     // Settings → Models → Background model: what DUIN's own structured work resolves to
     // right now, and why (setting / env pin / auto / nothing routable).
     describeBackground: () => ipcRenderer.invoke('model:describeBackground'),
@@ -890,6 +924,7 @@ const api = {
       ipcRenderer.invoke('notices:list', opts ?? {}),
     counts: () => ipcRenderer.invoke('notices:counts'),
     markRead: (ids: string[]) => ipcRenderer.invoke('notices:markRead', ids),
+    resolve: (ids: string[]) => ipcRenderer.invoke('notices:resolve', ids),
     markAllRead: () => ipcRenderer.invoke('notices:markAllRead'),
     onChanged: (cb: (counts: { unread: number; needsDecision: number }) => void): (() => void) => {
       const handler = (_: unknown, counts: { unread: number; needsDecision: number }): void =>
@@ -1021,8 +1056,6 @@ const api = {
     stats: () => ipcRenderer.invoke('snip:stats'),
     recent: (payload?: { limit?: number }) => ipcRenderer.invoke('snip:recent', payload),
     listFilters: () => ipcRenderer.invoke('snip:listFilters'),
-    setEnabled: (payload: { enabled: boolean }) => ipcRenderer.invoke('snip:setEnabled', payload),
-    setVerbose: (payload: { verbose: boolean }) => ipcRenderer.invoke('snip:setVerbose', payload),
     reloadFilters: () => ipcRenderer.invoke('snip:reloadFilters'),
     discover: (payload?: { sinceDays?: number; limit?: number }) =>
       ipcRenderer.invoke('snip:discover', payload),
@@ -1327,7 +1360,7 @@ const api = {
   },
 
   currentInfo: {
-    setProvider: (kind: string, provider: string, opts: { apiKey?: string }) =>
+    setProvider: (kind: string, provider: string, opts: { apiKey?: string | null }) =>
       ipcRenderer.invoke('currentInfo:setProvider', kind, provider, opts),
     getProvider: (kind?: string) => ipcRenderer.invoke('currentInfo:getProvider', kind),
     test: (kind: string) => ipcRenderer.invoke('currentInfo:test', kind)
@@ -1445,6 +1478,10 @@ const api = {
       setUpstream?: boolean
     }) => ipcRenderer.invoke('github:pushBranch', args),
     openInBrowser: (url: string) => ipcRenderer.invoke('github:openInBrowser', url),
+    // DUIN's own repository (Settings → GitHub).
+    projectRelease: (args?: { force?: boolean }) => ipcRenderer.invoke('github:projectRelease', args),
+    projectStarred: () => ipcRenderer.invoke('github:projectStarred'),
+    starProject: (args: { starred: boolean }) => ipcRenderer.invoke('github:starProject', args),
     onTokenRejected: (cb: () => void): (() => void) => {
       const handler = () => cb()
       ipcRenderer.on('github:tokenRejected', handler)

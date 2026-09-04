@@ -4,6 +4,7 @@ import {
   markAllRead,
   markRead,
   noticeCounts,
+  resolveNotices,
   type Notice
 } from '../services/proactive/notices-store'
 import { messageOf } from '../services/guarded'
@@ -49,6 +50,20 @@ export function registerNoticesHandlers(): void {
   ipcMain.handle('notices:markAllRead', async () => {
     try {
       const changed = markAllRead()
+      if (changed) broadcastNoticesChanged()
+      return { success: true, data: { changed, counts: noticeCounts() } }
+    } catch (err) {
+      return { success: false, error: messageOf(err) }
+    }
+  })
+
+  // The operator's way out of an owed row. Deliberately NOT a general "answer" verb: the
+  // renderer can close the inbox row, never decide the thing behind it.
+  ipcMain.handle('notices:resolve', async (_event, ids: unknown) => {
+    try {
+      const list = Array.isArray(ids) ? ids.filter((i): i is string => typeof i === 'string') : []
+      if (list.length === 0) return { success: false, error: 'No notice ids given' }
+      const changed = resolveNotices(list)
       if (changed) broadcastNoticesChanged()
       return { success: true, data: { changed, counts: noticeCounts() } }
     } catch (err) {

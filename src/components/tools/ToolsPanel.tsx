@@ -12,6 +12,7 @@ const BackgroundTasksPanel = lazy(() => import('./panels/BackgroundTasksPanel').
 const AfterActionPanel = lazy(() => import('./panels/AfterActionPanel').then((m) => ({ default: m.AfterActionPanel })));
 const AutomationsHubPanel = lazy(() => import('./panels/AutomationsHubPanel').then((m) => ({ default: m.AutomationsHubPanel })));
 const HomeStatusHubPanel = lazy(() => import('./panels/HomeStatusHubPanel').then((m) => ({ default: m.HomeStatusHubPanel })));
+const HomePanel = lazy(() => import('./panels/HomePanel').then((m) => ({ default: m.HomePanel })));
 const BrainExplorerPanel = lazy(() => import('@/components/brain/BrainExplorerPanel').then((m) => ({ default: m.BrainExplorerPanel })));
 const GraphReportPanel = lazy(() => import('./panels/GraphReportPanel').then((m) => ({ default: m.GraphReportPanel })));
 const RelationsPanel = lazy(() => import('./panels/RelationsPanel').then((m) => ({ default: m.RelationsPanel })));
@@ -37,11 +38,14 @@ export const TOOL_LABELS: Record<ToolId, string> = {
   automations: 'Automations',
   library: 'Library',
   homeStatus: 'Status',
-  relations: 'Relations'
+  relations: 'Relations',
+  home: 'Home'
 }
 
 function renderToolBody(tool: ToolId): React.ReactElement {
   switch (tool) {
+    case 'home':
+      return <HomePanel />
     case 'files':
       return <FilesPanel />
     case 'review':

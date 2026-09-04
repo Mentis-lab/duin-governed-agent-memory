@@ -42,9 +42,9 @@ import {
 } from './executor-types'
 import { describeMissing } from '../capability-requires'
 import { costLine, executorCostOf, readExecutorBudgetUsd, shouldStopForBudget } from './executor-cost'
+import { isUsableModel, resolveModel, routeWithinProvider } from '../providers/registry'
 
 export const DSH_PROVIDER = 'deepseek-official'
-export const DSH_DEFAULT_MODEL = 'deepseek-v4-flash'
 
 /** The local brain's port, as server.ts binds it (DUIN_BRAIN_PORT, default 8799). Read here
  *  rather than imported so a tool pack never loads the 2,900-line server module at startup. */
@@ -58,6 +58,7 @@ export interface DshRunRequest {
   /** DUIN's operator context for the child's persona, or null. */
   brief: string | null
   worktreePath: string
+  /** The DeepSeek model dsh initializes with — already mapped by `dshModelFor`. */
   model: string
   allowedTools: AllowedTools
   ceilings: ExecutorCeilings
@@ -81,9 +82,27 @@ export interface DshRunDeps {
   extraChildEnv?: Record<string, string>
 }
 
-/** DUIN model id → the model dsh initializes with. Only DeepSeek models exist on this route. */
-export function dshModelFor(modelId: string | undefined): string {
-  return modelId && modelId.startsWith('deepseek-') ? modelId : DSH_DEFAULT_MODEL
+/** Registry view `dshModelFor` reads — injectable so the mapping is testable without keys. */
+export interface DshModelView {
+  usable: (modelId: string) => boolean
+  providerOf: (modelId: string) => string
+  /** The first keyed DeepSeek catalog model for tool-heavy work, or null when none. */
+  routeDeepseek: () => string | null
+}
+
+const liveDshModelView: DshModelView = {
+  usable: isUsableModel,
+  providerOf: (id) => resolveModel(id).provider,
+  routeDeepseek: () => routeWithinProvider('deepseek', 'agentic')
+}
+
+/** DUIN model id → the model dsh initializes with. The dsh runtime speaks only DeepSeek's API,
+ *  so the requested engine is kept when it is a usable DeepSeek model and otherwise the
+ *  `agentic` role is resolved WITHIN the DeepSeek family. Null when no DeepSeek model is
+ *  usable — there is no shipped fallback id; the caller reports "add a DeepSeek key". */
+export function dshModelFor(modelId: string | undefined, view: DshModelView = liveDshModelView): string | null {
+  if (modelId && view.usable(modelId) && view.providerOf(modelId) === 'deepseek') return modelId
+  return view.routeDeepseek()
 }
 
 function childEnv(base: NodeJS.ProcessEnv, extra: Record<string, string>): Record<string, string> {
@@ -175,14 +194,14 @@ export async function runDshExecutor(req: DshRunRequest, deps: DshRunDeps = {}):
     DSH_CWD: req.worktreePath,
     DSH_SESSION_ROOT: sessionRoot,
     DSH_SYSTEM_PROMPT: childPersona(shell, req.brief),
-    DSH_MODEL: dshModelFor(req.model),
+    DSH_MODEL: req.model,
     DSH_CORDIS_CONFIG: configPath,
     DUIN_EXEC_URL: hookUrl,
     DUIN_EXEC_TOKEN: principal.token,
     DUIN_EXEC_RUN_ID: req.runId,
     ...(deps.extraChildEnv ?? {})
   })
-  journal.note({ type: 'spawn', runtime: describeRuntime(runtimeDir), shell: shell.kind, model: dshModelFor(req.model), hookUrl })
+  journal.note({ type: 'spawn', runtime: describeRuntime(runtimeDir), shell: shell.kind, model: req.model, hookUrl })
 
   let lastEventAt = now()
   let lastText = ''
@@ -216,7 +235,7 @@ export async function runDshExecutor(req: DshRunRequest, deps: DshRunDeps = {}):
           // stops the NEXT one, and the stop ladder ends the child. Meter always runs.
           const budgetUsd = req.ceilings.budgetUsd ?? readExecutorBudgetUsd(env)
           if (budgetUsd > 0 && !endReason) {
-            const { spentUsd } = executorCostOf(dshModelFor(req.model), usage)
+            const { spentUsd } = executorCostOf(req.model, usage)
             const b = shouldStopForBudget(spentUsd, budgetUsd)
             if (b.stop) {
               endReason = b.reason ?? 'cost-budget'
@@ -294,7 +313,7 @@ export async function runDshExecutor(req: DshRunRequest, deps: DshRunDeps = {}):
   // ── drive ─────────────────────────────────────────────────────────────────────────
   try {
     if (!endReason) {
-      await child.initialize({ cwd: req.worktreePath, provider: DSH_PROVIDER, model: dshModelFor(req.model), maxTokens: req.ceilings.maxTokens })
+      await child.initialize({ cwd: req.worktreePath, provider: DSH_PROVIDER, model: req.model, maxTokens: req.ceilings.maxTokens })
       journal.note({ type: 'initialized' })
     }
     if (!endReason) {
@@ -341,7 +360,7 @@ export function splitForkMessages(messages: ForkAgentRunnerInput['messages']): {
   return { task, brief }
 }
 
-export function summarize(res: ExecutorRunResult, model = DSH_DEFAULT_MODEL): string {
+export function summarize(res: ExecutorRunResult, model: string): string {
   const u = res.usage
   const usageLine = `usage: ${u.steps} steps, ${u.inputTokens} in (+${u.cacheReadTokens} cached), ${u.outputTokens} out, ${u.reasoningTokens} reasoning; tools: ${res.toolCalls} called, ${res.deniedToolCalls} denied; ${costLine(model, u)}; ${Math.round(res.elapsedMs / 1000)}s`
   return `${res.outputText || '(the executor produced no final text)'}\n\n[dsh executor · ${res.status}${res.reason ? ` · ${res.reason}` : ''} · ${usageLine}]`
@@ -356,18 +375,20 @@ export const dshForkRunner: ForkAgentRunner = async (input) => {
   if (!input.worktreePath) throw new Error('dsh executor requires isolation: "worktree" (no worktreePath on the run)')
   const { task, brief } = splitForkMessages(input.messages)
   if (!task.trim()) throw new Error('dsh executor: empty task')
+  // The fork's engine mapped into the DeepSeek family the dsh runtime can drive.
+  const model = dshModelFor(input.modelId)
+  if (!model) throw new Error('dsh executor: no usable DeepSeek model — add a DeepSeek API key (Settings → API Keys)')
   const res = await runDshExecutor({
     runId: input.runId,
     task,
     brief,
     worktreePath: input.worktreePath,
-    model: input.modelId,
+    model,
     allowedTools: input.allowedTools,
     ceilings: DEFAULT_EXECUTOR_CEILINGS,
     signal: input.signal,
     label: input.agentType
   })
-  const model = dshModelFor(input.modelId)
   if (res.status !== 'done') throw new Error(summarize(res, model))
   return { output: summarize(res, model) }
 }

@@ -280,6 +280,28 @@ export function resolveByActionId(actionId: string, now = Date.now()): number {
   return changed
 }
 
+/** Close rows because the OPERATOR said so. Distinct from resolveByActionId, which closes a
+ *  card because the underlying thing was answered: this is the person saying "stop asking",
+ *  and it is the only way out of a card whose subject is already gone. Without it an owed row
+ *  is permanent — evictOverflow and pruneNotices both keep owed rows whatever their age, and
+ *  markRead does not clear one, so a single stranded card leads the inbox forever. */
+export function resolveNotices(ids: string[], now = Date.now()): number {
+  let changed = 0
+  for (const id of ids) {
+    const n = notices[id]
+    if (n && n.resolvedAt === null) {
+      n.resolvedAt = now
+      if (n.readAt === null) n.readAt = now
+      changed++
+    }
+  }
+  if (changed) {
+    persist()
+    announce()
+  }
+  return changed
+}
+
 /** Age out terminal rows. Owed decisions are kept whatever their age. */
 export function pruneNotices(maxAgeMs: number, now = Date.now()): number {
   let removed = 0

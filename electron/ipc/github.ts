@@ -59,6 +59,19 @@ function failure(message: string): { success: false; error: string } {
   return { success: false, error: message }
 }
 
+/** friendly(), except that a request which never reached GitHub — no network, a timeout —
+ *  says so in words. fetch's own "fetch failed" and "TimeoutError" tell the operator nothing. */
+function reachable(err: unknown, fallback: string): string {
+  if (err instanceof github.GitHubApiError) return err.message
+  if (
+    err instanceof Error &&
+    (err.name === 'TimeoutError' || err.name === 'AbortError' || /fetch failed/i.test(err.message))
+  ) {
+    return 'Could not reach GitHub. Check the connection and try again.'
+  }
+  return friendly(err, fallback)
+}
+
 /**
  * Decorate a repo with the local clone path that's stored in the project
  * link table, when one exists. Cheap enough to do on every list call so
@@ -534,6 +547,38 @@ export function registerGitHubHandlers(): void {
       }
     }
   )
+
+  // -------------------------------------------------------------------------
+  // DUIN's own repository (Settings → GitHub, "DUIN on GitHub")
+  // -------------------------------------------------------------------------
+
+  ipcMain.handle('github:projectRelease', async (_e, args?: { force?: boolean }) => {
+    try {
+      return envelope(await github.getProjectRelease(app.getVersion(), { force: args?.force === true }))
+    } catch (err) {
+      return failure(reachable(err, 'Could not read the latest release'))
+    }
+  })
+
+  ipcMain.handle('github:projectStarred', async () => {
+    try {
+      return envelope(await github.isProjectStarred())
+    } catch (err) {
+      return failure(reachable(err, 'Could not read whether the repository is starred'))
+    }
+  })
+
+  ipcMain.handle('github:starProject', async (_e, args: { starred: boolean }) => {
+    try {
+      if (!args || typeof args.starred !== 'boolean') return failure('starred must be a boolean')
+      await github.setProjectStarred(args.starred)
+      return envelope(args.starred)
+    } catch (err) {
+      return failure(
+        reachable(err, args?.starred ? 'Could not star the repository' : 'Could not remove the star')
+      )
+    }
+  })
 
   // -------------------------------------------------------------------------
   // Open in browser (just a typed pass-through to shell.openExternal that's

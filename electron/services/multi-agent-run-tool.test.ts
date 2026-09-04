@@ -161,7 +161,7 @@ describe('executeMultiAgentRun', () => {
     await expect(
       executeMultiAgentRun({
         args: { tasks: [{ role: 'reader', prompt: 'x', context: '' }] },
-        defaultModel: 'm',
+        model: 'm',
         runner: async () => 'never',
         insideSubAgent: true
       })
@@ -178,7 +178,7 @@ describe('executeMultiAgentRun', () => {
           { role: 'verifier', prompt: 'v', context: '' }
         ]
       },
-      defaultModel: 'm',
+      model: 'm',
       runner: fixedDelayRunner({ planner: 80, reader: 80, verifier: 80 })
     })
     const wallClock = Date.now() - start
@@ -197,7 +197,7 @@ describe('executeMultiAgentRun', () => {
           { role: 'verifier', prompt: 'fast', context: '' }
         ]
       },
-      defaultModel: 'm',
+      model: 'm',
       runner: fixedDelayRunner({ reader: 5, planner: 60, verifier: 5 })
     })
     expect(out.results.map((r) => r.role)).toEqual(['reader', 'planner', 'verifier'])
@@ -211,7 +211,7 @@ describe('executeMultiAgentRun', () => {
           { role: 'planner', prompt: 'crash', context: '' }
         ]
       },
-      defaultModel: 'm',
+      model: 'm',
       runner: async (messages) => {
         const sys = String(messages[0]?.content ?? '')
         if (sys.includes('<role>planner</role>')) throw new Error('boom')
@@ -233,7 +233,7 @@ describe('executeMultiAgentRun', () => {
         ],
         timeoutMs: 30
       },
-      defaultModel: 'm',
+      model: 'm',
       runner: fixedDelayRunner({ reader: 5, verifier: 250 })
     })
     expect(out.results[0].output).toBe('reader:ok')
@@ -249,7 +249,7 @@ describe('executeMultiAgentRun', () => {
           { role: 'verifier', prompt: 'v', context: '' }
         ]
       },
-      defaultModel: 'm',
+      model: 'm',
       parentSignal: controller.signal,
       runner: fixedDelayRunner({ reader: 250, verifier: 250 })
     })
@@ -261,7 +261,7 @@ describe('executeMultiAgentRun', () => {
   it('flags a sub-agent that tried to emit a tool call', async () => {
     const out = await executeMultiAgentRun({
       args: { tasks: [{ role: 'reader', prompt: 'p', context: '' }] },
-      defaultModel: 'm',
+      model: 'm',
       runner: async () => '{"tool_calls":[{"id":"x"}]}'
     })
     expect(out.results[0].output).toBeNull()
@@ -271,7 +271,7 @@ describe('executeMultiAgentRun', () => {
   it('attaches synthetic call ids that reference the parent id when supplied', async () => {
     const out = await executeMultiAgentRun({
       args: { tasks: [{ role: 'reader', prompt: 'p', context: '' }] },
-      defaultModel: 'm',
+      model: 'm',
       parentCallId: 'parent-xyz',
       runner: async () => 'ok'
     })
@@ -282,7 +282,7 @@ describe('executeMultiAgentRun', () => {
     const clock = makeClockSequence([100, 100, 130])
     const out = await executeMultiAgentRun({
       args: { tasks: [{ role: 'reader', prompt: 'p', context: '' }] },
-      defaultModel: 'm',
+      model: 'm',
       runner: async () => 'ok',
       clock
     })
@@ -295,7 +295,7 @@ describe('executeMultiAgentRun', () => {
       args: {
         tasks: [{ role: 'reader', prompt: 'p', context: '' }]
       },
-      defaultModel: 'default-model',
+      model: 'default-model',
       runner: async (_msgs, modelId) => {
         seenModel = modelId
         return 'ok'
@@ -307,7 +307,7 @@ describe('executeMultiAgentRun', () => {
   it('falls back to the default timeout when none is supplied', async () => {
     const out = await executeMultiAgentRun({
       args: { tasks: [{ role: 'reader', prompt: 'p', context: '' }] },
-      defaultModel: 'm',
+      model: 'm',
       runner: async () => 'ok'
     })
     // Default timeout is large; the call should still succeed quickly. This
@@ -323,7 +323,7 @@ describe('executeMultiAgentRun', () => {
   it('R3: propagates reasoning when runner returns {output, reasoning}', async () => {
     const out = await executeMultiAgentRun({
       args: { tasks: [{ role: 'planner', prompt: 'plan', context: '' }] },
-      defaultModel: 'm',
+      model: 'm',
       runner: async () => ({
         output: 'PLAN: do the thing',
         reasoning: 'I weighed three options and picked this one'
@@ -338,7 +338,7 @@ describe('executeMultiAgentRun', () => {
   it('R3: plain-string runner produces undefined reasoning', async () => {
     const out = await executeMultiAgentRun({
       args: { tasks: [{ role: 'reader', prompt: 'p', context: '' }] },
-      defaultModel: 'm',
+      model: 'm',
       runner: async () => 'plain body'
     })
     expect(out.results[0].output).toBe('plain body')

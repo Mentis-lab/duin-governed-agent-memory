@@ -56,7 +56,6 @@ src/components/skills/SkillEditor.tsx
 src/components/skills/SkillPanel.tsx
 src/components/mcp/MCPStatusBar.tsx
 src/components/model/ModelSwitcher.tsx
-src/components/ui/Input.tsx
 
 # AddToolMenu and its orphans were DELETED 2026-08-08 rather than kept allowlisted:
 # a launcher nothing mounts is how four panels quietly became keyboard-only.

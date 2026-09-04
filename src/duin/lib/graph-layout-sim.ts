@@ -8,49 +8,50 @@
 // can never disagree about what a slider value means.
 //
 // Pure d3-force, no worker globals, no DOM — importable from the worker, the renderer and
-// a node test alike.
+// a node test alike. The numbers live in graph-layout-forces.ts.
 import {
-  forceCenter, forceLink, forceManyBody, forceSimulation, forceX, forceY,
-  type ForceCenter, type ForceLink, type ForceManyBody, type ForceX, type ForceY,
+  forceCollide, forceLink, forceManyBody, forceSimulation, forceX, forceY,
+  type ForceLink, type ForceManyBody, type ForceX, type ForceY,
   type Simulation, type SimulationLinkDatum, type SimulationNodeDatum,
 } from "d3-force";
-import { positionalStrength } from "./graph-layout-forces";
+import { COLLISION, linkStrengthFor, type ForceParams } from "./graph-layout-forces";
+
+export type { ForceParams } from "./graph-layout-forces";
 
 /** `idx` is ours; d3 owns `index` and rewrites it on every nodes() call. */
 export interface SimNode extends SimulationNodeDatum { idx: number }
 export interface SimEdge extends SimulationLinkDatum<SimNode> { source: SimNode; target: SimNode }
 
-/** The four slider-driven forces plus damping — everything a layout run can be re-tuned on. */
-export type ForceParams = {
-  charge: number;
-  linkDistance: number;
-  /** < 0 reproduces d3's adaptive default: 1 / min(deg(a), deg(b)). */
-  linkStrength: number;
-  centerStrength: number;
-  velocityDecay: number;
-};
-
 /**
  * Build a STOPPED simulation over `nodes`/`edges` carrying `p`. `deg` is the per-index
  * degree the adaptive link strength reads — computed by the caller, who has the links.
+ * `radius`, when given, is each node's drawn radius (world units) and switches collision on:
+ * nodes then keep `COLLISION.padding` of clear space between their edges.
+ *
+ * There is deliberately NO forceCenter. It translates the whole system so the centroid sits
+ * on the origin; with the core pinned at the origin that translation fought the pinned node
+ * on every tick, and the "Center force" slider changed a translation gain rather than a pull.
+ * forceX/forceY are the per-node inward pull, and the slider drives them directly.
  */
 export function buildSimulation(
   nodes: SimNode[],
   edges: SimEdge[],
   deg: ArrayLike<number>,
-  p: ForceParams
+  p: ForceParams,
+  radius?: ArrayLike<number>
 ): Simulation<SimNode, SimEdge> {
   const sim = forceSimulation<SimNode>(nodes)
     .force("charge", forceManyBody<SimNode>())
     .force("link", forceLink<SimNode, SimEdge>(edges).id((d) => d.idx))
-    // forceCenter re-centres the whole system; forceX/forceY are what actually hold an
-    // individual node in. Both are driven off the same "Center force" slider so the control
-    // means one thing. Keep this identical to brain-shell.tsx's main-thread configuration —
-    // the two must agree or the on-screen engine fights whatever the worker returns.
-    .force("center", forceCenter<SimNode>())
     .force("x", forceX<SimNode>(0))
     .force("y", forceY<SimNode>(0))
     .stop();
+  if (radius) {
+    // Not alpha-scaled (d3's forceCollide never is), so it holds at the end of a settle, which
+    // is exactly when overlap would otherwise be visible. One iteration: measured +4 ms per tick
+    // on the live drawn set, all of it off the main thread.
+    sim.force("collide", forceCollide<SimNode>((d) => (radius[d.idx] ?? 0) + COLLISION.padding).strength(COLLISION.strength).iterations(1));
+  }
   applyForceParams(sim, deg, p);
   return sim;
 }
@@ -68,16 +69,10 @@ export function applyForceParams(
   const link = sim.force("link") as ForceLink<SimNode, SimEdge> | undefined;
   if (link) {
     link.distance(p.linkDistance);
-    if (p.linkStrength < 0) {
-      // d3's adaptive default, evaluated against the same degree counts the UI uses.
-      link.strength((l) => 1 / Math.min(deg[l.source.idx] || 1, deg[l.target.idx] || 1));
-    } else {
-      link.strength(p.linkStrength);
-    }
+    // d3's adaptive default, scaled, against the same degree counts the UI uses.
+    link.strength((l) => linkStrengthFor(p.linkStrengthScale, deg[l.source.idx], deg[l.target.idx]));
   }
-  (sim.force("center") as ForceCenter<SimNode> | undefined)?.strength(p.centerStrength);
-  const positional = positionalStrength(p.centerStrength);
-  (sim.force("x") as ForceX<SimNode> | undefined)?.strength(positional);
-  (sim.force("y") as ForceY<SimNode> | undefined)?.strength(positional);
+  (sim.force("x") as ForceX<SimNode> | undefined)?.strength(p.positional);
+  (sim.force("y") as ForceY<SimNode> | undefined)?.strength(p.positional);
   sim.velocityDecay(p.velocityDecay);
 }

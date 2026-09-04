@@ -64,6 +64,24 @@ describe('resolveShortcut — Escape ordering (U8)', () => {
   it('returns null for Escape with nothing to do, so preventDefault is not called', () => {
     expect(resolveShortcut({ key: 'Escape', target: PLAIN_DIV }, IDLE)).toBeNull()
   })
+
+  // 2026-09-03 (settings evaluation, API Keys): ApiKeyModal dismisses itself on Escape, and
+  // because focus sits on one of its buttons the resolver ALSO fired closeSettings, so adding
+  // a key from Models closed the whole Settings view. A modal dialog owns Escape while open.
+  it('yields Escape to an open modal dialog instead of closing Settings under it', () => {
+    const g = globalThis as { document?: unknown }
+    const prior = g.document
+    g.document = { querySelector: (sel: string) => (sel.includes('aria-modal') ? {} : null) }
+    try {
+      expect(resolveShortcut({ key: 'Escape', target: PLAIN_DIV }, { ...IDLE, settingsOpen: true })).toBeNull()
+      expect(resolveShortcut({ key: 'Escape', target: PLAIN_DIV }, { ...IDLE, isStreaming: true })).toBeNull()
+    } finally {
+      if (prior === undefined) delete g.document
+      else g.document = prior
+    }
+    // With no dialog in the document the ordinary ordering is untouched.
+    expect(resolveShortcut({ key: 'Escape', target: PLAIN_DIV }, { ...IDLE, settingsOpen: true })).toBe('closeSettings')
+  })
 })
 
 describe('resolveShortcut — Cmd/Ctrl+K guard (U8)', () => {

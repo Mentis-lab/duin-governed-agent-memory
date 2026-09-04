@@ -35,12 +35,18 @@ describe('resolveModelId', () => {
   it('passes through concrete model IDs', () => {
     expect(resolveModelId('deepseek-v4-pro', 'd')).toBe('deepseek-v4-pro')
   })
-  it('resolves symbolic tier names via TIER_MODEL_MAP', () => {
-    expect(resolveModelId('cheap', 'd')).toBe(TIER_MODEL_MAP.cheap)
-    expect(resolveModelId('pro', 'd')).toBe(TIER_MODEL_MAP.pro)
+  it('ships NO model id for the symbolic tiers (P0 model plane: no default model)', () => {
+    expect(TIER_MODEL_MAP).toEqual({})
   })
-  it('falls back to defaultModel when undefined', () => {
+  it("a symbolic tier nothing resolved hands back the caller's engine, never the tier word", () => {
+    expect(resolveModelId('cheap', 'd')).toBe('d')
+    expect(resolveModelId('pro', 'd')).toBe('d')
+    // ...and nothing at all when the caller has no engine either: the fork resolves the agentic role.
+    expect(resolveModelId('cheap')).toBeUndefined()
+  })
+  it("falls back to the caller's engine when undefined", () => {
     expect(resolveModelId(undefined, 'fallback-id')).toBe('fallback-id')
+    expect(resolveModelId(undefined)).toBeUndefined()
   })
 })
 
@@ -48,8 +54,9 @@ describe('setTierModelMap', () => {
   it('updates the symbolic mapping', () => {
     setTierModelMap({ cheap: 'custom-cheap-id' })
     expect(resolveModelId('cheap', 'd')).toBe('custom-cheap-id')
-    // Restore.
-    setTierModelMap({ cheap: 'deepseek-v4-flash' })
+    // Restore the shipped (empty) map.
+    delete TIER_MODEL_MAP.cheap
+    expect(resolveModelId('cheap', 'd')).toBe('d')
   })
 })
 
@@ -66,8 +73,8 @@ describe('setTierModelResolver', () => {
     let live: string | null = null
     setTierModelResolver(() => live)
 
-    // Boot-shaped state: nothing usable yet -> the shipped default stands.
-    expect(resolveModelId('cheap', 'd')).toBe(TIER_MODEL_MAP.cheap)
+    // Boot-shaped state: nothing usable yet -> the caller's own engine stands.
+    expect(resolveModelId('cheap', 'd')).toBe('d')
 
     // ...the Ollama probe lands / the operator pastes a key.
     live = 'ollama:llama3.2'
@@ -83,11 +90,11 @@ describe('setTierModelResolver', () => {
     expect(resolver).not.toHaveBeenCalled()
   })
 
-  it('falls back to the static map when the resolver throws, instead of failing the agent call', () => {
+  it("falls back to the caller's engine when the resolver throws, instead of failing the agent call", () => {
     setTierModelResolver(() => {
       throw new Error('keychain unavailable')
     })
-    expect(resolveModelId('pro', 'd')).toBe(TIER_MODEL_MAP.pro)
+    expect(resolveModelId('pro', 'd')).toBe('d')
   })
 })
 

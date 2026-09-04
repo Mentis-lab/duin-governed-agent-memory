@@ -184,8 +184,16 @@ describe('isProviderFailoverError — the chain must not stop on a bad key', () 
   })
 
   it('still refuses to fail over on things another provider cannot fix', () => {
-    expect(isProviderFailoverError('500 Internal Server Error')).toBe(false)
+    // A content-policy refusal is about the REQUEST; every provider would say the same.
     expect(isProviderFailoverError('request violates our content policy')).toBe(false)
+    // An unclassifiable failure with no status is not a reason to spend a second provider.
+    expect(isProviderFailoverError('Unknown error')).toBe(false)
+  })
+
+  it('a 5xx IS recoverable on another provider (P0 classifier contract): the host is down, not the request', () => {
+    expect(isProviderFailoverError('500 Internal Server Error')).toBe(true)
+    expect(isProviderFailoverError('deepseek: unknown (502) — Bad Gateway')).toBe(true)
+    expect(isProviderFailoverError('anthropic: unknown (529) — Overloaded')).toBe(true)
   })
 })
 

@@ -1,23 +1,30 @@
-import { t } from '@/lib/i18n'
+import { t, tf } from '@/lib/i18n'
 import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/Button'
+import { SettingsLoading, SettingsSection } from '@/components/ui/settings'
 import { formatCount, useSnipStore } from '@/stores/snip-store'
 
-// SnipDiscoverPanel — rtk discover analogue. Scans the snip_command_log
-// table for shell calls in the last N days that did NOT match any
-// filter, ranks them by total estimated tokens, and surfaces the top-K
-// as suggestions for writing a custom YAML filter. Clicking "Write
-// a filter" opens the user filter dir in the OS file explorer; a future
-// extension would also drop a *.draft.yaml stub on the user's behalf
-// (deferred for v2 to keep K12 scope tight).
+// SnipDiscoverPanel — scans the command log for shell calls in the last N days that did
+// NOT match any filter, ranks them by total estimated tokens, and surfaces the top ones
+// as candidates for a custom YAML filter. "Write a filter" opens the user filter folder
+// in the OS file explorer.
 
-const WINDOWS: Array<{ label: string; days: number }> = [
-  { label: '7d', days: 7 },
-  { label: '30d', days: 30 },
-  { label: '90d', days: 90 }
-]
+const WINDOWS: number[] = [7, 30, 90]
 
-export function SnipDiscoverPanel() {
+function windowLabel(days: number): string {
+  switch (days) {
+    case 7:
+      return t('7 days')
+    case 30:
+      return t('30 days')
+    case 90:
+      return t('90 days')
+    default:
+      return tf('{n} days', { n: days })
+  }
+}
+
+export function SnipDiscoverPanel(): React.ReactElement {
   const discover = useSnipStore((s) => s.discover)
   const loadDiscover = useSnipStore((s) => s.loadDiscover)
   const openFilterDir = useSnipStore((s) => s.openFilterDir)
@@ -28,67 +35,73 @@ export function SnipDiscoverPanel() {
   }, [loadDiscover, sinceDays])
 
   return (
-    <div>
-      <div className="mb-1 flex items-baseline justify-between">
-        <h3 className="text-[11px] font-medium uppercase tracking-wide text-[var(--text-muted)]">
-          {t('Find missed savings')}
-        </h3>
-        <div className="flex gap-1">
-          {WINDOWS.map((w) => (
-            <button
-              key={w.days}
-              onClick={() => setSinceDays(w.days)}
-              className={`rounded border px-2 py-0.5 font-mono text-[11px] ${
-                sinceDays === w.days
-                  ? 'border-[var(--accent)] bg-[var(--accent)] text-[var(--bg-primary)]'
-                  : 'border-[var(--panel-border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]'
-              }`}
+    <SettingsSection
+      label={t('Find missed savings')}
+      description={t('Shell commands that no filter matched, ranked by the tokens they cost. Write a filter for the big ones.')}
+      actions={
+        <div role="group" aria-label={t('Time window')} className="flex gap-1">
+          {WINDOWS.map((days) => (
+            <Button
+              key={days}
+              size="sm"
+              variant={sinceDays === days ? 'primary' : 'secondary'}
+              aria-pressed={sinceDays === days}
+              onClick={() => setSinceDays(days)}
             >
-              {w.label}
-            </button>
+              {windowLabel(days)}
+            </Button>
           ))}
         </div>
-      </div>
-
-      {discover && discover.suggestions.length > 0 ? (
-        <table className="w-full font-mono text-[11px]">
-          <thead>
-            <tr className="text-left text-[var(--text-muted)]">
-              <th className="py-1">command</th>
-              <th className="py-1 text-right">runs</th>
-              <th className="py-1 text-right">tokens</th>
-              <th className="py-1">category</th>
-              <th className="py-1" />
-            </tr>
-          </thead>
-          <tbody>
-            {discover.suggestions.map((s) => (
-              <tr key={s.commandPattern} className="border-t border-[var(--panel-border)]">
-                <td className="py-1 text-[var(--text-primary)]" title={s.sampleCommand}>
-                  {s.commandPattern}
-                </td>
-                <td className="py-1 text-right text-[var(--text-secondary)]">{s.runs}</td>
-                <td className="py-1 text-right text-[var(--text-secondary)]">
-                  {formatCount(s.estimatedTokens)}
-                </td>
-                <td className="py-1 text-[var(--text-muted)]">{s.suggestedCategory}</td>
-                <td className="py-1 text-right">
-                  <Button variant="secondary"
-                    onClick={() => void openFilterDir()}
-                    title={`Drop a YAML filter into the ${s.suggestedCategory}/ folder under userData/snip/filters/.`}
-                  >
-                    {t('Write a filter')}
-                  </Button>
-                </td>
+      }
+    >
+      <div className="rounded-lg border border-[var(--panel-border)] bg-[var(--bg-primary)] p-3">
+        {discover === null ? (
+          <SettingsLoading what={t('suggestions')} />
+        ) : discover.suggestions.length > 0 ? (
+          <table className="w-full font-mono text-[11px]">
+            <thead>
+              <tr className="text-left text-[var(--text-muted)]">
+                <th scope="col" className="py-1 font-medium">{t('Command')}</th>
+                <th scope="col" className="py-1 text-right font-medium">{t('Runs')}</th>
+                <th scope="col" className="py-1 text-right font-medium">{t('Tokens')}</th>
+                <th scope="col" className="py-1 font-medium">{t('Category')}</th>
+                <th scope="col" className="py-1" />
               </tr>
-            ))}
-          </tbody>
-        </table>
-      ) : (
-        <div className="rounded border border-dashed border-[var(--panel-border)] px-3 py-4 text-center font-mono text-[11px] text-[var(--text-muted)]">
-          No unfiltered commands in the last {sinceDays}d. Run some shell calls and check back.
-        </div>
-      )}
-    </div>
+            </thead>
+            <tbody>
+              {discover.suggestions.map((s) => (
+                <tr key={s.commandPattern} className="border-t border-[var(--panel-border)]">
+                  <td className="py-1 text-[var(--text-primary)]" title={s.sampleCommand}>
+                    {s.commandPattern}
+                  </td>
+                  <td className="py-1 text-right text-[var(--text-secondary)]">{s.runs}</td>
+                  <td className="py-1 text-right text-[var(--text-secondary)]">
+                    {formatCount(s.estimatedTokens)}
+                  </td>
+                  <td className="py-1 text-[var(--text-muted)]">{s.suggestedCategory}</td>
+                  <td className="py-1 text-right">
+                    <Button
+                      size="sm"
+                      onClick={() => void openFilterDir()}
+                      title={tf('Drop a YAML filter into the {category} folder of your filter folder.', {
+                        category: s.suggestedCategory
+                      })}
+                    >
+                      {t('Write a filter')}
+                    </Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <div className="rounded-md border border-dashed border-[var(--panel-border)] px-3 py-4 text-center font-mono text-[11px] text-[var(--text-muted)]">
+            {tf('No unfiltered commands in the last {days} days. Run some shell commands and check back.', {
+              days: sinceDays
+            })}
+          </div>
+        )}
+      </div>
+    </SettingsSection>
   )
 }

@@ -1,7 +1,12 @@
 import { create } from 'zustand'
 import type { AppSettings } from '@/lib/types'
 import { DEFAULT_PRESET_ID, DEFAULT_THEME_MODE, getPreset } from '@/styles/theme-presets'
-import { applyThemePreset, applyFontScale, applyChatFontSize } from '@/styles/apply-theme'
+import {
+  applyThemePreset,
+  applyFontScale,
+  applyChatFontSize,
+  applyDocFontSize
+} from '@/styles/apply-theme'
 import { setUiLanguage } from '@/lib/i18n'
 import { toast } from '@/stores/toast-store'
 
@@ -10,7 +15,6 @@ import { toast } from '@/stores/toast-store'
 let settingsWriteQueue: Promise<boolean> = Promise.resolve(true)
 
 const defaultSettings: AppSettings = {
-  theme: 'dark',
   themePreset: DEFAULT_PRESET_ID,
   themeMode: DEFAULT_THEME_MODE,
   // Brain graph color scheme — 'default' preserves the original DUIN palette.
@@ -21,6 +25,8 @@ const defaultSettings: AppSettings = {
   brainGraphLayout: { nodeSpacing: 50, linkLength: 50, linkForce: 50, centerForce: 50, connectionDepth: 2 },
   fontSize: 14,
   chatFontSize: 12,
+  // Markdown document reading size. Mirror of DEFAULT_APP_SETTINGS (parity test locks the two).
+  docFontSize: 16,
   sandboxWritePaths: [],
   // Full computer access OFF by default (public build; mirror of DEFAULT_APP_SETTINGS, parity
   // test locks the two). Off = confined to the vault/workspace/allowed folders; the operator
@@ -29,19 +35,17 @@ const defaultSettings: AppSettings = {
   // Response language. 'auto' emits no reply-language directive (byte-identical default).
   // Mirror of DEFAULT_APP_SETTINGS (parity test locks the two).
   language: 'auto',
-  // DUIN — the brain is the default model for new conversations.
-  defaultModel: 'duin-brain',
-  // Background model '' = Auto. Mirror of DEFAULT_APP_SETTINGS (parity test locks the two).
-  backgroundModel: '',
-  // F3 — engine powering the brain's language. 'auto' = resolve (key→Ollama→keyless).
-  brainEngine: 'auto',
+  // P0 model plane (2026-09-02): the stored-model-id settings (default / background / brain
+  // engine) are gone — there is no default model. Mirror of DEFAULT_APP_SETTINGS.providerPolicy
+  // (parity test locks the two). The renderer never READS this copy: policy is read and written
+  // only through window.api.model (model-store.ts). Empty order = every keyed provider in
+  // catalog order; speed 'fast' = each provider's quick model first.
+  providerPolicy: { order: [], roles: {}, localOnlyBackground: false, speed: 'fast' },
   // DUIN — brain endpoint + optional live graph URL. Empty = env/localhost
   // for the brain, bundled demo for the graph.
   brainUrl: '',
   brainGraphUrl: '',
   localBrainNotesDir: '',
-  sidebarCollapsed: false,
-  artifactPanelWidth: 420,
   minimizeToTray: false,
   autoCheckUpdates: true,
   aiGeneratedTitles: false,
@@ -60,7 +64,6 @@ const defaultSettings: AppSettings = {
   agenticCodingMode: false,
   agenticCodingSkills: ['plan', 'context', 'verify'],
   snipEnabled: true,
-  snipVerbose: false,
   ttsEnabled: false,
   ttsProvider: 'openai',
   safeSeedLength: 8192,
@@ -108,7 +111,9 @@ const defaultSettings: AppSettings = {
     forecast: false,
     calibration: false,
     task: false,
-    jobFail: false,
+    jobFail: true,
+    forecastOwed: false,
+    confidentMiss: false,
     driftThreshold: 0.25,
     debounceMs: 300000,
     quietHours: { start: 0, end: 0 }
@@ -139,6 +144,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       applyThemePreset(getPreset(merged.themePreset), merged.themeMode)
       applyFontScale(merged.fontSize)
       applyChatFontSize(merged.chatFontSize)
+      applyDocFontSize(merged.docFontSize)
       // The language picker has existed since long before the strings did and drove
       // nothing. This is what makes it true.
       setUiLanguage(merged.language)
@@ -157,12 +163,15 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       const fontSizeChanged = partial.fontSize !== undefined && partial.fontSize !== prev.fontSize
       const chatFontChanged =
         partial.chatFontSize !== undefined && partial.chatFontSize !== prev.chatFontSize
+      const docFontChanged =
+        partial.docFontSize !== undefined && partial.docFontSize !== prev.docFontSize
       const languageChanged = partial.language !== undefined && partial.language !== prev.language
       if (presetChanged || modeChanged) {
         applyThemePreset(getPreset(updated.themePreset), updated.themeMode)
       }
       if (fontSizeChanged) applyFontScale(updated.fontSize)
       if (chatFontChanged) applyChatFontSize(updated.chatFontSize)
+      if (docFontChanged) applyDocFontSize(updated.docFontSize)
       if (languageChanged) setUiLanguage(updated.language)
       try {
         const res = await window.api.settings.set(partial as Record<string, unknown>)
@@ -177,6 +186,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         if (presetChanged || modeChanged) applyThemePreset(getPreset(prev.themePreset), prev.themeMode)
         if (fontSizeChanged) applyFontScale(prev.fontSize)
         if (chatFontChanged) applyChatFontSize(prev.chatFontSize)
+        if (docFontChanged) applyDocFontSize(prev.docFontSize)
         if (languageChanged) setUiLanguage(prev.language)
         toast.error(`Couldn't save settings${err instanceof Error ? `: ${err.message}` : ''}`)
         return false

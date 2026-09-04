@@ -2,6 +2,7 @@ import { t } from '@/lib/i18n'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNoticesStore, type Notice, type NoticeSeverity } from '@/stores/notices-store'
 import { followDeepLink } from '@/lib/follow-deep-link'
+import { hasInlineDecision } from './needs-you-decision'
 import { toast } from '@/stores/toast-store'
 
 /** A staged self-tune awaiting the operator (rsi:pending row). */
@@ -60,6 +61,7 @@ export function NeedsYouPanel({ embedded = false }: { embedded?: boolean } = {})
   const loadNotices = useNoticesStore((s) => s.loadNotices)
   const markRead = useNoticesStore((s) => s.markRead)
   const markAllRead = useNoticesStore((s) => s.markAllRead)
+  const dismissNotice = useNoticesStore((s) => s.dismiss)
   const [showEarlier, setShowEarlier] = useState(false)
   // W2 considerate-RSI: decide IN PLACE. Owed rows whose actionId matches a staged
   // self-tune get Ratify/Dismiss right on the card; staged loop iterations (kind 'loop')
@@ -111,6 +113,19 @@ export function NeedsYouPanel({ embedded = false }: { embedded?: boolean } = {})
       setDeciding(null)
       void loadNotices()
       void loadAwaiting()
+    }
+  }
+
+  // The escape from a card whose subject is gone. It closes the row and says so; it never
+  // pretends to answer the thing behind it.
+  const dismiss = async (n: Notice): Promise<void> => {
+    if (deciding) return
+    setDeciding(n.id)
+    try {
+      toast.info(await dismissNotice([n.id]) ? t('Dismissed') : t('Could not dismiss that'))
+    } finally {
+      setDeciding(null)
+      void loadNotices()
     }
   }
 
@@ -223,6 +238,12 @@ export function NeedsYouPanel({ embedded = false }: { embedded?: boolean } = {})
                 const rsi = n.actionId ? pendingRsi[n.actionId] : undefined
                 const isLoopStage = !rsi && n.kind === 'loop' && !!n.actionId
                 const isKeylessReview = n.actionId === 'govern:keyless-review'
+                const inline = hasInlineDecision({
+                  actionId: n.actionId,
+                  kind: n.kind,
+                  hasStagedRsi: !!rsi,
+                  awaitingCount: awaiting.length
+                })
                 return (
                   <div key={n.id}>
                     <NoticeRow notice={n} onOpen={open} focal />
@@ -303,6 +324,21 @@ export function NeedsYouPanel({ embedded = false }: { embedded?: boolean } = {})
                         >
                           {t('Dismiss')}
                         </button>
+                      </div>
+                    )}
+                    {!inline && (
+                      <div className="mt-1 flex items-center gap-2 px-2.5 pb-1">
+                        <button
+                          type="button"
+                          disabled={deciding !== null}
+                          onClick={() => void dismiss(n)}
+                          className="rounded border border-[var(--panel-border)] px-2 py-0.5 text-[12px] text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-tertiary)] disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
+                        >
+                          {t('Dismiss')}
+                        </button>
+                        <span className="truncate text-[11px] text-[var(--text-muted)]">
+                          {t('Clears it from here. It does not answer the request.')}
+                        </span>
                       </div>
                     )}
                   </div>

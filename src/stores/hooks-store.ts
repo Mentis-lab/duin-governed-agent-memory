@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { invoke } from '@/lib/ipc-client'
+import { invoke, query } from '@/lib/ipc-client'
 import { describeError } from '@/lib/result'
 import { toast } from '@/stores/toast-store'
 
@@ -8,20 +8,19 @@ import { toast } from '@/stores/toast-store'
 // results are kept in a transient `lastTest` slot so the active editor
 // can render the most recent run without holding it in component state.
 
-// MUST stay in step with electron/services/hooks-store.ts's HookEvent. It did not: the
-// main process fires eleven events, this copy declared five, and the six F3 autonomy
-// lifecycle events (loops, automations, workflows) were therefore unreachable from the
-// Settings UI — fired in production every day with no way for a user hook to subscribe.
-// Two copies of one vocabulary is why; keeping them literally identical is the cheapest
-// fix that does not restructure the preload boundary.
+// MUST stay in step with electron/services/hooks-store.ts's HookEvent (the parity test
+// in hooks-event-parity.test.ts pins the two unions against each other). Two copies of
+// one vocabulary is why; keeping them literally identical is the cheapest fix that does
+// not restructure the preload boundary.
+//
+// loopStarted / loopIterationDone were declared on both sides but nothing in main ever
+// fired them (loop-controller has no fireHooks call), so they are gone from both.
 export type HookEvent =
   | 'sessionStart'
   | 'promptSubmit'
   | 'preToolUse'
   | 'postToolUse'
   | 'agentStop'
-  | 'loopStarted'
-  | 'loopIterationDone'
   | 'automationStarted'
   | 'automationDone'
   | 'workflowStarted'
@@ -59,18 +58,29 @@ export interface HookSampleContext {
   result?: string
   promptBody?: string
   cwd?: string
-  // The F3 autonomy-lifecycle sandbox (hooks-runner.ts) — what loop/automation/workflow
-  // hooks actually receive. Absent here, so the test runner could not offer a faithful
-  // sample for the six events it now lists.
+  // The autonomy-lifecycle sandbox (hooks-runner.ts) — what automation/workflow hooks
+  // actually receive, so the test runner can offer a faithful sample for them.
   trigger?: string
   sourceId?: string
   label?: string
+}
+
+/**
+ * Authoring a hook (create / update with a new body / test) goes through a native
+ * approval dialog in main. Pressing Cancel there answers `success:false` with one of
+ * these strings. That is the operator saying "no", not a failure: it must not toast.
+ */
+export function isHookApprovalCancelled(cause: unknown): boolean {
+  const message = describeError(cause, '')
+  return /\bHook (creation|update|test) cancelled$/.test(message)
 }
 
 interface HooksState {
   hooks: Hook[]
   loaded: boolean
   loading: boolean
+  /** Set when the last `hooks:list` read failed; the page renders it with a Retry. */
+  error: string | null
   lastTest: { code: string; event: HookEvent; result: HookTestResult } | null
   load: () => Promise<void>
   create: (input: {
@@ -105,14 +115,17 @@ export const useHooksStore = create<HooksState>((set, get) => ({
   hooks: [],
   loaded: false,
   loading: false,
+  error: null,
   lastTest: null,
 
+  // A failed list used to leave `loaded` false forever, which the page painted as
+  // "Loading…" with no way out. query() turns a thrown call, a missing handler and a
+  // `success:false` envelope into one error the page can show and retry.
   load: async () => {
-    if (!window.api?.hooks) return
     set({ loading: true })
-    const res = await window.api.hooks.list()
-    if (res.success) set({ hooks: res.data as Hook[], loaded: true })
-    set({ loading: false })
+    const r = await query<Hook[]>('hooks', window.api?.hooks?.list)
+    if (r.ok) set({ hooks: r.data, loaded: true, loading: false, error: null })
+    else set({ loading: false, error: r.error })
   },
 
   // U2. These already read `success`, but they returned a bare null/false that
@@ -120,31 +133,28 @@ export const useHooksStore = create<HooksState>((set, get) => ({
   // the enable/disable toggle's case, nothing at all). Routing through invoke()
   // keeps the return contract and surfaces the handler's own message.
   create: async (input) => {
-    if (!window.api?.hooks) return null
     try {
       const hook = await invoke<Hook>('create hook', () => window.api.hooks.create(input))
       await get().load()
       return hook ?? null
     } catch (e) {
-      toast.error(describeError(e, 'Could not create that hook'))
+      if (!isHookApprovalCancelled(e)) toast.error(describeError(e, 'Could not create that hook'))
       return null
     }
   },
 
   update: async (id, patch) => {
-    if (!window.api?.hooks) return false
     try {
       await invoke('update hook', () => window.api.hooks.update(id, patch))
       await get().load()
       return true
     } catch (e) {
-      toast.error(describeError(e, 'Could not update that hook'))
+      if (!isHookApprovalCancelled(e)) toast.error(describeError(e, 'Could not update that hook'))
       return false
     }
   },
 
   remove: async (id) => {
-    if (!window.api?.hooks) return false
     try {
       await invoke('delete hook', () => window.api.hooks.delete(id))
       await get().load()
@@ -156,12 +166,14 @@ export const useHooksStore = create<HooksState>((set, get) => ({
   },
 
   test: async (input) => {
-    if (!window.api?.hooks?.test) return null
-    const res = await window.api.hooks.test(input)
-    if (!res.success) return null
-    const result = res.data as HookTestResult
-    set({ lastTest: { code: input.code, event: input.event, result } })
-    return result
+    try {
+      const result = await invoke<HookTestResult>('test hook', () => window.api.hooks.test(input))
+      set({ lastTest: { code: input.code, event: input.event, result } })
+      return result
+    } catch (e) {
+      if (!isHookApprovalCancelled(e)) toast.error(describeError(e, 'Could not run that hook'))
+      return null
+    }
   },
 
   clearLastTest: () => set({ lastTest: null })

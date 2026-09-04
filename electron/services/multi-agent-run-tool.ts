@@ -197,7 +197,9 @@ export interface MonotonicClock {
 
 export interface ExecuteMultiAgentRunOptions {
   args: MultiAgentRunArgs
-  defaultModel: string
+  /** The engine every sub-agent runs on: the parent turn's resolved model, or the
+   *  `agentic` role resolved by the caller. Never a stored default. */
+  model: string
   parentSignal?: AbortSignal
   parentCallId?: string
   runner: SubAgentRunner
@@ -251,7 +253,7 @@ export async function executeMultiAgentRun(
   const args = opts.args
   const clock = opts.clock ?? (() => Date.now())
   const timeoutMs = args.timeoutMs ?? MULTI_AGENT_DEFAULT_TIMEOUT_MS
-  const targetModel = opts.defaultModel
+  const targetModel = opts.model
   const overallStart = clock()
 
   // Adapt the legacy SubAgentRunner (messages, modelId, signal) shape to the
@@ -277,7 +279,7 @@ export async function executeMultiAgentRun(
       },
       {
         runner: forkRunner,
-        defaultModel: targetModel,
+        model: targetModel,
         loadType: multiAgentTypeLoader,
         clock
       }

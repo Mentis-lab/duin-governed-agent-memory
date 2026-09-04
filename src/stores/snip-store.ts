@@ -62,8 +62,6 @@ interface SnipState {
   error: string | null
   loadAll: () => Promise<void>
   loadDiscover: (sinceDays?: number) => Promise<void>
-  setEnabled: (enabled: boolean) => Promise<void>
-  setVerbose: (verbose: boolean) => Promise<void>
   reloadFilters: () => Promise<void>
   clearHistory: () => Promise<void>
   openFilterDir: () => Promise<void>
@@ -131,18 +129,6 @@ export const useSnipStore = create<SnipState>((set, get) => ({
     } catch (err) {
       set({ error: err instanceof Error ? err.message : String(err) })
     }
-  },
-
-  setEnabled: async (enabled) => {
-    if (!window.api?.snip) return
-    await window.api.snip.setEnabled({ enabled })
-    // Refresh stats so the header card reflects the new state.
-    await get().loadAll()
-  },
-
-  setVerbose: async (verbose) => {
-    if (!window.api?.snip) return
-    await window.api.snip.setVerbose({ verbose })
   },
 
   reloadFilters: async () => {

@@ -81,7 +81,7 @@ describe('settings:set emits settings.updated with changed key NAMES only', () =
     registerSettingsHandlers()
     const handler = ipcRegistered.get('settings:set')!
     const before = listEvents({ type: 'settings.updated' }).length
-    await handler(undefined, { theme: 'light', fontSize: 16 })
+    await handler(undefined, { language: 'zh', fontSize: 16 })
     const after = listEvents({ type: 'settings.updated' })
     expect(after.length).toBe(before + 1)
     const payload = after[after.length - 1].payload as {
@@ -89,15 +89,15 @@ describe('settings:set emits settings.updated with changed key NAMES only', () =
       sensitiveChanged: string[]
       partialKeys: string[]
     }
-    expect(payload.changedKeys).toEqual(expect.arrayContaining(['theme', 'fontSize']))
+    expect(payload.changedKeys).toEqual(expect.arrayContaining(['language', 'fontSize']))
     expect(payload.sensitiveChanged).toEqual([])
-    expect(payload.partialKeys).toEqual(['theme', 'fontSize'])
+    expect(payload.partialKeys).toEqual(['language', 'fontSize'])
     // settings.json itself wrote the values, but the event payload must NOT.
     const written = JSON.parse(readFileSync(join(userDataDir, 'settings.json'), 'utf-8'))
-    expect(written.theme).toBe('light')
+    expect(written.language).toBe('zh')
     expect(written.fontSize).toBe(16)
     const json = JSON.stringify(after[after.length - 1].payload)
-    expect(json).not.toContain('light')
+    expect(json).not.toContain('"zh"')
     expect(json).not.toContain('"16"')
   })
 
@@ -105,25 +105,26 @@ describe('settings:set emits settings.updated with changed key NAMES only', () =
     const { registerSettingsHandlers } = await import('../ipc/settings')
     registerSettingsHandlers()
     const handler = ipcRegistered.get('settings:set')!
-    await handler(undefined, { theme: 'light' })
+    await handler(undefined, { language: 'zh' })
     const baseline = listEvents({ type: 'settings.updated' }).length
-    await handler(undefined, { theme: 'light' })
+    await handler(undefined, { language: 'zh' })
     expect(listEvents({ type: 'settings.updated' }).length).toBe(baseline)
   })
 
-  it('flags sensitiveChanged when the apiKey settings field moves', async () => {
+  // 2026-09-03 (settings evaluation D5): `apiKey` is not a setting — keys live encrypted in
+  // keys.json — so settings:set now refuses it by name instead of persisting a secret in
+  // plaintext and flagging it sensitive after the fact. No event, no file.
+  it('refuses a secret written as a settings key, and emits no event for it', async () => {
     const { registerSettingsHandlers } = await import('../ipc/settings')
     registerSettingsHandlers()
     const handler = ipcRegistered.get('settings:set')!
-    await handler(undefined, { apiKey: 'sk-newvalue' })
-    const events = listEvents({ type: 'settings.updated' })
-    const payload = events[events.length - 1].payload as {
-      changedKeys: string[]
-      sensitiveChanged: string[]
-    }
-    expect(payload.sensitiveChanged).toContain('apiKey')
-    // The value still doesn't appear in the event payload.
-    expect(JSON.stringify(payload)).not.toContain('sk-newvalue')
+    const baseline = listEvents({ type: 'settings.updated' }).length
+    const res = await handler(undefined, { apiKey: 'sk-newvalue' })
+    expect(res.success).toBe(false)
+    expect(res.error).toMatch(/apiKey is not a setting DUIN knows/)
+    expect(listEvents({ type: 'settings.updated' }).length).toBe(baseline)
+    const path = join(userDataDir, 'settings.json')
+    if (existsSync(path)) expect(readFileSync(path, 'utf-8')).not.toContain('sk-newvalue')
   })
 })
 

@@ -1,6 +1,11 @@
 import { join } from 'path'
 import { app } from 'electron'
-import { readSettingsFile, writeSettingsFile } from './settings-file'
+import {
+  readSettingsFile,
+  writeSettingsFile,
+  migrateLegacyModelSettings,
+  type LegacyModelSettingsDeps
+} from './settings-file'
 
 // Tolerate a missing `app` (e.g. under vitest, where electron's app is undefined) so readers
 // on hot paths never throw outside the main process — they just see no settings.
@@ -20,8 +25,49 @@ const settingsPath = (): string => {
   }
 }
 
+// ── Legacy model-key migration (plan §2.1 W3) ─────────────────────────────────────────────────
+//
+// The migration needs two catalog lookups (which provider owns a model id; which providers are
+// keyed). The catalog lives in providers/registry.ts, which imports THIS module, so the lookups
+// are registered late by registry.ts at load time instead of imported here (`import-x/no-cycle`).
+// Until they are registered, `readSettings` returns the file untouched — the legacy keys are
+// inert to every reader that does not route models — and the first read after registry loads
+// migrates and writes back ONCE per process. A file that no longer holds the keys is a no-op.
+let migrationDeps: LegacyModelSettingsDeps | null = null
+let migrationDone = false
+
+/** Called by providers/registry.ts at module init. Idempotent. */
+export function registerLegacyModelSettingsDeps(deps: LegacyModelSettingsDeps): void {
+  migrationDeps = deps
+}
+
+/** Test seam: forget that the migration ran, so the next read re-checks the file. */
+export function __resetSettingsMigrationForTest(): void {
+  migrationDone = false
+}
+
+function migrateOnce(path: string, data: Record<string, unknown>): Record<string, unknown> {
+  if (migrationDone || !migrationDeps || !path) return data
+  migrationDone = true
+  try {
+    const { data: next, changed } = migrateLegacyModelSettings(data, migrationDeps)
+    if (!changed) return data
+    writeSettingsFile(path, next)
+    console.log('[settings] migrated defaultModel/backgroundModel/brainEngine → providerPolicy')
+    return next
+  } catch (err) {
+    console.warn('[settings] provider-policy migration skipped:', (err as Error)?.message)
+    return data
+  }
+}
+
 export function readSettings(): Record<string, unknown> {
-  return readSettingsFile(settingsPath()).data
+  const path = settingsPath()
+  const read = readSettingsFile(path)
+  // Never migrate over a corrupt file: writeSettingsFile would side-car it, and a read must not
+  // have that side effect. 'absent' has nothing to migrate.
+  if (read.state !== 'ok') return read.data
+  return migrateOnce(path, read.data)
 }
 
 /** Merge `patch` into the persisted settings.

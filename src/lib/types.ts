@@ -382,6 +382,63 @@ export interface ProviderInfo {
   routable?: boolean
 }
 
+// ── P0 model plane (renderer mirror of electron/services/providers/roles.ts) ──
+// SOURCE-LOCK: these shapes MUST stay identical to roles.ts. The renderer cannot import that
+// file (tsconfig.web lists cross-process contracts file-by-file and roles.ts pulls the
+// registry's ProviderId), so the mirror is hand-maintained; roles.ts is the contract.
+
+/** Every reason a model is asked for. The renderer only ever asks for `chat`. */
+export type RouteTask = 'chat' | 'agentic' | 'extraction' | 'reviewer' | 'jury' | 'title' | 'embed' | 'reason'
+
+/** Operator-authored provider policy. Replaces the three retired stored-model-id settings. */
+export interface ProviderPolicy {
+  /** Preference order — the primary key of every resolution. */
+  order: ProviderId[]
+  /** Optional per-role override of the order. */
+  roles?: Partial<Record<RouteTask, ProviderId[]>>
+  /** When true, background roles (extraction/jury/title/embed) never leave the machine. */
+  localOnlyBackground?: boolean
+  /** Engine speed — which tier of each provider goes first: 'fast' the quick model,
+   *  'balanced' the strong model, 'strong' the reasoning model. Default 'fast'. */
+  speed?: 'fast' | 'balanced' | 'strong'
+}
+
+export type ProviderHealthReason =
+  | 'ok'
+  | 'no-key'
+  | 'no-credit'
+  | 'unauthorized'
+  | 'model-access'
+  | 'rate-limit'
+  | 'not-found'
+  | 'network'
+  | 'unknown'
+
+/** Why a provider is or is not usable right now. Computed by main from a real completion. */
+export interface ProviderHealth {
+  provider: ProviderId
+  healthy: boolean
+  reason: ProviderHealthReason
+  detail?: string
+  probedModelId?: string
+  checkedAt: number
+  latencyMs?: number
+}
+
+/** The router's answer for one role. `source` says whether a per-conversation pin won. */
+export interface RoleResolution {
+  task: RouteTask
+  modelId: string
+  provider: ProviderId
+  chain: string[]
+  source: 'pin' | 'policy'
+}
+
+/** Sentinel in `conversation.model` meaning "no pin — resolve the chat role from policy".
+ *  Mirrors roles.ts AUTO_ENGINE (kept as the legacy `duin-brain` connector id so old rows
+ *  keep their meaning). */
+export const AUTO_ENGINE = 'duin-brain' as const
+
 export type ModelTier = 'pro' | 'flash' | 'open' | 'coder' | 'reasoner'
 
 export interface ModelInfo {
@@ -473,7 +530,6 @@ export interface WindowBounds {
 
 
 export interface AppSettings {
-  theme: 'dark'
   themePreset: ThemePresetId
   themeMode: ThemeMode
   /** Brain graph color scheme — recolors the home brain graph's node + link
@@ -507,6 +563,10 @@ export interface AppSettings {
   /** Chat transcript reading size in px. Distinct from `fontSize`, which is page zoom
    *  and therefore cannot change how the transcript reads RELATIVE to the UI. */
   chatFontSize: number
+  /** Markdown DOCUMENT reading size in px — the note read view, a note opened in its own
+   *  window, the Library document reader and the artifact markdown viewer. Distinct from
+   *  both `fontSize` (page zoom) and `chatFontSize` (the transcript). */
+  docFontSize: number
   /** Extra absolute paths the sandboxed shell may write to, beyond the vault. Used only
    *  when `fullComputerAccess` is false (confined mode). */
   sandboxWritePaths: string[]
@@ -526,20 +586,16 @@ export interface AppSettings {
   ttsEnabled: boolean
   /** TTS backend. Mirrors DefaultAppSettings.ttsProvider (default 'openai'). */
   ttsProvider: 'openai' | 'edge'
-  defaultModel: string
-  /** Background model — the LLM DUIN uses for its OWN structured work (note extraction,
-   *  conversation titles), as opposed to the model you chat with. '' (or 'auto') = Auto: the
-   *  per-provider designated fast model for whichever API key you have (registry
-   *  EXTRACTION_DEFAULT). A model id pins it, above the DUIN_ROUTE_EXTRACTION env pin. Mirrors
-   *  DefaultAppSettings.backgroundModel. */
-  backgroundModel?: string
+  // P0 model plane (2026-09-02): the three stored-model-id settings (default / background /
+  // brain engine) are gone. There is no default model; every role resolves from the provider
+  // policy. The renderer READS and WRITES the policy only through `window.api.model.policyGet/
+  // policySet` (model-store.ts); this field exists so the renderer defaults literal mirrors
+  // DEFAULT_APP_SETTINGS (parity test) — nothing in src/ reads `settings.providerPolicy`.
+  providerPolicy?: ProviderPolicy
   /** Global reasoning-effort default for reasoning models. The composer's
    *  per-conversation control writes this so the choice persists across sessions;
    *  the backend also reads it as the fallback when a turn sends no override. */
   reasoningEffort?: 'low' | 'medium' | 'high' | 'max'
-  /** F3 — the LLM that powers the brain's language ("engine"). 'auto' = resolve
-   *  (BYO key → Ollama → keyless). Mirrors DefaultAppSettings.brainEngine. */
-  brainEngine: string
   /** DUIN — endpoint of the agent/DUIN brain (AG-UI). Empty string falls
    *  back to the DUIN_BRAIN_URL env var, then the localhost default. */
   brainUrl?: string
@@ -549,8 +605,6 @@ export interface AppSettings {
   /** DUIN — folder of notes (markdown) the built-in local brain indexes
    *  for grounded chat + the Brain graph. Empty = the demo graph; no notes. */
   localBrainNotesDir?: string
-  sidebarCollapsed: boolean
-  artifactPanelWidth: number
   minimizeToTray: boolean
   autoCheckUpdates: boolean
   aiGeneratedTitles: boolean
@@ -592,13 +646,6 @@ export interface AppSettings {
    * DB write, no matcher run, no allocation.
    */
   snipEnabled: boolean
-  /**
-   * Snip Phase K9: verbose mode for the dashboard. When `true`, the
-   * SnipSettings tab renders a per-filter activity log of recent
-   * matches. NEVER decorates the text the model receives — that
-   * would corrupt structured tool output (Invariant 13).
-   */
-  snipVerbose: boolean
   /**
    * T1 — SSE inactivity watchdog threshold (ms). 0 disables, min 5_000,
    * default 60_000. Caps how long a streaming attempt can sit without
@@ -675,6 +722,10 @@ export interface AppSettings {
     calibration: boolean
     task: boolean
     jobFail: boolean
+    /** A forecast past its review date with no verdict. */
+    forecastOwed: boolean
+    /** A confident forecast (≥ 0.6) refuted by what happened. */
+    confidentMiss: boolean
     driftThreshold: number
     debounceMs: number
     quietHours: { start: number; end: number }

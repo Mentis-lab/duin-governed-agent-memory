@@ -11,6 +11,7 @@ import type {
   GitHubAuthMode,
   GitHubCompareSummary,
   GitHubConnectionStatus,
+  GitHubProjectRelease,
   GitHubPullRequest,
   GitHubRepository,
   GitHubTokenProvider,
@@ -18,6 +19,7 @@ import type {
   PushBranchInput
 } from './github-types'
 import { friendly, messageOf } from './guarded'
+import { PRODUCT_REPO_URL } from '../brand'
 
 // SECURITY MODEL
 // --------------
@@ -363,6 +365,135 @@ export async function getViewer(): Promise<GitHubViewer> {
     avatarUrl: body.avatar_url,
     htmlUrl: body.html_url
   }
+}
+
+// ---------------------------------------------------------------------------
+// DUIN's own repository (Settings → GitHub, "DUIN on GitHub")
+// ---------------------------------------------------------------------------
+
+/** Pure: owner and repo of a github.com repository URL, or null for anything else. A private
+ *  fork leaves PRODUCT_REPO_URL empty, and every project call below then answers plainly. */
+export function parseRepoUrl(url: string): { owner: string; repo: string } | null {
+  let u: URL
+  try {
+    u = new URL(url)
+  } catch {
+    return null
+  }
+  if (u.protocol !== 'https:' || u.hostname !== 'github.com') return null
+  const [owner, rawRepo] = u.pathname.split('/').filter(Boolean)
+  const repo = rawRepo?.replace(/\.git$/, '')
+  if (!isValidSlug(owner) || !isValidSlug(repo)) return null
+  return { owner, repo }
+}
+
+function projectRepoPath(): string {
+  const target = parseRepoUrl(PRODUCT_REPO_URL)
+  if (!target) throw new Error('This build has no public repository.')
+  return `${target.owner}/${target.repo}`
+}
+
+/** Pure: what Settings shows from GitHub's `releases/latest` body, or null when the body is
+ *  not a release (no tag, no page). `current` is the running app's version. */
+export function parseLatestRelease(raw: unknown, current: string): GitHubProjectRelease | null {
+  if (!raw || typeof raw !== 'object') return null
+  const r = raw as { tag_name?: unknown; name?: unknown; published_at?: unknown; html_url?: unknown }
+  if (typeof r.tag_name !== 'string' || !r.tag_name.trim()) return null
+  if (typeof r.html_url !== 'string' || !r.html_url.trim()) return null
+  return {
+    tag: r.tag_name.trim(),
+    name: typeof r.name === 'string' && r.name.trim() ? r.name.trim() : null,
+    publishedAt: typeof r.published_at === 'string' && r.published_at.trim() ? r.published_at : null,
+    htmlUrl: r.html_url.trim(),
+    current
+  }
+}
+
+/** Ten minutes. A Settings visit re-reads nothing GitHub has had no time to change, and the
+ *  unauthenticated limit is sixty calls an hour per address; "Check now" passes `force`. */
+export const PROJECT_RELEASE_CACHE_MS = 10 * 60 * 1000
+const PROJECT_REQUEST_TIMEOUT_MS = 10_000
+let projectReleaseCache: { at: number; value: GitHubProjectRelease } | null = null
+
+function anonymousHeaders(): Record<string, string> {
+  return {
+    Accept: 'application/vnd.github+json',
+    'X-GitHub-Api-Version': '2022-11-28',
+    'User-Agent': 'DUIN-Harness'
+  }
+}
+
+/** The latest published release of DUIN's repository beside the running version. The endpoint
+ *  is public: a connected token only lifts the rate limit, and a token GitHub rejects falls
+ *  back to an anonymous read rather than hiding a public page. */
+export async function getProjectRelease(
+  current: string,
+  opts: { force?: boolean } = {}
+): Promise<GitHubProjectRelease> {
+  const now = Date.now()
+  const cached = projectReleaseCache
+  if (!opts.force && cached && now - cached.at < PROJECT_RELEASE_CACHE_MS && cached.value.current === current) {
+    return cached.value
+  }
+  const url = `${GITHUB_API}/repos/${projectRepoPath()}/releases/latest`
+  const token = await provider().getAccessToken().catch(() => null)
+  let res = await fetch(url, {
+    headers: token ? buildRequestHeaders(token) : anonymousHeaders(),
+    signal: AbortSignal.timeout(PROJECT_REQUEST_TIMEOUT_MS)
+  })
+  if (res.status === 401 && token) {
+    res = await fetch(url, { headers: anonymousHeaders(), signal: AbortSignal.timeout(PROJECT_REQUEST_TIMEOUT_MS) })
+  }
+  if (res.status === 404) throw new GitHubApiError(404, 'No release has been published yet.', '')
+  if (res.status === 403 && res.headers.get('x-ratelimit-remaining') === '0') {
+    throw new GitHubApiError(
+      403,
+      'GitHub is rate-limiting this computer. Try again in an hour, or connect an account.',
+      ''
+    )
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new GitHubApiError(res.status, `GitHub answered ${res.status} for the latest release.`, text)
+  }
+  const parsed = parseLatestRelease(await res.json(), current)
+  if (!parsed) throw new GitHubApiError(res.status, 'GitHub answered without a release.', '')
+  projectReleaseCache = { at: now, value: parsed }
+  return parsed
+}
+
+/** Whether the connected account has starred DUIN's repository. GitHub answers 204 for yes
+ *  and 404 for no, so this cannot go through githubRequest, which reads a 404 as a failure. */
+export async function isProjectStarred(): Promise<boolean> {
+  const token = await provider().getAccessToken()
+  if (!token) throw new GitHubApiError(401, 'No GitHub token available — connect GitHub first.', '')
+  const res = await fetch(`${GITHUB_API}/user/starred/${projectRepoPath()}`, {
+    headers: buildRequestHeaders(token),
+    signal: AbortSignal.timeout(PROJECT_REQUEST_TIMEOUT_MS)
+  })
+  if (res.status === 204) return true
+  if (res.status === 404) return false
+  const text = await res.text().catch(() => '')
+  if (res.status === 401) {
+    try { deps.onTokenRejected?.() } catch (e) { console.debug('[github-service] noop:', messageOf(e)) }
+    throw new GitHubApiError(
+      401,
+      'GitHub rejected the token (401). It may have been revoked or expired — reconnect from Settings.',
+      text
+    )
+  }
+  throw new GitHubApiError(res.status, `GitHub API ${res.status}: ${text.slice(0, 400)}`, text)
+}
+
+/** Star or unstar DUIN's repository as the connected account. Both verbs answer 204 with no
+ *  body (fetch sends Content-Length: 0 for the bodyless PUT GitHub insists on); a token
+ *  without the repo or public_repo scope is refused by GitHub, and the refusal is surfaced. */
+export async function setProjectStarred(starred: boolean): Promise<void> {
+  await githubRequest<void>(
+    `/user/starred/${projectRepoPath()}`,
+    { method: starred ? 'PUT' : 'DELETE', signal: AbortSignal.timeout(PROJECT_REQUEST_TIMEOUT_MS) },
+    provider()
+  )
 }
 
 // ---------------------------------------------------------------------------

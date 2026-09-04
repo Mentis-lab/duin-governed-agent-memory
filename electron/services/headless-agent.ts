@@ -15,7 +15,8 @@
 // All of that lives in executeToolCall (tool-exec.ts); this module is just the
 // model loop + bounds + bookkeeping.
 
-import { chatStream, resolveModel, type ToolCallAccumulator } from './providers/registry'
+import { chatStream, resolveModel, routeModel, type ToolCallAccumulator } from './providers/registry'
+import { AUTO_ENGINE } from './providers/roles'
 import type {
   ChatCompletionMessageParam,
   ChatCompletionTool
@@ -106,16 +107,17 @@ function modelTurn(
   })
 }
 
-/** Resolve a tool-capable model: prefer the requested one; else fall back. */
+/** Resolve a tool-capable model: prefer the requested one; else the `agentic` role
+ *  from the provider policy (no hardcoded fallback id). Keeps the requested id when
+ *  nothing tool-capable routes, so the provider's own error names the problem. */
 function toolCapableModel(modelId: string): string {
   try {
     if (resolveModel(modelId).supportsTools) return modelId
   } catch (e) { console.debug('[headless-agent] unknown id  fall through:', messageOf(e)) }
-  for (const fallback of ['deepseek-v4-flash', 'deepseek-v4-pro']) {
-    try {
-      if (resolveModel(fallback).supportsTools) return fallback
-    } catch (e) { console.debug('[headless-agent] keep trying:', messageOf(e)) }
-  }
+  try {
+    const routed = routeModel('agentic')
+    if (routed && resolveModel(routed).supportsTools) return routed
+  } catch (e) { console.debug('[headless-agent] agentic route failed:', messageOf(e)) }
   return modelId
 }
 
@@ -123,7 +125,21 @@ export async function runHeadlessAgent(spec: HeadlessAgentSpec): Promise<Headles
   const maxTurns = spec.maxTurns ?? DEFAULTS.maxTurns
   const maxToolCalls = spec.maxToolCalls ?? DEFAULTS.maxToolCalls
   const timeoutMs = spec.timeoutMs ?? DEFAULTS.timeoutMs
-  const model = toolCapableModel(spec.model)
+  // No pin (AUTO_ENGINE, or an empty id) routes the `agentic` role through the operator's
+  // provider order. When nothing routes there is no provider error to lean on — the
+  // sentinel is not a model — so name the fix instead of failing on "unknown model".
+  const requested = spec.model || AUTO_ENGINE
+  const model = toolCapableModel(requested)
+  if (requested === AUTO_ENGINE && model === AUTO_ENGINE) {
+    return {
+      status: 'error',
+      output: '',
+      turns: 0,
+      toolUses: [],
+      error:
+        'No provider can run this: add a key in Settings → API Keys, then check the order in Settings → Models'
+    }
+  }
 
   const allow = new Set(spec.allowedTools)
   const tools = toolRegistry

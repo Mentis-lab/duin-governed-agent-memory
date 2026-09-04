@@ -138,3 +138,61 @@ export function writeSettingsFile(path: string, next: Record<string, unknown>): 
   }
   atomicWriteFileSync(path, JSON.stringify(next, null, 2))
 }
+
+// ── Provider-policy migration (cohesion build P0, plan §2.1 W3) ────────────────────────────────
+//
+// `defaultModel`, `backgroundModel` and `brainEngine` stored MODEL IDS as preferences. A stored
+// model id is a claim the account is funded and the id still exists; the 2026-09-02 evaluation
+// found the stored default dead for a week with nothing saying so (S2). The replacement is a
+// PROVIDER preference (`providerPolicy`, roles.ts) resolved against live health at call time.
+//
+// Pure so it is testable without electron: the two lookups it needs from the catalog are injected.
+// Idempotent by construction — a second pass over its own output changes nothing.
+
+export interface LegacyModelSettingsDeps {
+  /** Provider owning a model id, or null when the id is unknown / the brain connector. */
+  providerOf: (modelId: string) => string | null
+  /** Every provider with a stored key, in catalog order. */
+  keyedProviders: () => string[]
+}
+
+export const LEGACY_MODEL_SETTING_KEYS = ['defaultModel', 'backgroundModel', 'brainEngine'] as const
+
+/**
+ * Seed `providerPolicy` from the three legacy keys (only when no policy is stored yet), then
+ * delete the keys. Returns the migrated object and whether anything changed. Seeding rules:
+ *   order            = [provider of brainEngine (a real id), else of defaultModel, then every other
+ *                       keyed provider in catalog order]; empty when nothing resolves — an empty
+ *                       order means "every keyed provider in catalog order", computed at resolve time
+ *   roles.extraction = [provider of backgroundModel] when it was a pinned id that resolves
+ *   localOnlyBackground = false; speed = 'fast'
+ */
+export function migrateLegacyModelSettings(
+  data: Record<string, unknown>,
+  deps: LegacyModelSettingsDeps
+): { data: Record<string, unknown>; changed: boolean } {
+  const present = LEGACY_MODEL_SETTING_KEYS.filter((k) => k in data)
+  if (present.length === 0) return { data, changed: false }
+  const next: Record<string, unknown> = { ...data }
+  const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '')
+  if (!('providerPolicy' in data) || !data.providerPolicy || typeof data.providerPolicy !== 'object') {
+    const engine = str(data.brainEngine)
+    const def = str(data.defaultModel)
+    const first =
+      (engine && engine !== 'auto' ? deps.providerOf(engine) : null) ??
+      (def && def !== 'duin-brain' ? deps.providerOf(def) : null)
+    const keyed = deps.keyedProviders()
+    const order = first ? [first, ...keyed.filter((p) => p !== first)] : [...keyed]
+    const bg = str(data.backgroundModel)
+    const bgProvider = bg && bg !== 'auto' ? deps.providerOf(bg) : null
+    next.providerPolicy = {
+      order,
+      roles: bgProvider ? { extraction: [bgProvider] } : {},
+      localOnlyBackground: false,
+      // The evaluation's chat pick was the flash tier (L6 §4); a migrated install starts there.
+      speed: 'fast'
+    }
+  }
+  for (const k of present) delete next[k]
+  return { data: next, changed: true }
+}

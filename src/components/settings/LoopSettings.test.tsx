@@ -1,26 +1,34 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeAll } from 'vitest'
+import { setUiLanguage } from '@/lib/i18n'
+import { autonomyChangeNeedsConfirm, AUTONOMY_CONFIRM_MESSAGE } from './LoopSettings'
 import {
   trippedCapabilities,
   breakerLine,
   RUNG_LABEL,
-  autonomyChangeNeedsConfirm,
-  AUTONOMY_CONFIRM_MESSAGE,
   governFactLine,
   undoConfirmMessage,
   undoableActions,
   type BreakerCap,
   type GovernFactRow,
   type GovernActionRow
-} from './LoopSettings'
+} from '../automations/governance-helpers'
 
-// The capability BREAKER pane. Renderer render tests need jsdom, which this repo's node-only
-// vitest env does not provide, so the pane's behaviour is factored into pure exported helpers and
-// unit-tested here — the same convention as FoundationsSettings.test.tsx.
+// The capability BREAKER and the governor's record. Renderer render tests need jsdom, which this
+// repo's node-only vitest env does not provide, so the behaviour is factored into pure exported
+// helpers and unit-tested here — the same convention as FoundationsSettings.test.tsx. The helpers
+// moved with their surfaces to src/components/automations/governance-helpers.ts on 2026-09-03
+// (the breaker and the record are monitoring, so they render in the Governance tab of the
+// Automations hub); the autonomy confirm stays with the Settings switch that shows it.
 //
-// What this pane exists for: the governor trips a capability the instant one of its actions is
+// What the breaker exists for: the governor trips a capability the instant one of its actions is
 // reverted and NEVER restores one. The restore path had no caller anywhere in the renderer, so a
 // tripped capability stayed tripped forever and the only way back was a hand-written POST. Fact
 // promotion had been held that way since 2026-07-29 — by an unbuilt button, not a decision.
+//
+// The helpers render through t()/tf() now, and Node 21+ exposes navigator.language, so the
+// dictionary resolves the OS locale even under vitest. These assertions are about the English
+// source strings, so pin the language rather than the machine.
+beforeAll(() => setUiLanguage('en'))
 
 const cap = (over: Partial<BreakerCap> = {}): BreakerCap => ({
   id: 'operator-fact-promotion',

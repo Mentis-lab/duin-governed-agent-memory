@@ -1,6 +1,6 @@
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions'
 import { chatOnce } from '../providers/registry'
-import { readDeepResearchSettings } from './adapter-cascade'
+import { researchModel } from './adapter-cascade'
 
 // Intent classifier for auto-routing research-worthy chat turns into the
 // deep-research pipeline.
@@ -190,8 +190,6 @@ Guidance:
 - confidence: be honest. If unsure, return shouldResearch=false with low confidence.
 - reason: one sentence, no quotes inside.`
 
-const DEFAULT_CLASSIFIER_MODEL = 'deepseek-v4-flash'
-
 interface ClassifierDeps {
   /** Override the LLM caller for testing. Defaults to `chatOnce`. */
   callLlm?: (messages: ChatCompletionMessageParam[], model: string) => Promise<string>
@@ -207,7 +205,11 @@ export async function classifyResearchIntent(
   modelOverride: string | undefined,
   deps: ClassifierDeps = {}
 ): Promise<ResearchIntent | null> {
-  const model = modelOverride ?? readDeepResearchSettings().classifierModel ?? DEFAULT_CLASSIFIER_MODEL
+  const model = researchModel('classifier', modelOverride)
+  if (!model) {
+    console.warn('[research/intent] no usable model for the extraction role; classifier skipped')
+    return null
+  }
   // R2: chatOnce returns {content, reasoning?}; intent classifier needs body only.
   const call = deps.callLlm ?? ((m, mod) => chatOnce(m, mod).then((r) => r.content))
   const messages: ChatCompletionMessageParam[] = [

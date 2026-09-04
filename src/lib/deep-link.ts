@@ -36,7 +36,7 @@ const TOOL_IDS: Record<ToolId, true> = {
   files: true, review: true, terminal: true, sources: true, artifacts: true,
   plan: true, background: true, afterAction: true, brain: true, learning: true,
   automations: true, graphReport: true, decisions: true, library: true,
-  homeStatus: true, relations: true
+  homeStatus: true, relations: true, home: true
 }
 
 const CUSTOMIZE_COLUMNS = new Set<string>(['skills', 'methods', 'connectors', 'plugins'])
@@ -46,7 +46,15 @@ const CUSTOMIZE_COLUMNS = new Set<string>(['skills', 'methods', 'connectors', 'p
  *  the dialog on a tab id `SettingsDialog` has no case for renders a blank pane. Only
  *  tabs a notice actually deep-links to belong here — grow it when a new producer needs
  *  one. `executors` is the keep/discard review surface. */
-const SETTINGS_TABS: Record<string, true> = { executors: true }
+const SETTINGS_TABS: Record<string, true> = {
+  executors: true,
+  // Where the provider order and keys live; the failure → notice watcher (proactive/watchers.ts)
+  // links every model-failure notice here.
+  models: true,
+  api: true,
+  // The corrupt-settings notice (ipc/settings.ts) points at the backups and import surface.
+  persistence: true
+}
 
 /**
  * Parse a deep link into something the app can act on, or null when it names nothing

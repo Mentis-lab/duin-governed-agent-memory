@@ -188,6 +188,7 @@ export const mcp = {
 // GitHub façade. The main side owns tokens; the renderer only sees these
 // typed responses (never the bearer).
 import type {
+  GitHubProjectRelease,
   GitHubConnectionStatus,
   GitHubViewer,
   GitHubRepository,
@@ -272,6 +273,12 @@ export const github = {
     setUpstream?: boolean
   }): Promise<IpcResponse<PushBranchResult>> => api.github.pushBranch(args),
   openInBrowser: (url: string): Promise<IpcResponse<null>> => api.github.openInBrowser(url),
+
+  // DUIN's own repository (Settings → GitHub).
+  projectRelease: (force = false): Promise<IpcResponse<GitHubProjectRelease>> =>
+    api.github.projectRelease({ force }),
+  projectStarred: (): Promise<IpcResponse<boolean>> => api.github.projectStarred(),
+  starProject: (starred: boolean): Promise<IpcResponse<boolean>> => api.github.starProject({ starred }),
 
   // F2 — PR review threading.
   listPullRequestReviewComments: (

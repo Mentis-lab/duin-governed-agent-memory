@@ -1,20 +1,17 @@
 import { t } from '@/lib/i18n'
+import { Input } from '@/components/ui/Input'
+import { SecretField } from '@/components/ui/settings'
 import type { ChannelCredential } from './channel-types'
 
-// One credential slot. Controlled: the pane owns the draft, this owns the presentation.
-
-// Copied rather than imported from ChannelsSettings, which keeps its own module-local
-// `inputCls` unexported. A shared style module for two consts would be the wrong trade,
-// and reaching into the pane this component is meant to be composed INTO is worse.
-const inputCls =
-  'w-full rounded border border-[var(--border)] bg-[var(--bg-primary)] px-1.5 py-1 text-[11px] text-[var(--text-primary)] focus:border-[var(--accent)] focus:outline-none'
+// One credential slot. Controlled: the pane owns the draft, this owns the presentation —
+// including the help line, which the pane used to draw a second time under the same box.
 
 /**
  * What the box shows when it is empty.
  *
  * Pure + exported because this repo's vitest env is node-only with no jsdom, so the
  * judgement is unit-tested through helpers rather than by rendering — the same
- * convention as ChannelsSettings' secretPlaceholder, which this generalises.
+ * convention as ChannelsSettings' channelStatusLine.
  *
  * The case that forced it: a stored SECRET. The value never leaves the main process, so
  * an empty box is all this component CAN render — and an empty box sitting next to a row
@@ -56,25 +53,38 @@ export function ChannelFieldInput({
       <label htmlFor={inputId} className="block text-[11px] text-[var(--text-secondary)]">
         {field.label}
       </label>
-      <input
-        id={inputId}
-        className={inputCls}
-        // 'secret' is the write-only kind, so mask it. 'text' shows what is stored —
-        // that is the whole distinction ChannelCredential.kind carries.
-        type={field.kind === 'secret' ? 'password' : 'text'}
-        // A channel token is not a login. Browser autofill offering the operator's saved
-        // passwords here is noise at best and a mis-save at worst.
-        autoComplete="off"
-        spellCheck={false}
-        placeholder={fieldPlaceholder(field)}
-        value={value}
-        disabled={disabled}
-        onChange={(e) => onChange(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && onSubmit) onSubmit()
-        }}
-      />
-      {field.help && <p className="text-[10px] text-[var(--text-muted)]">{field.help}</p>}
+      {field.kind === 'secret' ? (
+        // 'secret' is the write-only kind: masked, with Show/Hide for what is being typed
+        // (never for a stored value — that never reaches this process).
+        <SecretField
+          id={inputId}
+          aria-label={field.label}
+          value={value}
+          onChange={onChange}
+          onSubmit={onSubmit}
+          placeholder={fieldPlaceholder(field)}
+          disabled={disabled}
+        />
+      ) : (
+        // 'text' shows what is stored — that is the whole distinction ChannelCredential.kind carries.
+        <Input
+          id={inputId}
+          aria-label={field.label}
+          type="text"
+          // A channel setting is not a login. Browser autofill offering the operator's
+          // saved passwords here is noise at best and a mis-save at worst.
+          autoComplete="off"
+          spellCheck={false}
+          placeholder={fieldPlaceholder(field)}
+          value={value}
+          disabled={disabled}
+          onChange={(e) => onChange(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && onSubmit) onSubmit()
+          }}
+        />
+      )}
+      {field.help && <p className="text-[11px] text-[var(--text-muted)]">{field.help}</p>}
     </div>
   )
 }

@@ -235,10 +235,19 @@ const coalescedSpawn: SpawnFn = () => {
 }
 
 describe('helpers', () => {
-  it('dshModelFor keeps DeepSeek ids and falls back otherwise', () => {
-    expect(dshModelFor('deepseek-v4-pro')).toBe('deepseek-v4-pro')
-    expect(dshModelFor('glm-5.3')).toBe('deepseek-v4-flash')
-    expect(dshModelFor(undefined)).toBe('deepseek-v4-flash')
+  it('dshModelFor keeps a usable DeepSeek id, otherwise routes the agentic role WITHIN DeepSeek, and never invents a fallback', () => {
+    const providers: Record<string, string> = { 'deepseek-v4-pro': 'deepseek', 'glm-5.3': 'zhipu', 'deepseek-dead': 'deepseek' }
+    const view = {
+      usable: (id: string) => id !== 'deepseek-dead',
+      providerOf: (id: string) => providers[id] ?? 'deepseek',
+      routeDeepseek: () => 'deepseek-routed'
+    }
+    expect(dshModelFor('deepseek-v4-pro', view)).toBe('deepseek-v4-pro') // usable DeepSeek pin is kept
+    expect(dshModelFor('glm-5.3', view)).toBe('deepseek-routed') // other family → routed within DeepSeek
+    expect(dshModelFor('deepseek-dead', view)).toBe('deepseek-routed') // unusable DeepSeek id → routed
+    expect(dshModelFor(undefined, view)).toBe('deepseek-routed')
+    // No key → nothing usable in the family → null (the caller reports "add a DeepSeek key").
+    expect(dshModelFor('glm-5.3', { ...view, routeDeepseek: () => null })).toBeNull()
   })
   it('splitForkMessages takes the user turn as the task and the system prompt as the brief', () => {
     expect(splitForkMessages([{ role: 'system', content: 'be brief' }, { role: 'user', content: 'do X' }])).toEqual({ task: 'do X', brief: 'be brief' })

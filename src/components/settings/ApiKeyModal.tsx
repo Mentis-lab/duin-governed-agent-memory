@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { IconButton } from '@/components/ui/IconButton'
 import { Button } from '@/components/ui/Button'
+import { Input } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
+import { SettingsLink } from '@/components/ui/settings'
 import type { ProviderInfo } from '@/lib/types'
 import { ensurePlaintextConsentIfNeeded } from '@/lib/keychain-consent'
 import { PRODUCT_NAME } from '@/lib/brand'
@@ -23,23 +25,29 @@ interface ProviderEntry extends ProviderInfo {
   hasKey: boolean
 }
 
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+
 export function ApiKeyModal({ onComplete, onDismiss, defaultProvider, required = true }: ApiKeyModalProps) {
   const [providers, setProviders] = useState<ProviderEntry[]>([])
   const [selected, setSelected] = useState<string>(defaultProvider ?? 'openai')
   const [key, setKey] = useState('')
   const [testing, setTesting] = useState(false)
-  const [error, setError] = useState('')
+  const [error, setError] = useState<React.ReactNode>('')
   // The failed-validation state is distinct from a generic error: the key IS on disk
   // (saved before the test), so every other surface already shows the provider as
-  // connected while chat turns would error against it. Offer removal right here —
-  // the modal used to have no way out except overwrite-by-retyping or finding
-  // Settings → API Keys.
+  // connected while chat turns would error against it. Offer removal right here.
   const [savedButRejected, setSavedButRejected] = useState(false)
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [showKeyHelp, setShowKeyHelp] = useState(false)
   // SEC-10: when safeStorage is unavailable the key persists as plaintext.
   // null = still checking; false = MUST confirm before save.
   const [encrypted, setEncrypted] = useState<boolean | null>(null)
+  const titleId = useId()
+  const inputId = useId()
+  const dialogRef = useRef<HTMLDivElement>(null)
+  // The element that opened the modal gets focus back when it closes.
+  const openerRef = useRef<HTMLElement | null>(null)
 
   const dismissible = !required && !!onDismiss
 
@@ -64,14 +72,16 @@ export function ApiKeyModal({ onComplete, onDismiss, defaultProvider, required =
         } else if (!defaultProvider) {
           // Auto-pick when the caller didn't scope a provider: prefer OpenAI (GPT) —
           // the most recognized default — over whatever happens to be first in the
-          // list (was landing on deepseek/zhipu). Falls back to the first key-less
-          // provider if OpenAI already has a key or isn't listed.
+          // list. Falls back to the first key-less provider if OpenAI already has a
+          // key or isn't listed.
           const openaiMissing = items.find((p) => p.id === 'openai' && !p.hasKey)
           const firstMissing = openaiMissing ?? items.find((p) => !p.hasKey)
           if (firstMissing) setSelected(firstMissing.id)
         }
       }
-      setEncrypted(enc.success ? Boolean(enc.data) : false)
+      // A failed check is "unknown", not a plaintext alarm: the confirm before a save
+      // (ensurePlaintextConsentIfNeeded) is what actually protects the write.
+      setEncrypted(enc.success ? Boolean(enc.data) : null)
     })()
   }, [defaultProvider, loadProviders])
 
@@ -83,8 +93,8 @@ export function ApiKeyModal({ onComplete, onDismiss, defaultProvider, required =
     })
   }, [loadProviders])
 
-  // Escape dismisses (when dismissible) — cold-start spec F2. The overlay click
-  // below is F3. `required` mounts keep both walls up.
+  // Escape dismisses (when dismissible). The global shortcut resolver stays out of it
+  // while a [role=dialog][aria-modal] is open, so Escape no longer also closes Settings.
   useEffect(() => {
     if (!dismissible) return
     const onKeyDown = (e: KeyboardEvent): void => {
@@ -94,6 +104,34 @@ export function ApiKeyModal({ onComplete, onDismiss, defaultProvider, required =
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [dismissible, onDismiss])
 
+  // Focus: remember the opener, and hand focus back to it on unmount.
+  useEffect(() => {
+    openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    return () => {
+      const opener = openerRef.current
+      if (opener && document.contains(opener)) opener.focus()
+    }
+  }, [])
+
+  // Focus trap: Tab and Shift+Tab cycle inside the dialog.
+  const trapTab = (e: React.KeyboardEvent<HTMLDivElement>): void => {
+    if (e.key !== 'Tab' || !dialogRef.current) return
+    const nodes = Array.from(dialogRef.current.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
+      (el) => el.offsetParent !== null || el === document.activeElement
+    )
+    if (nodes.length === 0) return
+    const first = nodes[0]
+    const last = nodes[nodes.length - 1]
+    const active = document.activeElement
+    if (e.shiftKey && (active === first || !dialogRef.current.contains(active))) {
+      e.preventDefault()
+      last.focus()
+    } else if (!e.shiftKey && active === last) {
+      e.preventDefault()
+      first.focus()
+    }
+  }
+
   const removeRejectedKey = async () => {
     try {
       await window.api.settings.deleteProviderKey(selected)
@@ -101,12 +139,17 @@ export function ApiKeyModal({ onComplete, onDismiss, defaultProvider, required =
       setError('')
       setKey('')
     } catch {
-      setError(t('Couldn’t remove the key — you can also delete it in Settings → API Keys.'))
+      setError(
+        <>
+          {t('Couldn’t remove the key. ')}
+          <SettingsLink tab="api">{t('Delete it under API Keys')}</SettingsLink>
+        </>
+      )
     }
   }
 
   const handleSubmit = async () => {
-    if (!key.trim()) return
+    if (!key.trim() || testing) return
     // SEC-10: shared consent gate. Confirms once per session when encryption
     // is unavailable and records consent in the main process so background
     // callers (mcp-manager token refresh, etc.) inherit the decision.
@@ -164,10 +207,9 @@ export function ApiKeyModal({ onComplete, onDismiss, defaultProvider, required =
   const docsUrl = featured?.docsUrl ?? advancedProvider?.docsUrl ?? ''
   const keyHint = featured?.keyHint ?? (selected === 'openai' || selected === 'deepseek' ? 'sk-…' : t('Paste your key'))
   const scoped = !!defaultProvider
-  // Zero-catalog providers (Advanced list: groq/mistral/github-models/deepinfra/
-  // openrouter) validate a key fine and then route NOTHING — "connected" with chat
-  // still unset-up, the exact cold-start dead end the Claude card shipped. Say it
-  // BEFORE the paste instead of letting the success state lie.
+  // Zero-catalog providers (groq/mistral/github-models/deepinfra/openrouter) validate a key
+  // fine and then route NOTHING — "connected" with chat still unset-up. Say it BEFORE the
+  // paste instead of letting the success state lie.
   const selectedUnroutable = advancedProvider ? advancedProvider.routable === false : false
 
   return (
@@ -177,7 +219,14 @@ export function ApiKeyModal({ onComplete, onDismiss, defaultProvider, required =
         if (dismissible && e.target === e.currentTarget) onDismiss?.()
       }}
     >
-      <div className="relative max-h-[90vh] w-[480px] overflow-y-auto rounded-lg border border-[var(--panel-border)] bg-[var(--bg-secondary)] p-6">
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        onKeyDown={trapTab}
+        className="relative max-h-[90vh] w-[480px] overflow-y-auto rounded-lg border border-[var(--panel-border)] bg-[var(--bg-secondary)] p-6"
+      >
         {!required && onDismiss && (
           <IconButton className="absolute right-3 top-3"
             onClick={onDismiss}
@@ -190,7 +239,7 @@ export function ApiKeyModal({ onComplete, onDismiss, defaultProvider, required =
             </svg>
           </IconButton>
         )}
-        <h2 className="text-[20px] font-semibold text-[var(--text-primary)]">
+        <h2 id={titleId} className="text-[20px] font-semibold text-[var(--text-primary)]">
           {scoped ? tf('Connect {name}', { name: displayName }) : tf('Connect an AI model to {name}', { name: PRODUCT_NAME })}
         </h2>
         <p className="mt-2 text-[12px] leading-relaxed text-[var(--text-secondary)]">
@@ -222,13 +271,16 @@ export function ApiKeyModal({ onComplete, onDismiss, defaultProvider, required =
 
         {/* Advanced: the full raw provider list (registry ids) — demoted, not on the
             default path. Lets power users pick any provider we route to. */}
-        <button
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-expanded={showAdvanced}
           onClick={() => setShowAdvanced((v) => !v)}
-          className="mt-3 flex items-center gap-1.5 text-[12px] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+          className="mt-3 px-0 text-[var(--text-muted)]"
         >
-          <span className={`transition-transform ${showAdvanced ? 'rotate-90' : ''}`}>▸</span>
+          <span className={`transition-transform ${showAdvanced ? 'rotate-90' : ''}`} aria-hidden>▸</span>
           {t('Advanced — all providers')}
-        </button>
+        </Button>
         {showAdvanced && (
           <label className="mt-2 block">
             <span className="text-[11px] uppercase tracking-wider text-[var(--text-muted)]">{t('Provider')}</span>
@@ -249,64 +301,72 @@ export function ApiKeyModal({ onComplete, onDismiss, defaultProvider, required =
 
         {selectedUnroutable && (
           <div className="mt-3 rounded border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-2 text-[12px] leading-relaxed text-[var(--text-secondary)]">
-            {tf('{name} has no built-in models in DUIN yet. Your key will be saved, but chat can’t use it until you add this service’s models in Settings → Models.', { name: displayName })}
+            {tf('{name} has no built-in models yet. Your key will be saved, but chat cannot use it until you import this service’s models.', { name: displayName })}{' '}
+            <SettingsLink tab="models">{t('Open Models')}</SettingsLink>
           </div>
         )}
 
         <div className="mt-4 flex items-center justify-between">
-          <span className="text-[12px] font-medium text-[var(--text-secondary)]">
+          <label htmlFor={inputId} className="text-[12px] font-medium text-[var(--text-secondary)]">
             {tf('Your {name} key', { name: displayName })}
-          </span>
-          <button
+          </label>
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-expanded={showKeyHelp}
             onClick={() => setShowKeyHelp((v) => !v)}
-            className="text-[11px] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+            className="text-[11px] text-[var(--text-muted)]"
           >
             {t('What’s a key?')}
-          </button>
+          </Button>
         </div>
         {showKeyHelp && (
           <p className="mt-1 rounded border border-[var(--panel-border)] bg-[var(--bg-primary)] p-2 text-[11px] leading-relaxed text-[var(--text-muted)]">
             {t('A key is a private password the service gives you so DUIN can use your account on your behalf. Creating a key is free — you only pay the provider for what you use. Use the “Get a key” link below — copy the key it shows and paste it here.')}
           </p>
         )}
-        <input
+        <Input
+          id={inputId}
           type="password"
+          autoComplete="off"
+          spellCheck={false}
           value={key}
           onChange={(e) => setKey(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && handleSubmit()}
+          onKeyDown={(e) => {
+            // Enter submits once; while a check is running it is ignored, not queued.
+            if (e.key === 'Enter' && !testing) {
+              e.preventDefault()
+              void handleSubmit()
+            }
+          }}
           placeholder={keyHint}
-          className="mt-1.5 w-full rounded border border-[var(--panel-border)] bg-[var(--bg-primary)] px-3 py-2 font-mono text-[14px] text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+          className="mt-1.5 px-3 py-2 font-mono text-[14px]"
           autoFocus
         />
 
         {docsUrl && (
           <a
             href={docsUrl}
-            onClick={(e) => {
-              e.preventDefault()
-              window.api?.artifact?.openExternal?.(docsUrl)
-            }}
+            target="_blank"
+            rel="noreferrer"
             className="mt-2 inline-block text-[12px] font-medium text-[var(--accent)] hover:underline"
           >
             {tf('Get a {name} key →', { name: displayName })}
           </a>
         )}
 
-        {error && <p className="mt-2 text-[12px] text-[var(--error)]">{error}</p>}
+        {error && <p role="alert" className="mt-2 text-[12px] text-[var(--error)]">{error}</p>}
         {savedButRejected && (
           <div className="mt-1.5 flex items-center gap-2 text-[12px]">
             <span className="text-[var(--text-muted)]">{t('The key was saved anyway.')}</span>
-            <button
-              onClick={() => void removeRejectedKey()}
-              className="font-medium text-[var(--accent)] hover:underline"
-            >
+            <Button variant="ghost" size="sm" onClick={() => void removeRejectedKey()} className="px-0 text-[var(--accent)]">
               {t('Remove it')}
-            </button>
+            </Button>
           </div>
         )}
 
         <Button
-          onClick={handleSubmit}
+          onClick={() => void handleSubmit()}
           variant="primary"
           size="lg"
           className="mt-4 w-full"
@@ -317,8 +377,8 @@ export function ApiKeyModal({ onComplete, onDismiss, defaultProvider, required =
 
         <p className="mt-3 text-[12px] text-[var(--text-muted)]">
           {encrypted === false
-            ? t('Your key is saved to a private file in DUIN’s app folder on this computer. Without secure storage available it’s stored as plain text. It’s only ever sent to that service to answer your questions.')
-            : t('Your key is encrypted by your operating system and stored on this computer. It’s only ever sent to that service to answer your questions.')}
+            ? t('Secure storage is not available on this computer, so the key is saved as plain text in DUIN’s app folder. It is sent only to that provider.')
+            : t('Stored encrypted on this computer and sent only to that provider.')}
         </p>
       </div>
     </div>

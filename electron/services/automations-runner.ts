@@ -32,6 +32,7 @@ import { matches, parseCron, type CronExpr } from './cron-expr'
 // writes and reads with, not a second copy that can drift.
 export { parseCron, describeCron, nextFireAfter } from './cron-expr'
 import { runHeadlessAgent } from './headless-agent'
+import { AUTO_ENGINE } from './providers/roles'
 import { channelDispatch, type ChannelRef } from './channel-dispatch'
 import { readSettings } from './settings-helper'
 import { boundedJsonPreview, recordEvent } from './event-log'
@@ -242,7 +243,12 @@ async function runOne(autoId: string): Promise<AutomationRunOutcome> {
     return { status: 'ok' }
   }
 
-  const model = a.model || 'deepseek-v4-flash'
+  // No pinned model is the AUTO_ENGINE sentinel, the same "no pin" a chat turn carries:
+  // the headless agent routes the `agentic` role through the operator's provider order at
+  // run time. This used to pin deepseek-v4-flash, which contradicted Settings → Models
+  // ("there is no default model") and failed every schedule for an operator without a
+  // DeepSeek key.
+  const model = a.model || AUTO_ENGINE
   // Per-run correlation id so the model.request.* events emitted from within
   // chatOnce join the automation.started/completed event-log row group. Each
   // run is its own logical "turn" — they do NOT share an id across cron firings.

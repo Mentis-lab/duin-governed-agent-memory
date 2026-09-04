@@ -100,7 +100,7 @@ stood on. If the notes do not cover the question, DUIN says so instead of guessi
 
 - **Chat** is the home surface. The model picker offers **DUIN brain** (grounded in your notes)
   and any provider models you connected.
-- **Brain** shows the graph: a 2D map and an orbitable 3D field. Click a node to see its
+- **Brain** shows the graph as a map you can pan and zoom. Click a node to see its
   relations and launch a chat scoped to it. The **Explorer** lists what the brain holds, tiered
   into Memory and Concepts.
 - **Customize** holds skills, methods, connectors (MCP servers) and plugins. Bundled skills

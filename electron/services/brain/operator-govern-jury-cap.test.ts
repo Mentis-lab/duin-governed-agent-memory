@@ -16,6 +16,12 @@ vi.mock('../providers/registry', () => ({
   routeModel: () => 'test-model',
   routeDistinctModel: () => null,
   routeDistinctModels: () => [],
+  // P0 (W4): MIN_JURY_ANSWERS (2) — two jurors, both answered by the chatOnce double above, so
+  // the reply-parsing assertions below measure the parser and not the quorum.
+  resolveJury: () => [
+    { task: 'jury', modelId: 'jury-a', provider: 'prov-a', chain: ['jury-a'], source: 'policy' },
+    { task: 'jury', modelId: 'jury-b', provider: 'prov-b', chain: ['jury-b'], source: 'policy' }
+  ],
   getProviderForModel: () => 'test-provider'
 }))
 vi.mock('./operator-model', async (orig) => {

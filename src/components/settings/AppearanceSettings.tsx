@@ -1,240 +1,248 @@
-﻿import { useSettingsStore } from '@/stores/settings-store'
-import { t } from '@/lib/i18n'
+import { useSettingsStore } from '@/stores/settings-store'
+import { t, tf } from '@/lib/i18n'
+import { cn } from '@/duin/lib/utils'
 import { THEME_PRESETS } from '@/styles/theme-presets'
-import type { ThemePreset } from '@/lib/types'
-import { BRAIN_GRAPH_SCHEMES } from '@/duin/lib/graph-schemes'
+import type { ThemePresetId } from '@/lib/types'
+import { BRAIN_GRAPH_SCHEMES, type BrainGraphSchemeId } from '@/duin/lib/graph-schemes'
+import { SettingsPage, SettingsSection, SettingsRow } from '@/components/ui/settings'
+import { flashWhenSaved, useSavedFlash } from '@/components/ui/settings/useSavedFlash'
 
-// Base font-size (px) presets. 14 = 100% UI scale; applied via Electron native page
-// zoom (webFrame.setZoomFactor) so the WHOLE interface scales — chrome, sidebar, panels,
-// and content alike (see applyFontScale in styles/apply-theme).
-const FONT_SIZE_OPTIONS: ReadonlyArray<{ label: string; px: number }> = [
-  { label: 'S', px: 12 },
-  { label: 'M', px: 14 },
-  { label: 'L', px: 16 },
-  { label: 'XL', px: 18 },
-  { label: 'XXL', px: 20 }
-]
-
-// Chat transcript reading size (px), applied as the `--chat-font-size` CSS var that
-// markdown.css's `.chat-md` and the composer both read.
+// The three text sizes share one step list but are three different settings:
 //
-// This is NOT the control above. That one is page zoom, so it scales chrome and content
-// together and cannot change how large the transcript reads RELATIVE to its own menus —
-// which is precisely what people mean when they say the chat text is too small. The var
-// existed but was a hardcoded constant with no writer, so nothing could move it.
-const CHAT_FONT_SIZE_OPTIONS: ReadonlyArray<{ label: string; px: number }> = [
+//   fontSize     — base size (px); 14 = 100%. Applied as Electron page zoom
+//                  (webFrame.setZoomFactor), so the WHOLE interface scales.
+//   chatFontSize — the transcript only, via the `--chat-font-size` CSS var
+//                  (markdown.css `.chat-md` + the composer). Page zoom cannot change
+//                  how large the transcript reads RELATIVE to its own menus, which is
+//                  what people mean when they say the chat text is too small.
+//   docFontSize  — a document being READ, via `--doc-font-size` (`.doc-md`: the note
+//                  read view, a note in its own window, the Library reader, the
+//                  artifact markdown viewer). Runs one size larger than chat by
+//                  default: a document is read, not scanned.
+const SIZE_OPTIONS: ReadonlyArray<{ label: string; px: number }> = [
   { label: 'S', px: 12 },
   { label: 'M', px: 14 },
   { label: 'L', px: 16 },
   { label: 'XL', px: 18 },
   { label: 'XXL', px: 20 }
 ]
+
+// What each colour preset looks like, in the operator's words. `preset.source` is
+// provenance ("ArcGIS Blue 3") and is not user copy.
+const PRESET_DESCRIPTION: Record<ThemePresetId, () => string> = {
+  'duin-warm': () => t('Warm paper with a clay accent'),
+  'arcgis-blue': () => t('Cool blue'),
+  'lamprey-mint': () => t('Forest green with a mint accent'),
+  'lamprey-default': () => t('Blue on black')
+}
+
+const SCHEME_DESCRIPTION: Record<BrainGraphSchemeId, () => string> = {
+  default: () => t('The original DUIN palette'),
+  aurora: () => t('Blue, purple and teal'),
+  ember: () => t('Red, orange and amber'),
+  mono: () => t('Grayscale, minimal')
+}
+
+interface Choice<V extends string | number> {
+  value: V
+  label: string
+  title?: string
+}
+
+/** A single-choice setting as a segmented control on the right of its row. Auto-applies. */
+function SegmentedRow<V extends string | number>({
+  label,
+  hint,
+  value,
+  options,
+  onChange
+}: {
+  label: string
+  hint?: React.ReactNode
+  value: V
+  options: ReadonlyArray<Choice<V>>
+  onChange: (next: V) => Promise<boolean | void> | boolean | void
+}): React.ReactElement {
+  const { saved, flash } = useSavedFlash()
+  return (
+    <SettingsRow
+      label={label}
+      hint={hint}
+      saved={saved}
+      control={
+        <div
+          role="radiogroup"
+          aria-label={label}
+          className="inline-flex overflow-hidden rounded-md border border-[var(--panel-border)]"
+        >
+          {options.map((opt) => {
+            const active = opt.value === value
+            return (
+              <button
+                key={String(opt.value)}
+                type="button"
+                role="radio"
+                aria-checked={active}
+                title={opt.title}
+                onClick={() => {
+                  if (!active) flashWhenSaved(onChange(opt.value), flash)
+                }}
+                className={cn(
+                  'px-3 py-1.5 text-[12px] transition-colors',
+                  active
+                    ? 'bg-[var(--accent)] text-[var(--on-accent)]'
+                    : 'bg-[var(--bg-primary)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]'
+                )}
+              >
+                {opt.label}
+              </button>
+            )
+          })}
+        </div>
+      }
+    />
+  )
+}
+
+/** One palette card: name, plain description, swatch row. */
+function PaletteCard({
+  name,
+  description,
+  swatch,
+  active,
+  onSelect
+}: {
+  name: string
+  description: string
+  swatch: string[]
+  active: boolean
+  onSelect: () => void
+}): React.ReactElement {
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={active}
+      onClick={onSelect}
+      className={cn(
+        'flex flex-col items-stretch gap-2 rounded-lg border bg-[var(--bg-primary)] p-3 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]',
+        active ? 'border-[var(--accent)] ring-1 ring-[var(--accent)]' : 'border-[var(--panel-border)] hover:bg-[var(--bg-tertiary)]'
+      )}
+    >
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="truncate text-[12px] font-medium text-[var(--text-primary)]">{name}</span>
+        {active && (
+          <span className="rounded bg-[var(--accent)]/10 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-[var(--accent)]">
+            {t('Active')}
+          </span>
+        )}
+      </div>
+      <span className="text-[12px] text-[var(--text-muted)]">{description}</span>
+      <div className="flex items-center gap-1" aria-hidden>
+        {swatch.map((color, idx) => (
+          <span
+            key={`${name}-${idx}`}
+            className="block h-4 w-4 rounded-full border border-[var(--panel-border)]"
+            style={{ backgroundColor: color }}
+          />
+        ))}
+      </div>
+    </button>
+  )
+}
+
+const sizeChoices = (title: (px: number) => string): Choice<number>[] =>
+  SIZE_OPTIONS.map((opt) => ({ value: opt.px, label: opt.label, title: title(opt.px) }))
 
 export function AppearanceSettings() {
   const settings = useSettingsStore((s) => s.settings)
   const updateSettings = useSettingsStore((s) => s.updateSettings)
+  const presetFlash = useSavedFlash()
+  const schemeFlash = useSavedFlash()
 
-  const handleSelect = async (preset: ThemePreset) => {
-    if (settings.themePreset === preset.id) return
-    await updateSettings({ themePreset: preset.id })
-  }
-
-  const isDark = settings.themeMode === 'dark'
+  const mode: 'light' | 'dark' = settings.themeMode === 'dark' ? 'dark' : 'light'
+  const activeScheme = settings.brainGraphScheme ?? 'default'
 
   return (
-    <div className="space-y-4">
-      <div>
-        <h3 className="font-mono text-[16px] font-semibold text-[var(--text-primary)]">{t('Appearance')}</h3>
-        <p className="mt-1 text-[12px] leading-relaxed text-[var(--text-muted)]">
-          Color presets affect interface tokens only. Layout and accessibility structure remain
-          unchanged.
-        </p>
-      </div>
-
-      <div>
-        <div className="mb-2 text-[12px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
-          {t('Mode')}
-        </div>
-        <div className="inline-flex overflow-hidden rounded-md border border-[var(--panel-border)]">
-          <button
-            onClick={() => updateSettings({ themeMode: 'light' })}
-            aria-pressed={!isDark}
-            className={`px-3 py-1.5 text-[12px] transition-colors ${
-              !isDark
-                ? 'bg-[var(--accent)] text-white'
-                : 'bg-[var(--bg-primary)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]'
-            }`}
-          >
-            {t('Light')}
-          </button>
-          <button
-            onClick={() => updateSettings({ themeMode: 'dark' })}
-            aria-pressed={isDark}
-            className={`px-3 py-1.5 text-[12px] transition-colors ${
-              isDark
-                ? 'bg-[var(--accent)] text-white'
-                : 'bg-[var(--bg-primary)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]'
-            }`}
-          >
-            {t('Dark')}
-          </button>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-2 gap-3">
-        {THEME_PRESETS.map((preset) => {
-          const active = settings.themePreset === preset.id
-          return (
-            <button
-              key={preset.id}
-              onClick={() => handleSelect(preset)}
-              aria-pressed={active}
-              className={`flex flex-col items-stretch gap-2 rounded border bg-[var(--bg-primary)] p-3 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
-                active
-                  ? 'border-[var(--accent)] ring-1 ring-[var(--accent)]'
-                  : 'border-[var(--panel-border)] hover:bg-[var(--bg-tertiary)]'
-              }`}
-            >
-              <div className="flex items-baseline justify-between gap-2">
-                <span className="truncate font-mono text-[12px] font-medium text-[var(--text-primary)]">
-                  {preset.name}
-                </span>
-                {active && (
-                  <span className="rounded bg-[var(--accent-dim)] px-1.5 py-0.5 text-[12px] uppercase tracking-wider text-[var(--accent)]">
-                    {t('Active')}
-                  </span>
-                )}
-              </div>
-              <span className="text-[12px] text-[var(--text-muted)]">{preset.source}</span>
-              <div className="flex items-center gap-1">
-                {preset.swatch.map((color, idx) => (
-                  <span
-                    key={`${preset.id}-${idx}`}
-                    title={color}
-                    className="block h-4 w-4 rounded-full border border-black/40"
-                    style={{ backgroundColor: color }}
-                  />
-                ))}
-              </div>
-            </button>
-          )
-        })}
-      </div>
-
-      <div>
-        <div className="mb-2 text-[12px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
-          {t('Font size')}
-        </div>
-        <p className="mb-2 text-[12px] leading-relaxed text-[var(--text-muted)]">
-          {t('Scales the entire interface — menu, sidebar, and panels included.')}
-        </p>
-        <div className="inline-flex overflow-hidden rounded-md border border-[var(--panel-border)]">
-          {FONT_SIZE_OPTIONS.map((opt) => {
-            const active = (settings.fontSize ?? 14) === opt.px
-            return (
-              <button
-                key={opt.px}
-                onClick={() => {
-                  if (!active) updateSettings({ fontSize: opt.px })
+    <SettingsPage purpose={t('Colours, light or dark, and text sizes.')}>
+      <SettingsSection label={t('Colours')}>
+        <SegmentedRow
+          label={t('Mode')}
+          value={mode}
+          options={[
+            { value: 'light', label: t('Light') },
+            { value: 'dark', label: t('Dark') }
+          ]}
+          onChange={(next) => updateSettings({ themeMode: next })}
+        />
+        <SettingsRow label={t('Colour preset')} saved={presetFlash.saved}>
+          <div role="radiogroup" aria-label={t('Colour preset')} className="grid grid-cols-2 gap-3">
+            {THEME_PRESETS.map((preset) => (
+              <PaletteCard
+                key={preset.id}
+                name={t(preset.name)}
+                description={PRESET_DESCRIPTION[preset.id]?.() ?? ''}
+                swatch={preset.swatch}
+                active={settings.themePreset === preset.id}
+                onSelect={() => {
+                  if (settings.themePreset === preset.id) return
+                  flashWhenSaved(updateSettings({ themePreset: preset.id }), presetFlash.flash)
                 }}
-                aria-pressed={active}
-                title={`${opt.px}px base`}
-                className={`px-3 py-1.5 text-[12px] transition-colors ${
-                  active
-                    ? 'bg-[var(--accent)] text-white'
-                    : 'bg-[var(--bg-primary)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]'
-                }`}
-              >
-                {opt.label}
-              </button>
-            )
-          })}
-        </div>
-      </div>
+              />
+            ))}
+          </div>
+        </SettingsRow>
+      </SettingsSection>
 
-      <div>
-        <div className="mb-2 text-[12px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
-          {t('Chat text size')}
-        </div>
-        <p className="mb-2 text-[12px] leading-relaxed text-[var(--text-muted)]">
-          Sizes the conversation only — what you type, what streams back, and the stored
-          reply, all at one size.
-        </p>
-        <div className="inline-flex overflow-hidden rounded-md border border-[var(--panel-border)]">
-          {CHAT_FONT_SIZE_OPTIONS.map((opt) => {
-            const active = (settings.chatFontSize ?? 12) === opt.px
-            return (
-              <button
-                key={opt.px}
-                onClick={() => {
-                  if (!active) updateSettings({ chatFontSize: opt.px })
-                }}
-                aria-pressed={active}
-                title={`${opt.px}px transcript`}
-                className={`px-3 py-1.5 text-[12px] transition-colors ${
-                  active
-                    ? 'bg-[var(--accent)] text-white'
-                    : 'bg-[var(--bg-primary)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]'
-                }`}
-              >
-                {opt.label}
-              </button>
-            )
-          })}
-        </div>
-      </div>
+      <SettingsSection label={t('Text size')}>
+        <SegmentedRow
+          label={t('Font size')}
+          hint={t('Scales the entire interface — menu, sidebar, and panels included.')}
+          value={settings.fontSize ?? 14}
+          options={sizeChoices((px) => tf('{px}px base', { px }))}
+          onChange={(px) => updateSettings({ fontSize: px })}
+        />
+        <SegmentedRow
+          label={t('Chat text size')}
+          hint={t('Sizes the conversation only: what you type, what streams back, and the stored reply, all at one size.')}
+          value={settings.chatFontSize ?? 12}
+          options={sizeChoices((px) => tf('{px}px chat text', { px }))}
+          onChange={(px) => updateSettings({ chatFontSize: px })}
+        />
+        <SegmentedRow
+          label={t('Document text size')}
+          hint={t(
+            'Sizes documents you read — a note, a note in its own window, a Library document, an artifact. Headings, code and tables scale with it.'
+          )}
+          value={settings.docFontSize ?? 16}
+          options={sizeChoices((px) => tf('{px}px document text', { px }))}
+          onChange={(px) => updateSettings({ docFontSize: px })}
+        />
+      </SettingsSection>
 
-      <div>
-        <div className="mb-1 text-[12px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
-          {t('Brain graph')}
-        </div>
-        <p className="mb-2 text-[12px] leading-relaxed text-[var(--text-muted)]">
-          Color scheme for the home brain graph. Recolors node + link palette
-          live; layout is unchanged.
-        </p>
-        <div className="grid grid-cols-2 gap-3">
-          {BRAIN_GRAPH_SCHEMES.map((scheme) => {
-            const active = (settings.brainGraphScheme ?? 'default') === scheme.id
-            return (
-              <button
+      <SettingsSection label={t('Brain graph')}>
+        <SettingsRow
+          label={t('Graph colours')}
+          hint={t('The colour scheme of the brain graph on Home. Nodes and links recolour live; the layout does not change.')}
+          saved={schemeFlash.saved}
+        >
+          <div role="radiogroup" aria-label={t('Graph colours')} className="grid grid-cols-2 gap-3">
+            {BRAIN_GRAPH_SCHEMES.map((scheme) => (
+              <PaletteCard
                 key={scheme.id}
-                onClick={() => {
-                  if (active) return
-                  updateSettings({ brainGraphScheme: scheme.id })
+                name={t(scheme.name)}
+                description={SCHEME_DESCRIPTION[scheme.id]?.() ?? ''}
+                swatch={scheme.swatch}
+                active={activeScheme === scheme.id}
+                onSelect={() => {
+                  if (activeScheme === scheme.id) return
+                  flashWhenSaved(updateSettings({ brainGraphScheme: scheme.id }), schemeFlash.flash)
                 }}
-                aria-pressed={active}
-                className={`flex flex-col items-stretch gap-2 rounded border bg-[var(--bg-primary)] p-3 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
-                  active
-                    ? 'border-[var(--accent)] ring-1 ring-[var(--accent)]'
-                    : 'border-[var(--panel-border)] hover:bg-[var(--bg-tertiary)]'
-                }`}
-              >
-                <div className="flex items-baseline justify-between gap-2">
-                  <span className="truncate font-mono text-[12px] font-medium text-[var(--text-primary)]">
-                    {scheme.name}
-                  </span>
-                  {active && (
-                    <span className="rounded bg-[var(--accent-dim)] px-1.5 py-0.5 text-[12px] uppercase tracking-wider text-[var(--accent)]">
-                      {t('Active')}
-                    </span>
-                  )}
-                </div>
-                <span className="text-[12px] text-[var(--text-muted)]">{scheme.source}</span>
-                <div className="flex items-center gap-1">
-                  {scheme.swatch.map((color, idx) => (
-                    <span
-                      key={`${scheme.id}-${idx}`}
-                      title={color}
-                      className="block h-4 w-4 rounded-full border border-black/40"
-                      style={{ backgroundColor: color }}
-                    />
-                  ))}
-                </div>
-              </button>
-            )
-          })}
-        </div>
-      </div>
-    </div>
+              />
+            ))}
+          </div>
+        </SettingsRow>
+      </SettingsSection>
+    </SettingsPage>
   )
 }

@@ -1,13 +1,19 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeAll } from 'vitest'
 
 // The pane imports ipc-client, which reads `window.api` at module scope. This env is
 // node-only (no jsdom), so the import alone would throw before a single assertion runs.
 // Only the pure helpers below are under test; the IPC surface is exercised by
 // electron/services/event-log-policy-usage-node.test.ts on the other side of the wire.
-vi.mock('@/lib/ipc-client', () => ({ query: vi.fn() }))
+vi.mock('@/lib/ipc-client', () => ({ query: vi.fn(), invoke: vi.fn() }))
 
+import { setUiLanguage } from '@/lib/i18n'
 import { buildUsageIndex, formatUsage } from './PermissionsSettings'
 import type { PolicyUsage } from '@/lib/types'
+
+// The helpers render through t()/tf() now, and Node 21+ exposes navigator.language, so the
+// dictionary resolves the OS locale even under vitest. These assertions are about the
+// English source strings, so pin the language rather than the machine.
+beforeAll(() => setUiLanguage('en'))
 
 // The Permissions pane's activity line — what a standing grant has decided on its own.
 // Node-only helpers, no jsdom render, per the ChannelsSettings.test.tsx convention.

@@ -1,18 +1,34 @@
-import { describe, it, expect } from 'vitest'
-import { ago, byLiveliness, grantSummary, planeCopy, quotaPatchFromForm, usageLine, GRANTABLE, DEFAULT_GRANT } from './AgentsSettings'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { setUiLanguage } from '@/lib/i18n'
 
-// The Agents pane — the operator's side of the Brain API membrane. Renderer render tests need
-// jsdom, which this repo's node-only vitest env does not provide, so the pane's decisions live
-// in pure exported helpers and are unit-tested here (same convention as ChannelsSettings.test).
-//
-// Why this pane exists at all: executive:pairings:approve and its five siblings were registered
-// in main and bound in preload, with ZERO renderer callers. The pairing notice told the operator
-// to approve in "Connected Agents", a screen that had never been built, so the only way to admit
-// an agent was to call approvePairing() by hand.
+// The pane reads through query() and writes through invoke(), and ipc-client reads
+// `window.api` at module scope. This env is node-only (no jsdom), so the import alone
+// would throw before a single assertion runs. Only the pure helpers below are under test
+// (same guard as PermissionsSettings.test.tsx).
+vi.mock('@/lib/ipc-client', () => ({ query: vi.fn(), invoke: vi.fn() }))
+
+import {
+  ago,
+  byLiveliness,
+  grantSummary,
+  planeCopy,
+  principalStatusLabel,
+  quotaPatchFromForm,
+  usageLine,
+  GRANTABLE,
+  DEFAULT_GRANT
+} from './AgentsSettings'
+
+// The Agents pane — the operator's side of the Brain API. Renderer render tests need jsdom,
+// which this repo's node-only vitest env does not provide, so the pane's decisions live in
+// pure exported helpers and are unit-tested here (same convention as ChannelsSettings.test).
 //
 // The load-bearing assertion here is BLANK-vs-ZERO on the budget fields. They are opposite
 // intentions — "use the default" and "let it do nothing" — and the natural Number('') === 0
 // collapses them, silently banning an agent the moment someone clears a field.
+
+// Pinned so a translated dictionary cannot silently move an assertion.
+beforeEach(() => setUiLanguage('en'))
 
 /** Unwrap a result the test expects to be valid, so the assertions below read as intent. */
 function ok(r: ReturnType<typeof quotaPatchFromForm>): { callsPerHour: number; charsPerHour: number } | null {
@@ -85,6 +101,21 @@ describe('byLiveliness — the roster does not decay into dead rows', () => {
       { status: 'active' as const, id: 'second' }
     ]
     expect(rows.slice().sort(byLiveliness).map((r) => r.id)).toEqual(['first', 'second'])
+  })
+})
+
+describe('principalStatusLabel — the stored enum never reaches the row', () => {
+  const ALL = ['active', 'paused', 'revoked'] as const
+
+  it('gives every status a word and never echoes the raw value', () => {
+    for (const s of ALL) {
+      expect(principalStatusLabel(s).trim(), s).not.toBe('')
+      expect(principalStatusLabel(s), s).not.toBe(s)
+    }
+  })
+
+  it('keeps the three distinct', () => {
+    expect(new Set(ALL.map(principalStatusLabel)).size).toBe(ALL.length)
   })
 })
 

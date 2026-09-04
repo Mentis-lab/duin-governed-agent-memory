@@ -7,7 +7,7 @@ import { brainAssetsDir } from '../brain-paths'
 import { withPhase } from '../main-stall-monitor'
 import { tombstoneToTrash } from './vault-trash'
 import { saveVaultDoc } from './doc-save'
-import { readFileSync, existsSync } from 'fs'
+import { readFileSync, existsSync, statSync } from 'fs'
 import { join } from 'path'
 import { reindex, isReindexing, search, indexedCount, embedForRecall } from './index-store'
 import { runRetrievalProbes, type RetrievalProbe, type SearchFn } from './retrieval-probe'
@@ -17,8 +17,11 @@ import {
   auditConstants
 } from '../brain/calibration-registry'
 import { sweepRetrievalConfig, sweepWithHoldout } from './retrieval-search'
-import { isNodeLive, retireNode } from '../brain/entity-graph-store'
+import { isNodeLive, retireNode, nodeTimestamps } from '../brain/entity-graph-store'
 import { recordNodeTombstone } from '../brain/node-tombstones'
+import { recordNodeLabel } from '../brain/node-labels'
+import { createFolder, createNote, moveNote, renameFolder, renameNote } from './vault-organize'
+import { invalidateBrainGraphCache } from './brain-graph-cache'
 import {
   clampRetrievalTunables,
   readRetrievalTunables,
@@ -37,7 +40,7 @@ import { getConstruction, applyConstruction } from '../brain/construct'
 import { revealForSource } from '../brain/reveal-service'
 import type { GraphFrame, EdgeSource } from '../brain/reveal-frames'
 import { applyEdgeJudgment, applyMergeJudgment } from '../brain/edge-judgment'
-import { computeAliasCandidatesReport } from '../brain/entity-resolver'
+import { computeAliasCandidatesReport, activeAliasGroups } from '../brain/entity-resolver'
 import { buildBrainGraph } from '../brain/brain-graph-native'
 import { runSelfImproveBench } from '../brain/self-improve-bench'
 import { registerCapability } from '../ans/capability-ledger'
@@ -141,7 +144,10 @@ import { generateForecasts } from '../brain/forecast-generator'
 import { logForecastsToLedger } from '../brain/forecast-ledger'
 import type { CausalGraph } from '../brain/types'
 import { runPropagate, getInsights, getDecisionLoop, buildBrain } from '../brain'
-import { chatOnce, routeModel } from '../providers/registry'
+import { chatOnce, routeModel, getProviderForModel } from '../providers/registry'
+import { readLogTail, mainLogStatus, MAX_TAIL_LINES } from '../main-log'
+import { buildCostLedger, parseCostWindow } from '../cost-ledger'
+import { readRecentTurns } from './agui-journal'
 import { buildOperatorBlock, pruneCandidatesFromStore, buildGovernAudit, efficacySummary, recordBoundRule, recordFacts, listByStatus, autoPromoteCandidates } from '../brain/operator-model'
 import { contrastPair, contrastiveAbstraction, type ContrastChat, type CorrectionTraceLike } from '../brain/contrast-extraction'
 import { runTransferAB, makeTransferDeps, DEFAULT_TRANSFER_QUERIES } from '../brain/transfer-ab'
@@ -152,6 +158,10 @@ import { loadNamedSkills, appendNamedSkill } from '../brain/named-skill-store'
 import { turnBeatsEnabled, turnBeatReport } from './turn-beats'
 import { handleDecision, handleInsightVerdict, handleProjectCreate, handleTrackAdd, handleTrackAssign, handleStreamUpdate, handleStreamSync, handleWorldUpdate, handleFutureAct, handlePredictionFeedback, handleAnchorDismiss, handleTaskBind, handleMeetingAction, handleMakeDecision, handleDecisionMeta, handleResolveNode, handleTaskAction, handleTaskMove, handleForecastVerdict, handleLogForecast, handleLearnCorrection } from './brain-state-routes'
 import { messageOf } from '../guarded'
+import { loadAliasOverlay } from '../brain/operator-alias-overlay'
+import { assembleEntityCard, type CardGraphLink, type CardGraphNode } from '../brain/entity-card'
+import { enrichEntity, enrichDisabled, pickEnrichModel } from '../brain/entity-enrich'
+import { cachedBrainGraph } from './brain-native-routes'
 
 // /debug/brain-health TTL cache — the computation is a measured 2.16s main-thread stall.
 const BRAIN_HEALTH_TTL_MS = 5 * 60_000
@@ -1301,6 +1311,152 @@ export function handleRequestNativeImpl2(req: IncomingMessage, res: ServerRespon
     return
   }
 
+  // ── Entity card ─────────────────────────────────────────────────────────────────────
+  // Everything the brain already knows about ONE derived entity, joined in entity-card.ts from
+  // the construction cache (triples by raw label), the claim ledger (by canonical id), alias
+  // groups + the operator overlay, the served graph (typed relations, mentions) and the notes
+  // (one sentence per source). `enrich=1` also runs the model pass (entity-enrich.ts): a short
+  // grounded prompt per entity, local model first, persisted per material hash.
+  if (method === 'GET' && url.split('?')[0] === '/state/entity') {
+    void (async () => {
+      try {
+        const q = new URL(url, `http://${HOST}`).searchParams
+        const id = (q.get('id') ?? '').trim()
+        const vault = (readSettings().localBrainNotesDir as string) || ''
+        if (!id || !vault) {
+          res.writeHead(400, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: id ? 'no brain folder' : 'id is required' }))
+          return
+        }
+        const graph = JSON.parse(cachedBrainGraph(vault).json) as { nodes: CardGraphNode[]; links: CardGraphLink[] }
+        const readNote = (rel: string): string | null => {
+          const abs = docAbspath(rel)
+          if (!abs || !existsSync(abs)) return null
+          try {
+            if (statSync(abs).size > 512 * 1024) return null
+            return readFileSync(abs, 'utf-8')
+          } catch {
+            return null
+          }
+        }
+        const card = assembleEntityCard({
+          id,
+          graph,
+          construction: getConstruction(),
+          claims: loadLedger(vault),
+          aliasGroups: activeAliasGroups(),
+          overlay: loadAliasOverlay(vault),
+          readNote,
+          timestamps: nodeTimestamps(id)
+        })
+        if (!card) {
+          res.writeHead(404, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: 'no such entity' }))
+          return
+        }
+        const enrichAvailable = !enrichDisabled() && !!pickEnrichModel()
+        // Without enrich=1 only a stored, still-matching description is returned (no model call).
+        card.enrichment = await enrichEntity(vault, card, q.get('enrich') === '1' ? { force: q.get('force') === '1' } : { model: null })
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ card, enrichAvailable }))
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: (err as Error)?.message ?? 'entity card error' }))
+      }
+    })()
+    return
+  }
+
+
+  // ORGANIZE THE VAULT BY HAND — rename / move a note, rename / create a folder, create a note,
+  // name a derived entity. The Explorer had edit and delete and nothing between: no way to
+  // rename a note without breaking every [[link]] to it, no way to move one, no way to correct
+  // the extractor's name for an entity. vault-organize.ts owns the file side (vault-confined,
+  // no clobber, links rewritten, prior bytes preserved to .trash, every act journalled);
+  // node-labels.ts owns the entity side (an append-only ledger the served graph applies after
+  // its build pipeline). Each route re-indexes through the same path the watcher uses, so the
+  // graph, the index and every Brain surface follow the change without a manual rebuild.
+  const ORGANIZE_ROUTES: Record<string, string> = {
+    '/state/organize/rename-note': 'rename-note',
+    '/state/organize/move-note': 'move-note',
+    '/state/organize/rename-folder': 'rename-folder',
+    '/state/organize/create-folder': 'create-folder',
+    '/state/organize/create-note': 'create-note',
+    '/state/organize/label-node': 'label-node'
+  }
+  const organizeOp = method === 'POST' ? ORGANIZE_ROUTES[url.split('?')[0]] : undefined
+  if (organizeOp) {
+    void (async () => {
+      try {
+        const body = await readBody(req)
+        const parsed = JSON.parse(body || '{}') as Record<string, unknown>
+        const str = (k: string): string => (typeof parsed[k] === 'string' ? (parsed[k] as string) : '')
+        const vaultDir = (readSettings().localBrainNotesDir as string) || ''
+        if (!vaultDir) {
+          res.writeHead(400, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ok: false, error: 'no brain folder is set' }))
+          return
+        }
+        const actor = 'ui:organize'
+        const op = organizeOp
+        type OrganizeRouteResult = { ok: boolean; error?: string; path?: string }
+        let result: OrganizeRouteResult
+        let touched: string | undefined
+        switch (op) {
+          case 'rename-note':
+            result = renameNote(vaultDir, str('path'), str('newName'), { actor, updateLinks: parsed.updateLinks !== false })
+            touched = result.ok ? join(vaultDir, String(result.path)) : undefined
+            break
+          case 'move-note':
+            result = moveNote(vaultDir, str('path'), str('toFolder'), { actor })
+            touched = result.ok ? join(vaultDir, String(result.path)) : undefined
+            break
+          case 'rename-folder':
+            result = renameFolder(vaultDir, str('path'), str('newName'), { actor })
+            break
+          case 'create-folder':
+            result = createFolder(vaultDir, str('path'), { actor })
+            break
+          case 'create-note':
+            result = createNote(vaultDir, str('folder'), str('name'), { actor })
+            touched = result.ok ? join(vaultDir, String(result.path)) : undefined
+            break
+          case 'label-node': {
+            const id = str('id').trim()
+            if (!id) {
+              result = { ok: false, error: 'id required' }
+              break
+            }
+            const ok = recordNodeLabel(vaultDir, id, str('label'))
+            result = ok ? ({ ok: true, id, label: str('label').trim() } as OrganizeRouteResult) : { ok: false, error: 'could not write the label ledger' }
+            if (ok) {
+              invalidateBrainGraphCache()
+              for (const w of BrowserWindow.getAllWindows()) {
+                if (!w.isDestroyed()) w.webContents.send('brain:updated', { count: -1 })
+              }
+            }
+            break
+          }
+          default:
+            result = { ok: false, error: `unknown organize op: ${op}` }
+        }
+        if (result.ok && op !== 'label-node') {
+          // Same path a chokidar event takes: debounced reindex, vault-version bump, then the
+          // gated extraction/construction tail. The watcher will also see the rename, so this
+          // only makes the change visible sooner, never twice.
+          scheduleReindex(vaultDir, touched)
+          invalidateBrainGraphCache()
+        }
+        res.writeHead(result.ok ? 200 : 400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify(result))
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: false, error: (err as Error)?.message ?? 'organize failed' }))
+      }
+    })()
+    return
+  }
+
   if (method === 'GET' && url.startsWith('/state/doc')) {
     try {
       const rel = new URL(url, `http://${HOST}`).searchParams.get('path') ?? ''
@@ -1420,6 +1576,68 @@ export function handleRequestNativeImpl2(req: IncomingMessage, res: ServerRespon
       res.writeHead(500, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: (err as Error).message }))
     }
+    return
+  }
+
+  // Main-process log tail — the always-on warn-level sink main-log.ts keeps at
+  // <userData>/logs/main.log (wired from debug-trace.ts). The instance evaluated on 2026-09-02
+  // had no main-process log at all (L7 F3); this is how a stall warning, a breaker line or a
+  // provider error becomes readable without a terminal. Token-gated (control-plane-policy:
+  // the log can name files, models and error text — more than a tokenless probe should get).
+  // `?n=` lines (default 200, capped at MAX_TAIL_LINES). Publishes the sink's own limits.
+  if (method === 'GET' && url.split('?')[0] === '/debug/log-tail') {
+    try {
+      const raw = Number(new URLSearchParams(url.split('?')[1] ?? '').get('n'))
+      const n = Number.isFinite(raw) && raw > 0 ? Math.min(MAX_TAIL_LINES, Math.floor(raw)) : 200
+      const lines = readLogTail(n) // flushes the buffer first, so the status below is current
+      const status = mainLogStatus()
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(
+        JSON.stringify(
+          {
+            lines,
+            n,
+            limits: { maxLines: MAX_TAIL_LINES, ...status }
+          },
+          null,
+          2
+        )
+      )
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: (err as Error)?.message ?? 'log-tail error' }))
+    }
+    return
+  }
+
+  // Cost ledger — spend per role and per provider over `?window=24h|7d` (cost-ledger.ts):
+  // model.request.completed payloads (background roles) plus the turn journal's TURN_END.costUsd
+  // (chat turns, whose streaming calls emit no spine event). Says `estimated: true` whenever a
+  // fallback price or a historically redacted counter is involved, and publishes its window,
+  // sources and caps. Token-gated like the log tail. Async: the journal reader is.
+  if (method === 'GET' && url.split('?')[0] === '/debug/cost') {
+    void (async () => {
+      try {
+        const window = parseCostWindow(new URLSearchParams(url.split('?')[1] ?? '').get('window'))
+        const turns = await readRecentTurns(500)
+        const ledger = buildCostLedger({
+          window,
+          journalTurns: turns.map((t) => ({ at: t.at, model: t.model, end: t.end })),
+          providerOf: (id) => {
+            try {
+              return getProviderForModel(id)
+            } catch {
+              return 'unknown'
+            }
+          }
+        })
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify(ledger, null, 2))
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: (err as Error)?.message ?? 'cost ledger error' }))
+      }
+    })()
     return
   }
 

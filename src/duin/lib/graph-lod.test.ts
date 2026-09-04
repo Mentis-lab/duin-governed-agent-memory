@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { cullForLod, idOf, type LodNode, type LodLink, focusNeighbourhood, DEFAULT_FAN_OUT } from './graph-lod'
-import { positionalStrength, POSITIONAL_FROM_CENTER } from './graph-layout-forces'
+import { cullForLod, idOf, type LodNode, type LodLink, focusNeighbourhood, DEFAULT_FAN_OUT, budgetBySalience } from './graph-lod'
 
 const BULK = new Set(['mentions', 'synonym'])
 /** Only `core` is structural in these fixtures; everything else earns its place by degree. */
@@ -170,18 +169,8 @@ describe('cullForLod', () => {
   })
 })
 
-describe('positionalStrength', () => {
-  it('scales centre strength into the range d3 positional forces live in', () => {
-    expect(positionalStrength(0.5)).toBeCloseTo(0.5 * POSITIONAL_FROM_CENTER)
-    expect(positionalStrength(1)).toBeLessThanOrEqual(0.1)
-    expect(positionalStrength(0.05)).toBeGreaterThan(0)
-  })
-
-  it('is monotonic, so the slider never inverts', () => {
-    expect(positionalStrength(1)).toBeGreaterThan(positionalStrength(0.5))
-    expect(positionalStrength(0.5)).toBeGreaterThan(positionalStrength(0.05))
-  })
-})
+// The centre-force mapping (slider → forceX/forceY strength) is tested where it lives now:
+// graph-layout-forces.test.ts.
 
 // ── focus neighbourhood ───────────────────────────────────────────────────────────
 //
@@ -311,5 +300,58 @@ describe('focusNeighbourhood — every hop lights more, and no hop floods throug
     for (let i = 0; i < DEFAULT_FAN_OUT; i++) edges.push(['hub', `n${i}`])
     const lit = focusNeighbourhood('a', graphOf(edges), { depth: 2 })
     expect(lit.size).toBe(2 + DEFAULT_FAN_OUT)
+  })
+})
+
+describe('budgetBySalience — a fixed number on screen, the skeleton first, then the most salient', () => {
+  const sal = (n: LodNode): number => Number(n.s ?? 0)
+  const isCore = (n: LodNode): boolean => n.kind === 'core'
+  const sn = (id: string, s: number, kind = 'note'): LodNode => ({ id, kind, s })
+
+  it('is a no-op at or under the budget', () => {
+    const nodes = [sn('a', 1), sn('b', 2)]
+    const links = [l('a', 'b')]
+    const r = budgetBySalience(nodes, links, { budget: 2, isRoleKept: isCore, salienceOf: sal })
+    expect(r.nodes).toBe(nodes)
+    expect(r.links).toBe(links)
+  })
+
+  it('keeps the skeleton even when it alone exceeds the budget', () => {
+    const nodes = [sn('c1', 0, 'core'), sn('c2', 0, 'core'), sn('c3', 0, 'core'), sn('x', 99)]
+    const r = budgetBySalience(nodes, [], { budget: 2, isRoleKept: isCore, salienceOf: sal })
+    expect(r.nodes.map((n) => n.id).sort()).toEqual(['c1', 'c2', 'c3'])
+  })
+
+  it('spends the remainder on the most salient, deterministically', () => {
+    const nodes = [sn('core', 0, 'core'), sn('low', 1), sn('mid', 5), sn('high', 9), sn('tie1', 5)]
+    const r = budgetBySalience(nodes, [], { budget: 3, isRoleKept: isCore, salienceOf: sal })
+    // core + high + (mid vs tie1 at 5: id order → mid)
+    expect(r.nodes.map((n) => n.id).sort()).toEqual(['core', 'high', 'mid'])
+  })
+
+  it('rescues a kept node whose neighbours all fell under the budget, via its most salient neighbour', () => {
+    const nodes = [sn('core', 0, 'core'), sn('hub', 9), sn('leafA', 1), sn('leafB', 2)]
+    const links = [l('hub', 'leafA'), l('hub', 'leafB')]
+    // budget 2 → core + hub; hub would float → its most salient neighbour (leafB) comes back with the edge
+    const r = budgetBySalience(nodes, links, { budget: 2, isRoleKept: isCore, salienceOf: sal })
+    expect(r.nodes.map((n) => n.id).sort()).toEqual(['core', 'hub', 'leafB'])
+    expect(r.links).toEqual([l('hub', 'leafB')])
+  })
+
+  it('the invariant: every survivor with a neighbour in the source graph keeps at least one', () => {
+    const nodes = [sn('core', 0, 'core'), sn('hub', 9), sn('leafA', 1), sn('leafB', 2), sn('far', 5)]
+    const links = [l('hub', 'leafA'), l('hub', 'leafB'), l('core', 'leafA'), l('far', 'leafB')]
+    const r = budgetBySalience(nodes, links, { budget: 2, isRoleKept: isCore, salienceOf: sal })
+    const d = degrees(r)
+    const hasNeighbour = new Set(links.flatMap((x) => [idOf(x.source), idOf(x.target)]))
+    for (const node of r.nodes) if (hasNeighbour.has(node.id)) expect(d.get(node.id) || 0).toBeGreaterThan(0)
+  })
+
+  it('emits only links whose endpoints both survived', () => {
+    const nodes = [sn('a', 9), sn('b', 8), sn('c', 1), sn('d', 0)]
+    const links = [l('a', 'b'), l('c', 'd')]
+    const r = budgetBySalience(nodes, links, { budget: 2, isRoleKept: isCore, salienceOf: sal })
+    expect(r.nodes.map((n) => n.id).sort()).toEqual(['a', 'b'])
+    expect(r.links).toEqual([l('a', 'b')])
   })
 })

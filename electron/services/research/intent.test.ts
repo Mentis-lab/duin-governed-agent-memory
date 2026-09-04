@@ -14,7 +14,9 @@ vi.mock('../providers/registry', () => ({
   chatOnce: async () => {
     throw new Error('chatOnce called without test override')
   },
-  resolveModel: () => ({ contextWindow: 128_000 })
+  resolveModel: () => ({ contextWindow: 128_000 }),
+  // The extraction role as the policy would resolve it; tests inject callLlm and ignore the id.
+  routeModel: () => 'mock-model'
 }))
 
 import {

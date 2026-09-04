@@ -26,7 +26,8 @@ import {
   resetExtractionBreaker
 } from '../services/brain'
 import type { DecisionOutcome } from '../services/brain'
-import { buildGraphReportCached, buildCommunityAssignmentsCached, buildGraphSnapshot } from '../services/brain/graph-insight'
+import { buildGraphReportCached, buildMapCommunityAssignmentsCached, buildGraphSnapshot } from '../services/brain/graph-insight'
+import { cachedBrainGraph } from '../services/local-brain/brain-native-routes'
 import { recordGraphHistory } from '../services/brain/graph-history-store'
 import { liveEntityEgoGraph } from '../services/brain/entity-ego'
 import {
@@ -55,6 +56,19 @@ import { DEFAULT_APP_SETTINGS } from '../services/default-app-settings'
 import { friendly, messageOf } from '../services/guarded'
 import { recordEvent } from '../services/event-log'
 import { readSettingsFile, writeSettingsFile } from '../services/settings-file'
+import { readSettings as readPersistedSettings } from '../services/settings-helper'
+import { guardSettingsPartial, type SettingsRejection } from '../services/settings-schema'
+import {
+  applySettingsBundle,
+  buildSettingsBundle,
+  listCorruptSidecars,
+  parseSettingsBundle,
+  resetSettingsFile
+} from '../services/settings-bundle'
+import { atomicWriteFileSync } from '../services/atomic-write'
+import { resolveOperatorWritePaths } from '../services/sandbox/operator-write-paths'
+import { recordNotice } from '../services/proactive/notices-store'
+import { readFileSync } from 'fs'
 import {
   grantTrustedDirectory,
   hasTrustedDirectoryGrant
@@ -90,7 +104,12 @@ function readSettings() {
   // 'absent' and 'corrupt' both yield bare defaults so the app still runs, but
   // they are no longer indistinguishable on the WRITE side: writeSettings
   // side-cars a corrupt file instead of persisting these defaults over it.
-  return { ...defaultSettings, ...readSettingsFile(getSettingsPath()).data }
+  //
+  // Through settings-helper, not readSettingsFile directly: the helper owns the one-time
+  // provider-policy migration, and this reader used to bypass it, so a file still carrying
+  // defaultModel / backgroundModel / brainEngine read differently depending on which
+  // module asked first (settings evaluation D7).
+  return { ...defaultSettings, ...readPersistedSettings() }
 }
 
 function writeSettings(settings: Record<string, unknown>): void {
@@ -178,6 +197,33 @@ async function probeBrain(endpoint: string): Promise<{ ok: boolean; detail: stri
 // carries this file's former single-flight + breaker-reset + kept-cache/model-error honesty.
 
 export function registerSettingsHandlers(): void {
+  // A settings.json that is present but unreadable boots the app on defaults, which looks
+  // exactly like a fresh install: the vault path is gone and onboarding comes back. Say so
+  // where the operator looks (Home → Needs you) instead of on a console nobody reads. The
+  // check is deferred so the notices store has loaded from disk before this row is added.
+  const corruptCheck = setTimeout(() => {
+    try {
+      const path = getSettingsPath()
+      if (readSettingsFile(path).state !== 'corrupt') return
+      const sidecars = listCorruptSidecars(app.getPath('userData'))
+      recordNotice({
+        kind: 'watch',
+        severity: 'error',
+        title: 'Your settings file could not be read',
+        body:
+          'DUIN started with default settings, so your brain folder and preferences look missing. ' +
+          (sidecars.length > 0
+            ? `The unreadable file is kept at ${sidecars[0]}; restore it by hand or import a settings export.`
+            : `The file at ${path} could not be parsed; import a settings export or set things up again.`),
+        deepLink: 'duin://settings/persistence',
+        dedupKey: 'settings-file-corrupt'
+      })
+    } catch (err) {
+      console.debug('[settings] corrupt-file notice skipped:', messageOf(err))
+    }
+  }, 10_000)
+  corruptCheck.unref?.()
+
   ipcMain.handle('brain:testConnection', async (_event, endpoint: unknown) => {
     try {
       const ep = typeof endpoint === 'string' ? endpoint.trim() : ''
@@ -1103,7 +1149,10 @@ export function registerSettingsHandlers(): void {
   // contract and reason as brain:graphReport above.
   ipcMain.handle('brain:graphCommunities', async () => {
     try {
-      return { success: true, data: buildCommunityAssignmentsCached() }
+      // On the MAP graph (the one the colours are painted on), with typed weights: see
+      // mapCommunityAssignments. The map JSON is the same cached bytes /state/brain-graph serves.
+      const vault = (readSettings().localBrainNotesDir as string) || ''
+      return { success: true, data: buildMapCommunityAssignmentsCached(() => cachedBrainGraph(vault).json) }
     } catch (err) {
       return { success: false, error: friendly(err, 'graph communities failed') }
     }
@@ -1214,6 +1263,73 @@ export function registerSettingsHandlers(): void {
     }
   })
 
+  // Whether settings.json was actually read, and where a torn one was moved aside. A
+  // corrupt file used to boot the app on defaults with success:true, which looks exactly
+  // like a fresh install (settings evaluation D6).
+  ipcMain.handle('settings:fileState', async () => {
+    try {
+      const path = getSettingsPath()
+      return {
+        success: true,
+        data: { state: readSettingsFile(path).state, path, sidecars: listCorruptSidecars(app.getPath('userData')) }
+      }
+    } catch (err) {
+      return { success: false, error: messageOf(err) }
+    }
+  })
+
+  // Portability (settings evaluation D4): the four plain-JSON configuration files travel as
+  // one document; keys are re-entered by design (safeStorage is bound to the OS user).
+  ipcMain.handle('settings:exportBundle', async () => {
+    try {
+      const win = BrowserWindow.getAllWindows()[0]
+      const stamp = new Date().toISOString().slice(0, 10)
+      const opts = {
+        title: 'Export DUIN settings',
+        defaultPath: join(app.getPath('documents'), `DUIN-settings-${stamp}.json`),
+        filters: [{ name: 'JSON', extensions: ['json'] }]
+      }
+      const dlg = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts)
+      if (dlg.canceled || !dlg.filePath) return { success: true, data: { cancelled: true } }
+      const bundle = buildSettingsBundle(app.getPath('userData'), app.getVersion())
+      atomicWriteFileSync(dlg.filePath, JSON.stringify(bundle, null, 2))
+      return { success: true, data: { cancelled: false, path: dlg.filePath, files: Object.keys(bundle.files) } }
+    } catch (err) {
+      return { success: false, error: friendly(err, 'Could not export settings') }
+    }
+  })
+
+  ipcMain.handle('settings:importBundle', async () => {
+    try {
+      const win = BrowserWindow.getAllWindows()[0]
+      const opts = {
+        title: 'Import DUIN settings',
+        properties: ['openFile' as const],
+        filters: [{ name: 'JSON', extensions: ['json'] }]
+      }
+      const dlg = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
+      if (dlg.canceled || dlg.filePaths.length === 0) return { success: true, data: { cancelled: true } }
+      const bundle = parseSettingsBundle(readFileSync(dlg.filePaths[0], 'utf-8'))
+      const before = readSettings()
+      const result = applySettingsBundle(app.getPath('userData'), bundle)
+      emitSettingsUpdated(before, readSettings(), { importedFrom: dlg.filePaths[0] })
+      return { success: true, data: { cancelled: false, ...result } }
+    } catch (err) {
+      return { success: false, error: friendly(err, 'Could not import settings') }
+    }
+  })
+
+  ipcMain.handle('settings:resetToDefaults', async () => {
+    try {
+      const before = readSettings()
+      const result = resetSettingsFile(app.getPath('userData'))
+      emitSettingsUpdated(before, readSettings(), { reset: true })
+      return { success: true, data: result }
+    } catch (err) {
+      return { success: false, error: friendly(err, 'Could not reset settings') }
+    }
+  })
+
   ipcMain.handle('settings:set', (_event, partial, options?: unknown) => {
     const ensureBrainReady =
       options !== null &&
@@ -1222,7 +1338,9 @@ export function registerSettingsHandlers(): void {
     if (ensureBrainReady) {
       return enqueueBrainVaultMutation(async () => {
         try {
-          const safePartial = sanitizeSettingsPartial(partial)
+          const checked = guardSettingsPartial(sanitizeSettingsPartial(partial))
+          if (checked.rejected.length > 0) return refusedSettingsWrite(checked.rejected)
+          const safePartial = checked.accepted
           const current = readSettings()
           assertTrustedRootChanges(safePartial, current)
           // No first-run replacement exists any more: the demo vault (the one replaceable
@@ -1237,7 +1355,9 @@ export function registerSettingsHandlers(): void {
     }
     return enqueueBrainVaultMutation(async () => {
       try {
-      const safePartial = sanitizeSettingsPartial(partial)
+      const checked = guardSettingsPartial(sanitizeSettingsPartial(partial))
+      if (checked.rejected.length > 0) return refusedSettingsWrite(checked.rejected)
+      const safePartial = checked.accepted
       const current = readSettings()
       assertTrustedRootChanges(safePartial, current)
       const updated = { ...current, ...safePartial }
@@ -1290,6 +1410,10 @@ export function registerSettingsHandlers(): void {
       })()
       keychain.setKey(provider, String(key))
       resetProviderClient(provider)
+      // P0 model plane: a saved key is the moment to learn whether the ACCOUNT answers (health is
+      // a completion, not a key check). One probe, off the handler's path; the result reaches the
+      // renderer via model:health-changed. Lane A's granted cross-lane edit (SESSION-LANES p0-router).
+      void import('../services/providers/provider-health').then((h) => h.refreshProviderHealth(provider)).catch(() => {})
       // Release M11 — CONSENT, recorded. Every surface that takes a key (ApiKeyModal, Settings →
       // API keys, onboarding's provider cards → the modal) shows the disclosure line first:
       // "DUIN sends that provider your current question plus relevant excerpts and
@@ -1352,6 +1476,8 @@ export function registerSettingsHandlers(): void {
       if (!isProvider(provider)) return { success: false, error: `Unknown provider: ${provider}` }
       keychain.deleteKey(provider)
       resetProviderClient(provider)
+      // P0 model plane: recompute health without a call (the row becomes `no-key`) and push it.
+      void import('../services/providers/provider-health').then((h) => h.refreshProviderHealth(provider)).catch(() => {})
       return { success: true, data: null }
     } catch (err) {
       return { success: false, error: messageOf(err) }
@@ -1574,6 +1700,14 @@ const POLLUTION_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
  * unknown keys here — that's the responsibility of the schema layer in
  * `defaultSettings`. We only block dangerous keys.
  */
+/** A refused write names every key and why, so the caller can show it and the log can
+ *  find it; nothing is silently dropped or partially written. */
+function refusedSettingsWrite(rejected: SettingsRejection[]): { success: false; error: string } {
+  const error = `Settings write refused: ${rejected.map((r) => r.reason).join('; ')}`
+  console.warn('[settings]', error)
+  return { success: false, error }
+}
+
 function sanitizeSettingsPartial(raw: unknown): Record<string, unknown> {
   const cleaned = stripPollutionKeys(raw)
   if (
@@ -1615,6 +1749,16 @@ function assertTrustedRootChanges(
       )
     ) {
       throw new Error('sandboxWritePaths additions must come from the native folder picker')
+    }
+    // The sandbox skips the home folder and machine roots when it READS the list
+    // (operator-write-paths.ts); refusing them here keeps the list on screen honest,
+    // instead of showing a folder the sandbox never honours.
+    const added = next.filter((value) => !previous.includes(value))
+    const unusable = added.filter((value) => resolveOperatorWritePaths([value]).length === 0)
+    if (unusable.length > 0) {
+      throw new Error(
+        `Your home folder and system folders cannot be added (${unusable.join(', ')}); choose a folder inside them.`
+      )
     }
   }
 }

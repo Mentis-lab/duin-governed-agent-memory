@@ -195,12 +195,15 @@ function aggregate(g: WGraph, dense: number[], count: number): WGraph {
   return { adj, self, k, m2: g.m2 }
 }
 
+/** Per-edge weight for community detection; 0 or less drops the edge entirely. */
+export type EdgeWeight = (e: { type: string }) => number
+
 /**
  * Detect communities with multi-level Louvain. Returns a community id per node id
- * (dense, stable). Edges are treated as undirected, unit-weighted. With no edges
- * every node is its own community.
+ * (dense, stable). Edges are treated as undirected; unit-weighted unless `weightOf`
+ * says otherwise (see mapEdgeWeight). With no edges every node is its own community.
  */
-export function detectCommunities(graph: CausalGraph): Map<string, number> {
+export function detectCommunities(graph: CausalGraph, weightOf?: EdgeWeight): Map<string, number> {
   const ids = graph.nodes.map((n) => n.id)
   const index = new Map(ids.map((id, i) => [id, i]))
   const N = ids.length
@@ -210,9 +213,11 @@ export function detectCommunities(graph: CausalGraph): Map<string, number> {
     const a = index.get(e.source)
     const b = index.get(e.target)
     if (a === undefined || b === undefined || a === b) continue
-    adj[a].set(b, (adj[a].get(b) ?? 0) + 1)
-    adj[b].set(a, (adj[b].get(a) ?? 0) + 1)
-    m2 += 2
+    const w = weightOf ? weightOf(e) : 1
+    if (!(w > 0)) continue
+    adj[a].set(b, (adj[a].get(b) ?? 0) + w)
+    adj[b].set(a, (adj[b].get(a) ?? 0) + w)
+    m2 += 2 * w
   }
   if (m2 === 0 || N === 0) {
     return new Map(ids.map((id, i) => [id, i]))
@@ -273,6 +278,16 @@ export function communityColor(index: number): string {
 }
 const ISOLATED_COLOR = '#64748b'
 
+/** FNV-1a over the string's code units: a stable, order-free seed for a cluster's palette slot. */
+function stableHash(s: string): number {
+  let h = 2166136261
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i)
+    h = Math.imul(h, 16777619)
+  }
+  return h >>> 0
+}
+
 function shortLabel(label: string): string {
   const t = (label ?? '').trim()
   return t.length > 60 ? t.slice(0, 57) + '…' : t || '(untitled)'
@@ -305,9 +320,9 @@ function wikiTargetOf(id: string): string {
  * Analyse a structural graph into a GraphInsight. Pure + deterministic.
  * Pass a graph (e.g. for tests); the tool-pack passes deriveGraph().
  */
-export function analyzeGraph(graph: CausalGraph): GraphInsight {
+export function analyzeGraph(graph: CausalGraph, weightOf?: EdgeWeight): GraphInsight {
   const nodeById = new Map<string, GNode>(graph.nodes.map((n) => [n.id, n]))
-  const comm = detectCommunities(graph)
+  const comm = detectCommunities(graph, weightOf)
   const deg = degrees(graph)
 
   // Group node ids by community.
@@ -365,10 +380,22 @@ export function analyzeGraph(graph: CausalGraph): GraphInsight {
     seenLabels.set(c.label, n)
     if (n > 1) c.label = `${c.label} #${c.id}`
   }
-  // Assign a stable, distinct color per cluster by its sorted index.
-  communities.forEach((c, i) => {
-    c.color = communityColor(i)
-  })
+  // Color by a STABLE key, not by size rank. Rank-indexed colors swapped between two clusters
+  // whenever a vault edit reordered their sizes, and with sixteen palette entries under a
+  // thirty-row legend, clusters 17..30 wore the same colors as 1..14 in the same list. Each
+  // cluster's color is now seeded by its top hub (the most durable thing about a community; its
+  // label derives from it too), the palette is walked from that seed to the first slot still
+  // free, and only the sixteen largest are colored at all. Everything smaller keeps the isolated
+  // slate, so the legend never shows two clusters in one color, and a color moves between
+  // refreshes only if the cluster's own hub changed.
+  const taken = new Set<number>()
+  for (const c of communities) {
+    if (taken.size >= COMMUNITY_PALETTE.length) { c.color = ISOLATED_COLOR; continue }
+    let slot = stableHash(c.topNodes[0]?.id ?? c.label) % COMMUNITY_PALETTE.length
+    while (taken.has(slot)) slot = (slot + 1) % COMMUNITY_PALETTE.length
+    taken.add(slot)
+    c.color = communityColor(slot)
+  }
 
   // High-degree hubs across the whole field.
   const highDegree = [...deg.entries()]
@@ -637,9 +664,58 @@ export function communityAssignments(graph: CausalGraph): NodeCommunity[] {
   })
 }
 
-/** Convenience: per-node community assignment for the LIVE graph. */
+/** Convenience: per-node community assignment for the LIVE causal graph. */
 export function buildCommunityAssignments(): NodeCommunity[] {
   return communityAssignments(mergedGraph())
+}
+
+// ──────────────────── communities on the MAP graph ────────────────────
+//
+// The Clusters lens used to run Louvain on the 15k-node causal graph with 34k unit-weight
+// `mentions` edges, not on the ~6k-node map the operator looks at. Partitions were shaped by
+// nodes that never render and by vocabulary co-occurrence; product nodes and folder hubs could
+// never take a colour (they only exist on the map); cluster isolation always dropped them. The
+// map graph is the graph the colours are painted on, and the weights say what a relation is
+// worth: a link the operator typed counts fully, an inferred relation most of the way, a bare
+// mention a little, folder containment a little (so folders cohere without every cluster
+// simply BEING a folder), a synonym nothing at all.
+
+/** Type → weight for the map graph. Unknown (inferred) relations count 0.7. */
+export function mapEdgeWeight(type: string | undefined): number {
+  switch (type) {
+    case 'wiki': case 'wikilink': case 'link': case 'refs': return 1
+    case 'has_kr': case 'builds_toward': case 'guides': return 0.8
+    case 'in': case 'contains': case 'anchors': case 'indexes': case 'domain': return 0.15
+    case 'mentions': return 0.2
+    case 'loose': return 0.1
+    case 'synonym': return 0
+    default: return 0.7
+  }
+}
+const mapWeight: EdgeWeight = (e) => mapEdgeWeight(e.type)
+
+/** The map as the graph the renderer draws it: nodes with kind/label, typed links. */
+export interface MapGraphLike {
+  nodes: Array<{ id: string; label?: unknown; kind?: unknown }>
+  links: Array<{ source: string; target: string; type?: string }>
+}
+
+/** Per-node community assignment computed ON THE MAP with typed weights. Pure. */
+export function mapCommunityAssignments(map: MapGraphLike): NodeCommunity[] {
+  const graph = {
+    nodes: map.nodes.map((n) => ({ id: n.id, label: String(n.label ?? n.id), kind: String(n.kind ?? 'note') })),
+    edges: map.links.map((l) => ({ source: l.source, target: l.target, type: String(l.type ?? 'link') }))
+  } as unknown as CausalGraph
+  const comm = detectCommunities(graph, mapWeight)
+  const insight = analyzeGraph(graph, mapWeight)
+  const meta = new Map<number, { label: string; color: string }>(
+    insight.communities.map((c) => [c.id, { label: c.label, color: c.color }])
+  )
+  return graph.nodes.map((n) => {
+    const cid = comm.get(n.id) ?? -1
+    const m = meta.get(cid)
+    return { id: n.id, community: cid, label: m?.label ?? 'isolated', color: m?.color ?? ISOLATED_COLOR }
+  })
 }
 
 // ──────────────────── SWR-cached variants (the IPC handlers' entry) ────────────────────
@@ -687,6 +763,14 @@ export function buildGraphReportCached(): { insight: GraphInsight; markdown: str
 /** buildCommunityAssignments behind the same stale-while-revalidate contract. */
 export function buildCommunityAssignmentsCached(): NodeCommunity[] {
   const r = _communitiesCache.get(graphInsightKey(), () => JSON.stringify(buildCommunityAssignments()))
+  return JSON.parse(r.json) as NodeCommunity[]
+}
+
+/** Communities on the MAP graph (mapCommunityAssignments), cached like the rest. The map's
+ *  JSON comes from the caller (the brain-graph cache lives in the route layer), so this module
+ *  never imports the routes. */
+export function buildMapCommunityAssignmentsCached(mapJson: () => string): NodeCommunity[] {
+  const r = _communitiesCache.get(`map:${graphInsightKey()}`, () => JSON.stringify(mapCommunityAssignments(JSON.parse(mapJson()) as MapGraphLike)))
   return JSON.parse(r.json) as NodeCommunity[]
 }
 

@@ -10,7 +10,12 @@ vi.mock('../providers/registry', () => ({
   // One distinct family IS available. A one-model panel keeps the provenance string bare, so these
   // assertions read the same as they did before the jury became a panel.
   routeDistinctModels: () => ['distinct-jury-model'],
-  getProviderForModel: (m: string) => (m === 'extractor-model' ? 'deepseek' : 'google'),
+  // P0 (W4): a verdict needs MIN_JURY_ANSWERS (2) answering jurors; seat two distinct families.
+  resolveJury: () => [
+    { task: 'jury', modelId: 'distinct-jury-model', provider: 'google', chain: ['distinct-jury-model'], source: 'policy' },
+    { task: 'jury', modelId: 'distinct-jury-model-2', provider: 'xai', chain: ['distinct-jury-model-2'], source: 'policy' }
+  ],
+  getProviderForModel: (m: string) => (m === 'extractor-model' ? 'deepseek' : m === 'distinct-jury-model' ? 'google' : 'xai'),
   chatOnce: async () => ({ content: replyContent })
 }))
 
@@ -20,9 +25,10 @@ const prov = (id: string, fact: string): OperatorFact => ({ id, fact, kind: 'val
 describe('defaultGovernJury — cross-model independence (items 4/15)', () => {
   it('routes to a distinct family and stamps crossModel:true with provenance', async () => {
     const r = await defaultGovernJury([prov('a', 'Truth over comfort')])
-    expect(r.juryModelId).toBe('distinct-jury-model')
-    expect(r.juryProvider).toBe('google')
-    expect(r.crossModel).toBe(true) // deepseek extractor vs google jury = genuinely independent
+    expect(r.juryModelId).toBe('distinct-jury-model+distinct-jury-model-2')
+    expect(r.juryProvider).toBe('google+xai')
+    expect(r.crossModel).toBe(true) // deepseek extractor vs google/xai jury = genuinely independent
+    expect(r.jury).toBe(2)
     expect(r.pass!.has('a')).toBe(true)
   })
 })

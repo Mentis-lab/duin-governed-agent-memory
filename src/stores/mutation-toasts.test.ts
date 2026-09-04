@@ -43,23 +43,38 @@ describe('activity-store.stopAgent — Stop on a runaway agent', () => {
   })
 })
 
-describe('model-store.setActiveModel — the picker showing a model that is not active', () => {
-  it('ROLLS BACK the optimistic switch when the write fails', async () => {
+describe('model-store.setPolicy — the Providers pane showing an order main did not accept', () => {
+  it('ROLLS BACK the optimistic policy when the write fails', async () => {
     vi.stubGlobal('window', {
-      api: { model: { setActive: async () => ({ success: false, error: 'unknown model' }) } }
+      api: {
+        model: {
+          policySet: async () => ({ success: false, error: 'unknown provider' }),
+          resolve: async () => ({ success: true, data: null })
+        }
+      }
     })
     const { useModelStore } = await import('./model-store')
-    const before = useModelStore.getState().activeModel
-    await useModelStore.getState().setActiveModel('nope-9')
-    expect(useModelStore.getState().activeModel).toBe(before)
-    expect(shown[0]).toEqual({ type: 'error', message: 'set active model: unknown model' })
+    useModelStore.setState({ policy: { order: ['deepseek'] } })
+    const ok = await useModelStore.getState().setPolicy({ order: ['zhipu', 'deepseek'] })
+    expect(ok).toBe(false)
+    expect(useModelStore.getState().policy).toEqual({ order: ['deepseek'] })
+    expect(shown[0]).toEqual({ type: 'error', message: "Couldn't save the provider policy: unknown provider" })
   })
 
-  it('keeps the switch when the write lands', async () => {
-    vi.stubGlobal('window', { api: { model: { setActive: async () => ({ success: true }) } } })
+  it('keeps the policy main returns when the write lands', async () => {
+    vi.stubGlobal('window', {
+      api: {
+        model: {
+          policySet: async (p: { order: string[] }) => ({ success: true, data: { order: p.order, roles: {} } }),
+          resolve: async () => ({ success: true, data: null })
+        }
+      }
+    })
     const { useModelStore } = await import('./model-store')
-    await useModelStore.getState().setActiveModel('deepseek-v4-pro')
-    expect(useModelStore.getState().activeModel).toBe('deepseek-v4-pro')
+    useModelStore.setState({ policy: { order: ['deepseek'] } })
+    const ok = await useModelStore.getState().setPolicy({ order: ['zhipu', 'deepseek'] })
+    expect(ok).toBe(true)
+    expect(useModelStore.getState().policy).toEqual({ order: ['zhipu', 'deepseek'], roles: {} })
     expect(shown).toEqual([])
   })
 })

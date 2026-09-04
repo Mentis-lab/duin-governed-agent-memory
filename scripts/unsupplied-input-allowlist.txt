@@ -88,7 +88,6 @@ electron/services/workflow-runner.ts::WorkflowRunnerDeps.genId
 electron/services/workspace-context-tool.ts::WorkspaceContextDeps.getActiveContract
 electron/services/workspace-context-tool.ts::WorkspaceContextDeps.getPolicy
 electron/services/workspace-context-tool.ts::WorkspaceContextDeps.listReceipts
-electron/shared/env-number.ts::EnvNumberOptions.integer
 
 # -- caller-intent options nothing on the production path supplies --
 electron/ipc/conversation.ts::ForkParams.seedBlobJson

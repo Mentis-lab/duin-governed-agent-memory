@@ -13,6 +13,7 @@ import { WorkflowPalette } from '@/components/workflows/WorkflowPalette'
 import { GlobalSearchPalette } from '@/components/brain/GlobalSearchPalette'
 import { WorktreeManagerModal } from '@/components/worktree/WorktreeManagerModal'
 import { OnboardingFlow } from '@/components/onboarding/OnboardingFlow'
+import { NoBrainFolderBanner } from '@/components/onboarding/NoBrainFolderBanner'
 import { isOnboarded, loadSeed } from '@/lib/brain-seed'
 import { SettingsDialog } from '@/components/settings/SettingsDialog'
 import { CustomizeView } from '@/components/customize/CustomizeView'
@@ -474,6 +475,9 @@ function App(): React.ReactElement {
         <Sidebar />
 
         <div className="flex min-w-0 flex-1 flex-col">
+          {/* "Skip for now" must not be a dead end: while no brain folder is set, the way back
+              into first-run setup sits with the other banners. */}
+          <NoBrainFolderBanner hidden={showOnboarding} onSetUp={() => setShowOnboarding(true)} />
           <IntegrityBanner />
           <ReasoningOffBanner />
           <SecurityBanner />

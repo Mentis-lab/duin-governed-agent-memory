@@ -1,4 +1,14 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
+
+// The return reason is localized through main-i18n, which resolves 'auto' against the OS locale.
+// These assertions are about WHICH reason wins, in English — pin the localizer to identity so a
+// zh/ja machine does not turn them into translation assertions.
+vi.mock('../main-i18n', () => ({
+  mt: (text: string) => text,
+  mtf: (template: string, params: Record<string, string | number>) =>
+    template.replace(/\{(\w+)\}/g, (m, name) => (name in params ? String(params[name]) : m))
+}))
+
 import { buildHomeDigest, featureOf, type HomeDigestInput } from './home-digest'
 import type { CausalGraph, CalibrationReport, Insight } from './types'
 

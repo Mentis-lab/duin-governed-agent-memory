@@ -5,6 +5,7 @@ import {
   resetStallsForTest,
   startMainStallMonitor,
   instrumentIpcMain,
+  instrumentIntervals,
   withPhase,
   currentPhase,
   _resetPhases
@@ -155,5 +156,95 @@ describe('phase attribution', () => {
   it('closes the phase even when the wrapped work throws', async () => {
     await expect(withPhase('boom', async () => { throw new Error('x') })).rejects.toThrow('x')
     expect(currentPhase()).toBeNull()
+  })
+})
+
+// ── instrumentIntervals ──────────────────────────────────────────────────────────
+//
+// What this guards: 'unattributed' was 41.4s across 29 samples in four minutes of a
+// live session — an order of magnitude past any named scope — and while idle it
+// recurred every 40-46s. A fixed idle period is a timer, and there are ~28 setInterval
+// sites in main across services owned by different lanes. Naming them at the one wrap
+// site is the same trade instrumentIpcMain makes for 381 handlers.
+//
+// POWER CONTROL: drop the withScope wrap in the patched setInterval and
+// "records a slow tick under the timer's call site" fails.
+describe('instrumentIntervals', () => {
+  it('records a slow tick, named for the call site, not as unattributed', () => {
+    const host = { setInterval: ((fn: () => void) => fn) as unknown as typeof setInterval }
+    const restore = instrumentIntervals(host)
+    // The patched setInterval returns whatever the original did — here, the callback,
+    // so the test can invoke one tick synchronously without a real timer.
+    const tick = host.setInterval(() => undefined, 1000) as unknown as () => void
+
+    const spy = vi.spyOn(Date, 'now')
+    spy.mockReturnValueOnce(1000) // scope start
+    spy.mockReturnValueOnce(1400) // lastAttributedAt stamp
+    spy.mockReturnValueOnce(1400) // scope end
+    tick()
+    spy.mockRestore()
+    restore()
+
+    const { stalls } = getStalls()
+    expect(stalls.length).toBe(1)
+    expect(stalls[0].scope.startsWith('timer:'), stalls[0].scope).toBe(true)
+    expect(stalls[0].scope, 'the name must locate the timer, not just say "a timer"')
+      .toMatch(/^timer:.+\.(ts|js):\d+$/)
+    expect(stalls[0].ms).toBe(400)
+  })
+
+  it('a fast tick costs nothing — the wrap must not become the thing it measures', () => {
+    const host = { setInterval: ((fn: () => void) => fn) as unknown as typeof setInterval }
+    const restore = instrumentIntervals(host)
+    const tick = host.setInterval(() => undefined, 1000) as unknown as () => void
+    tick()
+    tick()
+    restore()
+    expect(getStalls().stalls.length).toBe(0)
+  })
+
+  it('preserves arguments, `this`, and the original return value', () => {
+    const calls: unknown[][] = []
+    const host = {
+      setInterval: ((fn: unknown, ms?: number, ...args: unknown[]) => {
+        calls.push([typeof fn, ms, ...args])
+        return { id: 7, fn } as unknown
+      }) as unknown as typeof setInterval
+    }
+    const restore = instrumentIntervals(host)
+    const handle = host.setInterval(function (this: unknown, a: number) {
+      return [this, a]
+    } as never, 250, 'x' as never) as unknown as { id: number; fn: (...a: unknown[]) => unknown }
+    restore()
+
+    expect(handle.id, 'the caller still needs the real handle to clear/unref it').toBe(7)
+    expect(calls[0]).toEqual(['function', 250, 'x'])
+    const self = { tag: 'host' }
+    expect(handle.fn.call(self, 42)).toEqual([self, 42])
+  })
+
+  it('passes a non-function handler through untouched', () => {
+    // setInterval accepts a code string in the DOM signature; wrapping it would throw.
+    const seen: unknown[] = []
+    const host = {
+      setInterval: ((h: unknown) => {
+        seen.push(h)
+        return 0 as unknown
+      }) as unknown as typeof setInterval
+    }
+    const restore = instrumentIntervals(host)
+    host.setInterval('noop()' as never, 10)
+    restore()
+    expect(seen).toEqual(['noop()'])
+  })
+
+  it('restore is a no-op once something else has patched on top', () => {
+    const orig = ((fn: () => void) => fn) as unknown as typeof setInterval
+    const host = { setInterval: orig }
+    const restore = instrumentIntervals(host)
+    const later = ((fn: () => void) => fn) as unknown as typeof setInterval
+    host.setInterval = later
+    restore()
+    expect(host.setInterval, 'restoring over a later wrapper would un-instrument it').toBe(later)
   })
 })

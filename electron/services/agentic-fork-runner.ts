@@ -13,7 +13,7 @@
 // whole workflow/subagent stack genuinely agentic. Additive: an agent type with
 // no tools offers none and behaves like a plain completion (today's behavior).
 
-import { chatStream, resolveModel, type ToolCallAccumulator } from './providers/registry'
+import { chatStream, resolveModel, routeModel, type ToolCallAccumulator } from './providers/registry'
 import type {
   ChatCompletionMessageParam,
   ChatCompletionTool
@@ -32,16 +32,17 @@ const MAX_TURNS = 12
 const MAX_TOOL_CALLS = 40
 
 /** Tool execution needs a tool-capable model; if the requested one can't call
- *  tools (e.g. the keyless duin-brain default), fall back to one that can. */
+ *  tools, resolve the `agentic` role from the provider policy (no hardcoded
+ *  fallback id). Keeps the requested id when nothing tool-capable routes, so the
+ *  provider's own error names the problem. */
 function toolCapableModel(modelId: string): string {
   try {
     if (resolveModel(modelId).supportsTools) return modelId
   } catch (e) { console.debug('[agentic-fork-runner] unknown id  fall through:', messageOf(e)) }
-  for (const fallback of ['glm-5.3', 'deepseek-v4-flash', 'deepseek-v4-pro']) {
-    try {
-      if (resolveModel(fallback).supportsTools) return fallback
-    } catch (e) { console.debug('[agentic-fork-runner] keep trying:', messageOf(e)) }
-  }
+  try {
+    const routed = routeModel('agentic')
+    if (routed && resolveModel(routed).supportsTools) return routed
+  } catch (e) { console.debug('[agentic-fork-runner] agentic route failed:', messageOf(e)) }
   return modelId
 }
 

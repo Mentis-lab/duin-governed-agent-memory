@@ -28,7 +28,12 @@ describe('LP-9 loops UI wiring', () => {
     const src = read('src/components/artifacts/RightPanelHome.tsx')
     // Loops are intentionally not a launcher pill — they live inside Automations.
     expect(src).not.toMatch(/id: 'loop'/)
-    expect(src).toMatch(/id: 'automations'/)
+    // 2026-09-03: the Automations hub itself folded into Home. It keeps its ToolId and panel
+    // and opens from Home's Loops line and Details row, so reachability is asserted THERE, not
+    // as a launcher pill.
+    expect(src).not.toMatch(/id: 'automations'/)
+    expect(read('src/components/tools/panels/HomePanel.tsx')).toMatch(/'automations'/)
+    expect(read('src/components/tools/ToolsPanel.tsx')).toMatch(/case 'automations':/)
   })
 
   it('LoopsPanel consumes the loops store + live loop events', () => {
@@ -38,11 +43,12 @@ describe('LP-9 loops UI wiring', () => {
     expect(src).toMatch(/listBacklog/)
   })
 
-  it('SettingsDialog registers the Workflows tab; WorkflowsSettings hosts Loops (gap-1)', () => {
+  it('SettingsDialog registers the Automations tab (id workflows); WorkflowsSettings hosts Loops (gap-1)', () => {
     const dialog = read('src/components/settings/SettingsDialog.tsx')
     // static import OR lazy(() => import('./WorkflowsSettings'))
     expect(dialog).toMatch(/import \{ WorkflowsSettings \}|default: m\.WorkflowsSettings\b/)
-    expect(dialog).toMatch(/id: 'workflows', label: 'Workflows'/)
+    // The tab was relabelled Automations on 2026-09-03 (settings evaluation A6); the id stays.
+    expect(dialog).toMatch(/id: 'workflows', label: 'Automations'/)
     expect(dialog).toMatch(/activeTab === 'workflows'[\s\S]*?<WorkflowsSettings \/>/)
     // Loops (+ Automations) now live INSIDE the merged Workflows panel.
     const wf = read('src/components/settings/WorkflowsSettings.tsx')

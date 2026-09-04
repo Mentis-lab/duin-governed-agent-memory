@@ -1,6 +1,6 @@
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions'
 import { chatOnce } from '../providers/registry'
-import { readDeepResearchSettings } from './adapter-cascade'
+import { researchModel } from './adapter-cascade'
 import type { ExtractedPage } from './extractor'
 
 // Atomic-claim extraction per source.
@@ -31,7 +31,6 @@ export interface ExtractClaimsDeps {
   callLlm?: (messages: ChatCompletionMessageParam[], model: string) => Promise<string>
 }
 
-const DEFAULT_CLAIMS_MODEL = 'deepseek-v4-flash'
 const MAX_CLAIMS_PER_SOURCE = 25
 const MAX_SPAN_CHARS = 600
 const MAX_CLAIM_CHARS = 400
@@ -67,7 +66,11 @@ export async function extractClaims(
 ): Promise<Claim[]> {
   if (page.status !== 'ok' || !page.fullText) return []
 
-  const model = modelOverride ?? readDeepResearchSettings().classifierModel ?? DEFAULT_CLAIMS_MODEL
+  const model = researchModel('classifier', modelOverride)
+  if (!model) {
+    console.warn(`[research/claims] no usable model for the extraction role; skipping source ${page.n}`)
+    return []
+  }
   // R2: chatOnce returns {content, reasoning?}. Research callers consume
   // body only — reasoning preservation is a chat-mode concern, not a
   // research-claim-extraction concern.

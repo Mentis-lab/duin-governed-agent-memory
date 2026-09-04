@@ -24,7 +24,9 @@ import { probeAdapter } from '../services/web-tools'
 //                          configured adapter and report ok / error.
 
 function isProviderId(v: unknown): v is WebSearchProviderId {
-  return v === 'duckduckgo' || v === 'brave' || v === 'tavily' || v === 'serpapi' || v === 'searxng'
+  return (
+    v === 'duckduckgo' || v === 'brave' || v === 'tavily' || v === 'serpapi' || v === 'searxng' || v === 'wikipedia'
+  )
 }
 
 export function registerWebToolsHandlers(): void {
@@ -41,14 +43,14 @@ export function registerWebToolsHandlers(): void {
         }
         const o = (opts ?? {}) as { apiKey?: string; endpoint?: string }
 
-        // Persist active provider choice + (optional) SearXNG endpoint.
+        // Persist active provider choice + (optional) SearXNG endpoint. Activating SearXNG
+        // without sending an endpoint keeps the stored one: it used to be wiped, so "Use
+        // this provider" on an already-configured instance switched to a dead adapter.
+        const storedEndpoint = readWebToolsSettings().searxngEndpoint
         const settingsPatch: Record<string, unknown> = {
           webTools: {
             searchProvider: provider,
-            searxngEndpoint:
-              provider === 'searxng'
-                ? (o.endpoint?.trim() || undefined)
-                : readWebToolsSettings().searxngEndpoint
+            searxngEndpoint: provider === 'searxng' ? o.endpoint?.trim() || storedEndpoint : storedEndpoint
           }
         }
         patchSettings(settingsPatch)

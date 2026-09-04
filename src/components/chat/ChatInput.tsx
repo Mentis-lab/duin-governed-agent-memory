@@ -28,7 +28,8 @@ import {
 } from '@/lib/prompt-history'
 import { currentSlot, nextMode, slotLabel } from '@/lib/mode-cycle'
 import { usePlanMode } from '@/hooks/usePlanMode'
-import type { ModelInfo, ProcessedFile } from '@/lib/types'
+import { AUTO_ENGINE, type ModelInfo, type ProcessedFile, type ProviderHealthReason } from '@/lib/types'
+import { describeEngine, groupModelsForPicker, healthReasonLabel, providerFixHint } from '@/lib/model-label'
 
 interface ChatInputProps {
   onSend: (content: string) => void
@@ -434,132 +435,82 @@ function LockIcon() {
 }
 
 function ModelDropdown({ onRequestKey }: ModelDropdownProps) {
+  // The picker writes a PIN for the active conversation (chat-store.setModel) — never a
+  // global setting — and renders what that pin resolves to from model-store, the renderer's
+  // one model-plane source (policy + health + resolution, all read from main).
   const activeModel = useChatStore((s) => s.activeModel)
   const setModel = useChatStore((s) => s.setModel)
   const allModels = useModelStore((s) => s.models)
-  const hasKey = useProvidersStore((s) => s.hasKey)
-  const providersLoaded = useProvidersStore((s) => s.loaded)
+  const policy = useModelStore((s) => s.policy)
+  const health = useModelStore((s) => s.health)
+  const resolution = useModelStore((s) => s.resolution)
+  const refreshHealth = useModelStore((s) => s.refreshHealth)
+  const providerEntries = useProvidersStore((s) => s.providers)
   const refreshProviders = useProvidersStore((s) => s.refresh)
   const [open, setOpen] = useState(false)
-  // Every model routes THROUGH the brain (the selected model is the brain's
-  // generation engine). The picker just chooses the engine — "Auto" lets the
-  // brain pick, named models pin it. No raw-bypass surface: the renderer can
-  // no longer emit a `raw:`-prefixed id at all (chat-store strips stale
-  // persisted ones on read). chat.ts's main-side `raw:` convention and the
-  // provider loop behind it are Lane E's one decision — adopt or delete.
   const wrapRef = useRef<HTMLDivElement>(null)
   useClickOutside(wrapRef, () => setOpen(false), open)
 
-  // Refresh provider key-state on mount AND every time the picker opens, so a
-  // key added/removed in Settings (or a model just imported) is reflected in the
-  // lock badges without reopening the app. Depending on `open` re-pulls on each
-  // toggle; the mount run keeps the initial lock badges correct before first open.
+  // Re-read provider labels + cached health every time the picker opens, so a key added in
+  // Settings (which main probes on save) shows as a healthy group without reopening the app.
   useEffect(() => {
     void refreshProviders()
-  }, [open, refreshProviders])
+    if (open) void refreshHealth()
+  }, [open, refreshProviders, refreshHealth])
 
-  // Offline fallback roster — two top picks per major provider, mirroring the
-  // 2026-08-21 MODEL_CATALOG redo. Shown only until model:list hydrates.
-  const fallback: ModelInfo[] = [
-    { id: 'claude-opus-5', name: 'Claude Opus 5', provider: 'anthropic', contextWindow: 1_000_000, supportsTools: true, supportsVision: true },
-    { id: 'claude-sonnet-5', name: 'Claude Sonnet 5', provider: 'anthropic', contextWindow: 1_000_000, supportsTools: true, supportsVision: true },
-    { id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol', provider: 'openai', contextWindow: 1_050_000, supportsTools: true, supportsVision: true },
-    { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra', provider: 'openai', contextWindow: 1_050_000, supportsTools: true, supportsVision: true },
-    { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro', provider: 'deepseek', contextWindow: 1_000_000, supportsTools: true, supportsVision: false },
-    { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', provider: 'deepseek', contextWindow: 1_000_000, supportsTools: true, supportsVision: false },
-    { id: 'kimi-k3', name: 'Kimi K3', provider: 'moonshot', contextWindow: 1_048_576, supportsTools: true, supportsVision: true },
-    { id: 'kimi-k2.6', name: 'Kimi K2.6', provider: 'moonshot', contextWindow: 262_144, supportsTools: true, supportsVision: true },
-    { id: 'glm-5.3', name: 'GLM-5.3', provider: 'zhipu', contextWindow: 1_000_000, supportsTools: true, supportsVision: false },
-    { id: 'glm-4.7-flashx', name: 'GLM-4.7-FlashX', provider: 'zhipu', contextWindow: 200_000, supportsTools: true, supportsVision: false },
-    { id: 'qwen3.8-max', name: 'Qwen3.8-Max', provider: 'dashscope', contextWindow: 1_000_000, supportsTools: true, supportsVision: true },
-    { id: 'qwen3.7-flash', name: 'Qwen3.7-Flash', provider: 'dashscope', contextWindow: 1_000_000, supportsTools: true, supportsVision: true }
-  ]
-  const models = allModels.length > 0 ? allModels : fallback
-  const active = models.find((m) => m.id === activeModel) ?? models[0]
-  // Internal models (the in-process DUIN brain) are keyless — never "locked".
-  const activeLocked = providersLoaded && !active.internal && !hasKey(active.provider)
+  // No offline roster of model ids: the live catalog (model:list) is the only list.
+  const models = allModels.filter((m) => !m.internal)
+  const engine = describeEngine(activeModel, resolution, allModels)
+  const healthOf = (pid: string | undefined) => (pid ? health.find((h) => h.provider === pid) : undefined)
+  const providerLabel = (pid: string): string =>
+    providerEntries.find((e) => e.id === pid)?.label ?? PROVIDER_GROUP_LABELS[pid] ?? pid
 
-  // "Auto" (the `internal` DUIN-brain row) is NOT offered any more — operator call,
-  // 2026-08-17: it named no model, so the composer could not answer "which LLM am I
-  // talking to", and it does not detect or switch anything at runtime (resolveAnswerModel
-  // just falls through picker → brainEngine → defaultModel → routeModel). An option that
-  // hides the answer and delivers no adaptivity is worse than picking one. Every row is a
-  // NAMED model; routing through the brain is unchanged.
-  const rawModels = models.filter((m) => !m.internal)
-  // Self-heal an existing `auto` selection: if the persisted choice is the internal row,
-  // move it to the first usable named model so the composer always states what it is
-  // running. Only fires when a keyed model exists — otherwise the label falls back to
-  // "Select model" and the (locked) rows below let the operator add a key.
-  const firstUsableModel = rawModels.find((m) => hasKey(m.provider)) ?? null
-  useEffect(() => {
-    if (!providersLoaded) return
-    if (active?.internal && firstUsableModel) void setModel(firstUsableModel.id)
-  }, [providersLoaded, active?.internal, firstUsableModel?.id, setModel])
+  // Provider groups in POLICY order (the operator's preference is the primary key of every
+  // resolution); providers outside the order append in the curated fallback order. A group
+  // is usable iff its provider's latest REAL probe says healthy — a key merely existing is
+  // not "usable" (L5 F2: Anthropic listed first as usable with no credit). Unhealthy groups
+  // stay in place, greyed, with the reason and the fix hint; no-key groups offer "Add key".
+  const groupedModels = useMemo(
+    () =>
+      groupModelsForPicker({
+        models,
+        policyOrder: policy?.order ?? [],
+        curatedOrder: PROVIDER_GROUP_ORDER,
+        health,
+        label: (pid) => providerEntries.find((e) => e.id === pid)?.label ?? PROVIDER_GROUP_LABELS[pid] ?? pid
+      }),
+    [models, policy, health, providerEntries]
+  )
 
-  // Provider-grouped sub-lists (operator request, 2026-08-21): the flat roster
-  // read as random. Fixed prominence order for the majors; providers outside the
-  // order (imported/custom) append alphabetically. Labels come from the live
-  // provider list when loaded, else the static fallback map.
-  const providerEntries = useProvidersStore((s) => s.providers)
-  const groupedModels = useMemo(() => {
-    const by = new Map<string, ModelInfo[]>()
-    for (const m of rawModels) {
-      const key = m.provider ?? 'custom'
-      const arr = by.get(key)
-      if (arr) arr.push(m)
-      else by.set(key, [m])
-    }
-    const known = PROVIDER_GROUP_ORDER.filter((p) => by.has(p))
-    const rest = [...by.keys()].filter((p) => !PROVIDER_GROUP_ORDER.includes(p)).sort()
-    const ordered = [...known, ...rest]
-    // Providers you can use RIGHT NOW list first; fully-locked ("Add key") groups keep
-    // their curated order below. With Anthropic/OpenAI keyless, every picker open led
-    // with a wall of six ADD KEY rows before the operator's actual engines (QA
-    // 2026-08-24, F12). A group counts as locked only when every model in it is.
-    const groupLocked = (pid: string): boolean => {
-      const models = by.get(pid) as ModelInfo[]
-      return providersLoaded && models.every((m) => !m.internal && !hasKey(m.provider))
-    }
-    const usableFirst = [...ordered.filter((p) => !groupLocked(p)), ...ordered.filter(groupLocked)]
-    return usableFirst.map((pid) => ({
-      id: pid,
-      label:
-        providerEntries.find((e) => e.id === pid)?.label ??
-        PROVIDER_GROUP_LABELS[pid] ??
-        pid,
-      models: by.get(pid) as ModelInfo[]
-    }))
-  }, [rawModels, providerEntries, providersLoaded, hasKey])
-
-  // Row renderer: every row selects a plain model id and routes through the
-  // brain with that model as its engine.
-  const renderModelRow = (m: ModelInfo) => {
-    const locked = providersLoaded && !m.internal && !hasKey(m.provider)
-    const selectId = m.id
+  const renderModelRow = (m: ModelInfo, group: { healthy: boolean; reason?: ProviderHealthReason; probed: boolean }) => {
+    const noKey = group.reason === 'no-key'
+    const greyed = group.probed && !group.healthy
     const isActive = activeModel === m.id
+    const hint = greyed ? providerFixHint(group.reason, providerLabel(m.provider ?? 'custom')) : ''
     return (
       <button
-        key={selectId}
+        key={m.id}
+        title={hint || undefined}
         onClick={() => {
           setOpen(false)
-          if (locked) {
+          if (noKey) {
             if (m.provider) onRequestKey(m.provider)
             else toast.error(`No provider configured for ${m.name}`)
             return
           }
-          void setModel(selectId)
+          void setModel(m.id)
         }}
         className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-[12px] transition-colors ${
           isActive
             ? 'bg-[var(--bg-tertiary)] text-[var(--text-primary)]'
-            : locked
+            : greyed
             ? 'text-[var(--text-muted)] hover:bg-[var(--bg-tertiary)]'
             : 'text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]'
         }`}
       >
         <span className="flex min-w-0 flex-col gap-0.5">
           <span className="flex min-w-0 items-center gap-1.5 truncate">
-            {locked && (
+            {greyed && (
               <span className="shrink-0 text-[var(--warning)]">
                 <LockIcon />
               </span>
@@ -567,14 +518,14 @@ function ModelDropdown({ onRequestKey }: ModelDropdownProps) {
             <span className="truncate font-medium">{m.name}</span>
           </span>
           <span className="text-[11px] text-[var(--text-muted)]">
-            routed through your brain
+            {greyed ? healthReasonLabel(group.reason) : 'routed through your brain'}
           </span>
         </span>
         {isActive ? (
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-[var(--accent)]" aria-hidden>
             <path d="M20 6L9 17l-5-5" />
           </svg>
-        ) : locked ? (
+        ) : noKey ? (
           <span className="shrink-0 whitespace-nowrap text-[11px] uppercase tracking-wider text-[var(--warning)]">
             {t('Add key')}
           </span>
@@ -583,30 +534,75 @@ function ModelDropdown({ onRequestKey }: ModelDropdownProps) {
     )
   }
 
+  const pinnedHealth = healthOf(allModels.find((m) => m.id === activeModel)?.provider)
+  const chipWarning = activeModel !== AUTO_ENGINE && pinnedHealth && !pinnedHealth.healthy
+    ? `${providerLabel(pinnedHealth.provider)}: ${healthReasonLabel(pinnedHealth.reason)}`
+    : engine.mode === 'none'
+      ? t('No provider can answer right now')
+      : ''
+
   return (
     <div ref={wrapRef} className="relative">
-      <DropdownButton open={open} onToggle={() => setOpen((v) => !v)} title={t('Switch model')}>
-        {activeLocked && (
-          <span className="text-[var(--warning)]" title={`${active.provider ?? 'provider'} key required`}>
+      <DropdownButton open={open} onToggle={() => setOpen((v) => !v)} title={chipWarning || t('Switch model')}>
+        {chipWarning && (
+          <span className="text-[var(--warning)]" title={chipWarning}>
             <LockIcon />
           </span>
         )}
-        <span className="font-medium">{active.internal ? 'Select model' : active.name}</span>
+        <span className="font-medium">{engine.label}</span>
       </DropdownButton>
       {open && (
         <div className="absolute bottom-full right-0 z-30 mb-1 max-h-[60vh] w-80 overflow-y-auto overscroll-contain rounded-lg border border-[var(--panel-border)] bg-[var(--bg-secondary)] shadow-xl">
-          {/* Every row is a NAMED model, and every one routes through the brain.
-              The old "Auto" row is gone — see the rawModels comment above.
-              Rows are grouped into provider sub-lists (groupedModels). */}
           <div className="px-3 pt-2 pb-1.5 text-[11px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
-            Engine · every model routes through your brain
+            {t('Engine · every model routes through your brain')}
           </div>
+          {/* First entry: no pin — the chat role follows the provider policy and live health. */}
+          <button
+            onClick={() => {
+              setOpen(false)
+              void setModel(AUTO_ENGINE)
+            }}
+            className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-[12px] transition-colors ${
+              activeModel === AUTO_ENGINE
+                ? 'bg-[var(--bg-tertiary)] text-[var(--text-primary)]'
+                : 'text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]'
+            }`}
+          >
+            <span className="flex min-w-0 flex-col gap-0.5">
+              <span className="truncate font-medium">{t('Auto (provider policy)')}</span>
+              <span className="text-[11px] text-[var(--text-muted)]">
+                {activeModel === AUTO_ENGINE && resolution
+                  ? `→ ${engine.label}`
+                  : t('Healthiest provider in your order, re-checked every turn')}
+              </span>
+            </span>
+            {activeModel === AUTO_ENGINE && (
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-[var(--accent)]" aria-hidden>
+                <path d="M20 6L9 17l-5-5" />
+              </svg>
+            )}
+          </button>
+          {models.length === 0 && (
+            <div className="border-t border-[var(--panel-border)] px-3 py-2 text-[11px] text-[var(--text-muted)]">
+              {t('Loading models…')}
+            </div>
+          )}
           {groupedModels.map((g) => (
             <div key={g.id}>
-              <div className="border-t border-[var(--panel-border)] px-3 pt-2 pb-1 text-[11px] font-semibold uppercase tracking-wider text-[var(--text-secondary)]">
+              <div
+                className={`border-t border-[var(--panel-border)] px-3 pt-2 pb-1 text-[11px] font-semibold uppercase tracking-wider ${
+                  g.probed && !g.healthy ? 'text-[var(--text-muted)]' : 'text-[var(--text-secondary)]'
+                }`}
+                title={g.probed && !g.healthy ? providerFixHint(g.reason, g.label) : undefined}
+              >
                 {g.label}
+                {g.probed && (
+                  <span className={`ml-1.5 normal-case tracking-normal ${g.healthy ? 'text-[var(--success)]' : 'text-[var(--warning)]'}`}>
+                    · {healthReasonLabel(g.reason)}
+                  </span>
+                )}
               </div>
-              {g.models.map((m) => renderModelRow(m))}
+              {g.models.map((m) => renderModelRow(m, g))}
             </div>
           ))}
         </div>
@@ -722,6 +718,11 @@ function ContextChipRow({ onAddFile }: ContextChipRowProps) {
   // Coding chrome (git worktree) only shows in Coding Mode — the default
   // knowledge-worker composer stays clean. Toggle lives in Settings → Advanced.
   const codingMode = useSettingsStore((s) => s.settings.agenticCodingMode)
+  // The brain folder is also the working folder: first-run setup and Settings → Brain both
+  // point the workdir at it. This chip mounts before either runs and used to read the workdir
+  // once, so it kept naming the app's own directory after a first run. Re-read whenever the
+  // brain folder changes.
+  const brainDir = useSettingsStore((s) => s.settings.localBrainNotesDir)
 
   useEffect(() => {
     if (!window.api?.files?.getWorkdir) return
@@ -735,7 +736,7 @@ function ContextChipRow({ onAddFile }: ContextChipRowProps) {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [brainDir])
 
   const handlePickFolder = async () => {
     if (!window.api?.files?.pickWorkdir) return
@@ -941,19 +942,17 @@ export function ChatInput({ onSend, onCancel, isStreaming, disabled }: ChatInput
   const providersLoaded = useProvidersStore((s) => s.loaded)
   const activeModel = useChatStore((s) => s.activeModel)
   const allModels = useModelStore((s) => s.models)
-  const activeModelInfo = allModels.find((m) => m.id === activeModel)
+  const pinnedProviderHealth = useModelStore((s) => s.healthFor(allModels.find((m) => m.id === activeModel)?.provider))
+  const activeModelInfo = activeModel === AUTO_ENGINE ? undefined : allModels.find((m) => m.id === activeModel)
   const activeProvider = activeModelInfo?.provider
-  // Internal models (the in-process DUIN brain) are keyless by design — the sentinel's
-  // catalog row carries a cosmetic provider id ('deepseek'), and gating the SUBMIT on it
-  // demanded a DeepSeek key before any send, walling off the brain's deliberate keyless
-  // grounded-answer path on a fresh install (and, with a key stored for a catalog-less
-  // provider, demanding a provider the user never chose). The dropdown's own lock logic
-  // already exempts `internal` — this gate had simply forgotten the sentinel.
-  const activeProviderHasKey = activeModelInfo?.internal
-    ? true
-    : activeProvider
-      ? !providersLoaded || hasKey(activeProvider)
-      : true
+  // The submit gate opens the key modal ONLY for a pinned provider whose live health says
+  // "no key" — the one failure a modal fixes. AUTO_ENGINE never gates (the policy resolves a
+  // healthy provider), and every other unhealthy reason is reported by the turn itself.
+  const activeProviderHasKey = activeProvider
+    ? pinnedProviderHealth
+      ? pinnedProviderHealth.reason !== 'no-key'
+      : !providersLoaded || hasKey(activeProvider)
+    : true
 
   useEffect(() => {
     const ta = textareaRef.current

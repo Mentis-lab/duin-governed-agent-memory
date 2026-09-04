@@ -10,6 +10,7 @@ import {
   pruneNotices,
   recordNotice,
   resolveByActionId,
+  resolveNotices,
   setNoticesPath,
   __resetNotices
 } from './notices-store'
@@ -136,5 +137,33 @@ describe('corrupt store', () => {
     // And the store still works afterwards.
     recordNotice({ kind: 'watch', title: 'After recovery' })
     expect(existsSync(join(dir, 'notices.json'))).toBe(true)
+  })
+})
+
+describe('resolveNotices — the operator closes an owed row by hand', () => {
+  it('closes it, marks it read, and drops it out of the owed count', () => {
+    const n = recordNotice({ kind: 'approval', title: 'A belief awaits your review', needsDecision: true })!
+    expect(noticeCounts().needsDecision).toBe(1)
+
+    expect(resolveNotices([n.id])).toBe(1)
+    const after = listNotices()[0]
+    expect(after.resolvedAt).not.toBeNull()
+    expect(after.readAt).not.toBeNull()
+    expect(noticeCounts().needsDecision).toBe(0)
+  })
+
+  it('is idempotent and ignores ids it does not hold', () => {
+    const n = recordNotice({ kind: 'approval', title: 'Owed', needsDecision: true })!
+    expect(resolveNotices([n.id])).toBe(1)
+    expect(resolveNotices([n.id])).toBe(0)
+    expect(resolveNotices(['nope'])).toBe(0)
+  })
+
+  it('survives a reload, so a dismissed row does not come back', () => {
+    const n = recordNotice({ kind: 'approval', title: 'Owed', needsDecision: true })!
+    resolveNotices([n.id])
+    __resetNotices()
+    setNoticesPath(dir)
+    expect(noticeCounts().needsDecision).toBe(0)
   })
 })

@@ -205,6 +205,12 @@ export function createJudgeDeps(selectModel: () => string | null): JudgeDeps {
  *  back to the operator's configured cloud provider, abstains when neither exists. */
 export const localFirstJudgeDeps: JudgeDeps = createJudgeDeps(() => selectMeasureModelLocalFirst())
 
+/** Scheduled LOCAL-ONLY judge: a zero-cost local model or nothing — NEVER the billable cloud
+ *  fallback. The grounding-staleness accrual tick uses this whenever backgroundAutonomy is OFF (the
+ *  default), mirroring localOnlyMeasureDeps, so an unattended install accrues calibration for free or
+ *  abstains entirely (abstention ⇒ no rows ⇒ the fusion gate simply stays shut). */
+export const localOnlyJudgeDeps: JudgeDeps = createJudgeDeps(() => selectMeasureModelLocalOnly())
+
 /** On-demand default (POST /state/measure-facts + MCP tool): task-routed extraction
  *  model — unchanged behavior. */
 export const defaultMeasureDeps: MeasureDeps = createMeasureDeps(() => {

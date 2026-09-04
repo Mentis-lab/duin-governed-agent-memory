@@ -1,9 +1,9 @@
 // Backlog finding 68. The renderer carries its OWN HookEvent union, and it had drifted:
-// the main process fires eleven events, this copy declared five. So the six F3 autonomy
-// lifecycle events — loopStarted, loopIterationDone, automationStarted, automationDone,
-// workflowStarted, workflowFinished — fired in production every day (loop-controller,
-// automations-runner, ipc/workflows) with no way for a user hook to subscribe to any of
-// them. The Settings UI simply had no such option.
+// the main process fired more events than this copy declared, so the autonomy lifecycle
+// events (automations-runner, workflow-runner) fired in production every day with no way
+// for a user hook to subscribe to any of them. The Settings UI simply had no such option.
+// (The two loop events that were ALSO declared turned out to be fired by nothing, and
+// were removed from both sides on 2026-09-03.)
 //
 // Pinned against the main-process source so the two copies cannot drift again in
 // silence. Source-level because the renderer cannot import the electron module.
@@ -64,15 +64,19 @@ describe('HookEvent parity between main and renderer', () => {
   })
 
   it('the autonomy lifecycle events are specifically present', () => {
-    for (const e of [
-      'loopStarted',
-      'loopIterationDone',
-      'automationStarted',
-      'automationDone',
-      'workflowStarted',
-      'workflowFinished'
-    ]) {
+    // loopStarted / loopIterationDone are NOT here: they were declared on both sides but
+    // nothing in main ever fired them (loop-controller has no fireHooks call), so both
+    // unions dropped them on 2026-09-03 and Settings stopped offering them.
+    for (const e of ['automationStarted', 'automationDone', 'workflowStarted', 'workflowFinished']) {
       expect(renderer, e).toContain(e)
+    }
+  })
+
+  it('the two never-fired loop events are gone from the renderer and from Settings', () => {
+    const ui = read('src', 'components', 'settings', 'HooksSettings.tsx')
+    for (const e of ['loopStarted', 'loopIterationDone']) {
+      expect(renderer, e).not.toContain(e)
+      expect(ui.includes(`'${e}'`), `${e} still offered in Settings`).toBe(false)
     }
   })
 })

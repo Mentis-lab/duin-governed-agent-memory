@@ -304,9 +304,39 @@
   margin-inline: auto;
 }
 
-/* Beat `.brain-md .markdown-body { font-size: 1em }` (12px, panel chrome size). */
+/* Beat `.brain-md .markdown-body { font-size: 1em }` (12px, panel chrome size).
+   The size itself now comes from the document control below — this window reads a
+   document like every other document surface, so it must not pin its own number. */
 .detached-surface.brain-md .markdown-body,
 .detached-surface .markdown-body {
-  font-size: 14px;
+  font-size: var(--doc-font-size);
   font-family: var(--font-sans);
+}
+
+/* ── Document reading size ──────────────────────────────────────────────────
+   Settings → Appearance → Document text size, published as `--doc-font-size`.
+
+   Third of three size controls, and the one that was missing: `fontSize` is page
+   zoom (chrome and content together, so it can never change how a document reads
+   RELATIVE to the app), `--chat-font-size` is the transcript, and a stored
+   document being READ had nothing.
+
+   It also collapses a drift. The four surfaces that render a document had each
+   picked their own number — 12px in the Explorer panel (matched to the panel
+   chrome), 14px in a detached window (matched to the editor), 16px in Library and
+   Artifacts (the `.markdown-body` base) — so one note changed size depending on
+   where it was opened, and the surface used most read smallest. This is the same
+   opt-OUT-whitelist failure the 72ch rules above document: fixed per surface, it
+   comes back on the next surface. One var, applied at the container, is the fix.
+
+   Placed LAST so it beats the per-surface `.brain-md` / `.detached-surface` rules
+   on equal specificity. Everything inside stays em-relative, so headings, code,
+   tables and quotes scale with the body instead of flattening against it. */
+:root {
+  --doc-font-size: 16px;
+}
+
+.markdown-body.doc-md,
+.doc-md .markdown-body {
+  font-size: var(--doc-font-size);
 }

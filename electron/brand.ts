@@ -8,3 +8,8 @@
 // then update `productName` / `build.productName` / `build.appId` in package.json and
 // electron-builder.yml. Those four spots are the only places the name is hard-set.
 export const PRODUCT_NAME = 'DUIN'
+
+// Public product repository, mirrored from src/lib/brand.ts (the renderer's copy). Settings →
+// GitHub reads the latest release from it and stars it as the connected account; leave it
+// empty in a private fork and those handlers answer that this build has no public repository.
+export const PRODUCT_REPO_URL: string = 'https://github.com/Mentis-lab/duin-governed-agent-memory'

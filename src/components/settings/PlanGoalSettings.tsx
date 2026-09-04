@@ -1,7 +1,14 @@
-import { t } from '@/lib/i18n'
+import { t, tc, tf } from '@/lib/i18n'
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Button } from '@/components/ui/Button'
+import { PanelState } from '@/components/ui/PanelState'
+import { SettingsLoadError, SettingsLoading, SettingsPage, SettingsRow } from '@/components/ui/settings'
+import { invoke, query } from '@/lib/ipc-client'
+import { panelFromResult, panelLoading, type PanelStatus } from '@/lib/panel-state'
+import { describeError } from '@/lib/result'
 import { toast } from '@/stores/toast-store'
-import type { ConversationPlanGoalState, Goal, PlanStep, PlanStepStatus } from '@/lib/types'
+import { useChatStore } from '@/stores/chat-store'
+import type { ConversationPlanGoalState, Goal, GoalStatus, PlanStep, PlanStepStatus } from '@/lib/types'
 
 // Inspect / clear the persisted plan + goal state the `update_plan` and
 // create_goal / update_goal tools write per conversation (see
@@ -12,97 +19,104 @@ import type { ConversationPlanGoalState, Goal, PlanStep, PlanStepStatus } from '
 
 const GLOBAL_KEY = '__global__'
 
-interface PlanApi {
-  listAllState: () => Promise<{
-    success: boolean
-    data?: ConversationPlanGoalState[]
-    error?: string
-  }>
-  clearConversationState: (
-    conversationId: string
-  ) => Promise<{ success: boolean; error?: string }>
-  clearAllState: () => Promise<{ success: boolean; error?: string }>
+function stepStatusLabel(status: PlanStepStatus): string {
+  switch (status) {
+    case 'pending':
+      return t('Pending')
+    case 'in_progress':
+      return t('In progress')
+    case 'done':
+      return t('Done')
+    default:
+      return status
+  }
 }
 
-function getApi(): PlanApi | null {
-  if (typeof window === 'undefined') return null
-  const api = (window as unknown as { api?: { plan?: PlanApi } }).api
-  return api?.plan ?? null
-}
-
-const STEP_LABEL: Record<PlanStepStatus, string> = {
-  pending: 'Pending',
-  in_progress: 'In progress',
-  done: 'Done'
+function goalStatusLabel(status: GoalStatus): string {
+  switch (status) {
+    case 'open':
+      // "Open" the state, not the verb the rest of the app translates.
+      return tc('goal status', 'Open')
+    case 'in_progress':
+      return t('In progress')
+    case 'done':
+      return t('Done')
+    case 'abandoned':
+      return t('Abandoned')
+    default:
+      return status
+  }
 }
 
 const STEP_DOT: Record<PlanStepStatus, string> = {
   pending: 'text-[var(--text-muted)]',
-  in_progress: 'text-amber-300',
-  done: 'text-emerald-300'
+  in_progress: 'text-[var(--warning)]',
+  done: 'text-[var(--success)]'
 }
 
-function conversationLabel(id: string): string {
-  return id === GLOBAL_KEY ? 'Global (no conversation)' : `Conversation ${id.slice(0, 8)}…`
-}
-
-function PlanStepRow({ step, index }: { step: PlanStep; index: number }) {
+function PlanStepRow({ step, index }: { step: PlanStep; index: number }): React.ReactElement {
   return (
     <li className="flex items-start gap-2 text-[12px]">
-      <span className={`pt-0.5 font-mono ${STEP_DOT[step.status]}`}>
+      <span aria-hidden className={`pt-0.5 font-mono ${STEP_DOT[step.status]}`}>
         {step.status === 'done' ? '●' : '○'}
       </span>
       <span className="text-[var(--text-muted)]">{index}.</span>
       <span className="min-w-0 flex-1 break-words text-[var(--text-secondary)]">
-        {step.text || <em className="text-[var(--text-muted)]">(empty)</em>}
+        {step.text || <em className="text-[var(--text-muted)]">{t('(empty)')}</em>}
       </span>
       <span className="shrink-0 font-mono text-[11px] uppercase text-[var(--text-muted)]">
-        {STEP_LABEL[step.status]}
+        {stepStatusLabel(step.status)}
       </span>
     </li>
   )
 }
 
-function GoalRow({ goal }: { goal: Goal }) {
+function GoalRow({ goal }: { goal: Goal }): React.ReactElement {
   return (
     <li className="flex items-start justify-between gap-2 text-[12px]">
       <span className="min-w-0 flex-1 break-words text-[var(--text-secondary)]">
         {goal.title}
         {goal.dueDate && (
-          <span className="ml-1 text-[11px] text-[var(--text-muted)]">· due {goal.dueDate}</span>
+          <span className="ml-1 text-[11px] text-[var(--text-muted)]">
+            · {tf('due {date}', { date: goal.dueDate })}
+          </span>
         )}
       </span>
       <span className="shrink-0 font-mono text-[11px] uppercase text-[var(--text-muted)]">
-        {goal.status}
+        {goalStatusLabel(goal.status)}
       </span>
     </li>
   )
 }
 
-export function PlanGoalSettings() {
-  const [states, setStates] = useState<ConversationPlanGoalState[]>([])
-  const [loading, setLoading] = useState(true)
+export function PlanGoalSettings(): React.ReactElement {
+  const [state, setState] = useState<PanelStatus<ConversationPlanGoalState[]>>(panelLoading())
   const [busy, setBusy] = useState<string | null>(null)
+  // The cards used to be titled by a truncated conversation id. The titles are already in
+  // the chat store; fall back to the id only for a conversation it no longer lists.
+  const conversations = useChatStore((s) => s.conversations)
+  const titles = useMemo(() => new Map(conversations.map((c) => [c.id, c.title])), [conversations])
 
-  const refresh = useCallback(async () => {
-    const api = getApi()
-    if (!api) return
-    setLoading(true)
-    try {
-      const response = await api.listAllState()
-      if (response.success && response.data) {
-        setStates(response.data)
-      } else {
-        toast.error(`Failed to load plan/goal state: ${response.error ?? 'unknown error'}`)
-      }
-    } finally {
-      setLoading(false)
-    }
+  const conversationLabel = useCallback(
+    (id: string): string => {
+      if (id === GLOBAL_KEY) return t('Global (no conversation)')
+      const title = titles.get(id)?.trim()
+      return title || tf('Conversation {id}', { id: `${id.slice(0, 8)}…` })
+    },
+    [titles]
+  )
+
+  // A thrown listAllState used to leave the page on "Loading…" for good; query() turns a
+  // throw, a missing handler and success:false into one error with a Retry.
+  const refresh = useCallback(async (): Promise<void> => {
+    setState(panelFromResult(await query<ConversationPlanGoalState[]>('plans and goals', window.api?.plan?.listAllState)))
   }, [])
 
   useEffect(() => {
-    refresh()
+    void refresh()
   }, [refresh])
+
+  const states = state.phase === 'ready' ? state.data : []
 
   // Conversations with the most steps + goals first; stable by id otherwise.
   const sorted = useMemo(
@@ -118,144 +132,135 @@ export function PlanGoalSettings() {
   const totalSteps = useMemo(() => states.reduce((n, s) => n + s.planSteps.length, 0), [states])
   const totalGoals = useMemo(() => states.reduce((n, s) => n + s.goals.length, 0), [states])
 
-  const handleClearConversation = async (conversationId: string) => {
-    const api = getApi()
-    if (!api) return
+  const handleClearConversation = async (conversationId: string): Promise<void> => {
     if (
       !window.confirm(
-        `Clear the plan and goals for ${conversationLabel(conversationId)}? This cannot be undone.`
+        tf('Clear the plan and goals for "{name}"? This cannot be undone.', {
+          name: conversationLabel(conversationId)
+        })
       )
     ) {
       return
     }
     setBusy(conversationId)
     try {
-      const response = await api.clearConversationState(conversationId)
-      if (!response.success) {
-        toast.error(`Failed to clear: ${response.error ?? 'unknown error'}`)
-        return
-      }
+      await invoke('clear plan and goals', () => window.api.plan.clearConversationState(conversationId))
       await refresh()
+    } catch (e) {
+      toast.error(describeError(e, t('Could not clear that conversation')))
     } finally {
       setBusy(null)
     }
   }
 
-  const handleClearAll = async () => {
-    const api = getApi()
-    if (!api) return
+  const handleClearAll = async (): Promise<void> => {
     if (states.length === 0) return
     if (
       !window.confirm(
-        `Clear plan and goal state for all ${states.length} conversation(s)? This cannot be undone.`
+        tf('Clear the plans and goals of all {n} conversations? This cannot be undone.', { n: states.length })
       )
     ) {
       return
     }
     setBusy('all')
     try {
-      const response = await api.clearAllState()
-      if (!response.success) {
-        toast.error(`Failed to clear all: ${response.error ?? 'unknown error'}`)
-        return
-      }
+      await invoke('clear all plans and goals', () => window.api.plan.clearAllState())
       await refresh()
+    } catch (e) {
+      toast.error(describeError(e, t('Could not clear the plans and goals')))
     } finally {
       setBusy(null)
     }
   }
 
   return (
-    <div className="space-y-6 text-[16px] text-[var(--text-primary)]">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h2 className="text-[20px] font-semibold">Plans &amp; goals</h2>
-          <p className="mt-1 text-[12px] text-[var(--text-muted)]">
-            Plan checklists and goals the model creates with the <code>update_plan</code>,{' '}
-            <code>create_goal</code>, and <code>update_goal</code> tools, persisted per
-            conversation. They&apos;re cleared automatically when you delete a conversation; clear
-            them manually here.
-          </p>
-        </div>
-        <button
-          type="button"
+    <SettingsPage
+      purpose={t('Plans and goals the model keeps per conversation. They clear when you delete the conversation; clear them here by hand.')}
+      actions={
+        <Button
+          variant="danger"
+          size="sm"
           disabled={states.length === 0 || busy === 'all'}
-          onClick={handleClearAll}
-          className="shrink-0 rounded border border-[var(--panel-border)] bg-[var(--bg-tertiary)] px-2 py-1 font-mono text-[11px] uppercase text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-secondary)] disabled:cursor-not-allowed disabled:opacity-50"
+          onClick={() => void handleClearAll()}
         >
-          {busy === 'all' ? 'Clearing…' : 'Clear all'}
-        </button>
-      </div>
+          {busy === 'all' ? t('Clearing…') : t('Clear all')}
+        </Button>
+      }
+    >
+      <PanelState
+        state={state}
+        loading={<SettingsLoading what={t('plans and goals')} />}
+        error={(message, retry) => (
+          <SettingsLoadError what={t('plans and goals')} message={message} onRetry={retry} />
+        )}
+        empty={
+          <div className="rounded-lg border border-dashed border-[var(--panel-border)] px-3 py-6 text-center text-[12px] text-[var(--text-muted)]">
+            {t('No stored plans or goals yet.')}
+          </div>
+        }
+        onRetry={() => void refresh()}
+      >
+        {() => (
+          <div className="space-y-3">
+            <p className="text-[11px] text-[var(--text-muted)]">
+              {tf('{conversations} conversations · {steps} plan steps · {goals} goals', {
+                conversations: states.length,
+                steps: totalSteps,
+                goals: totalGoals
+              })}
+            </p>
 
-      {loading && <div className="text-[12px] text-[var(--text-muted)]">Loading…</div>}
-
-      {!loading && states.length === 0 && (
-        <div className="rounded border border-dashed border-[var(--panel-border)] px-3 py-6 text-center text-[12px] text-[var(--text-muted)]">
-          {t('No stored plans or goals yet.')}
-        </div>
-      )}
-
-      {!loading && states.length > 0 && (
-        <p className="text-[11px] text-[var(--text-muted)]">
-          {states.length} conversation(s) · {totalSteps} plan step(s) · {totalGoals} goal(s)
-        </p>
-      )}
-
-      {!loading &&
-        sorted.map((state) => {
-          const clearing = busy === state.conversationId
-          return (
-            <section
-              key={state.conversationId}
-              className="rounded-lg border border-[var(--panel-border)] bg-[var(--bg-primary)] p-3"
-            >
-              <div className="mb-3 flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <h3 className="truncate font-mono text-[16px] font-semibold text-[var(--text-primary)]">
-                    {conversationLabel(state.conversationId)}
-                  </h3>
-                  <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
-                    {state.planSteps.length} step(s) · {state.goals.length} goal(s)
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  disabled={clearing}
-                  onClick={() => handleClearConversation(state.conversationId)}
-                  className="shrink-0 rounded border border-[var(--panel-border)] bg-[var(--bg-tertiary)] px-2 py-1 font-mono text-[11px] uppercase text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-secondary)] disabled:cursor-not-allowed disabled:opacity-50"
+            {sorted.map((entry) => {
+              const clearing = busy === entry.conversationId
+              return (
+                <SettingsRow
+                  key={entry.conversationId}
+                  label={<span className="block truncate">{conversationLabel(entry.conversationId)}</span>}
+                  hint={tf('{steps} steps · {goals} goals', {
+                    steps: entry.planSteps.length,
+                    goals: entry.goals.length
+                  })}
+                  control={
+                    <Button
+                      size="sm"
+                      disabled={busy !== null}
+                      onClick={() => void handleClearConversation(entry.conversationId)}
+                    >
+                      {clearing ? t('Clearing…') : t('Clear')}
+                    </Button>
+                  }
                 >
-                  {clearing ? 'Clearing…' : 'Clear'}
-                </button>
-              </div>
+                  {entry.planSteps.length > 0 && (
+                    <div className="mb-2">
+                      <div className="mb-1 font-mono text-[11px] uppercase tracking-wide text-[var(--text-muted)]">
+                        {t('Plan')}
+                      </div>
+                      <ul className="space-y-1">
+                        {entry.planSteps.map((step, i) => (
+                          <PlanStepRow key={step.id} step={step} index={i + 1} />
+                        ))}
+                      </ul>
+                    </div>
+                  )}
 
-              {state.planSteps.length > 0 && (
-                <div className="mb-2">
-                  <div className="mb-1 font-mono text-[11px] uppercase tracking-wide text-[var(--text-muted)]">
-                    {t('Plan')}
-                  </div>
-                  <ul className="space-y-1">
-                    {state.planSteps.map((step, i) => (
-                      <PlanStepRow key={step.id} step={step} index={i + 1} />
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              {state.goals.length > 0 && (
-                <div>
-                  <div className="mb-1 font-mono text-[11px] uppercase tracking-wide text-[var(--text-muted)]">
-                    {t('Goals')}
-                  </div>
-                  <ul className="space-y-1">
-                    {state.goals.map((goal) => (
-                      <GoalRow key={goal.id} goal={goal} />
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </section>
-          )
-        })}
-    </div>
+                  {entry.goals.length > 0 && (
+                    <div>
+                      <div className="mb-1 font-mono text-[11px] uppercase tracking-wide text-[var(--text-muted)]">
+                        {t('Goals')}
+                      </div>
+                      <ul className="space-y-1">
+                        {entry.goals.map((goal) => (
+                          <GoalRow key={goal.id} goal={goal} />
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </SettingsRow>
+              )
+            })}
+          </div>
+        )}
+      </PanelState>
+    </SettingsPage>
   )
 }

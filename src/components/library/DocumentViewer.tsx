@@ -90,7 +90,7 @@ export function DocumentViewer({
         </p>
       )}
       {!error && text !== null && text.trim() !== '' && (
-        <div className="markdown-body">
+        <div className="markdown-body doc-md">
           <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ ...externalLinkComponents }}>{text}</ReactMarkdown>
         </div>
       )}

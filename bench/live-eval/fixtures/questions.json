@@ -1,0 +1,134 @@
+{
+  "version": 1,
+  "corpus": "Kestrel Labs fixture vault (bench/live-eval/fixtures/vault)",
+  "note": "Every criterion was verified by hand against the fixture notes named in `gold`. `source: vault` = the fact is stated verbatim in a note; `source: operator` = a behavioural expectation (abstention wording, privacy). Substring match, case-insensitive; write the fact in every form the notes use.",
+  "questions": [
+    {
+      "id": "Q1",
+      "q": "How did the field test go?",
+      "dimensions": ["under-specified", "multi-source"],
+      "why": "Nothing in the question names the debrief note or the dates; the answer needs the 2026-05-09 debrief plus the two decisions it produced.",
+      "gold": ["Meetings/2026-05-09-field-test-debrief.md", "Decisions/2026-05-14-switch-to-lora.md"],
+      "criteria": [
+        { "label": "names the range failure", "any_of": ["40 m", "40m", "180 m", "180m", "never connected", "range"], "source": "vault" },
+        { "label": "names the power failure", "any_of": ["3 days", "three days", "battery", "cell flat", "power"], "source": "vault" },
+        { "label": "names the enclosure failure", "any_of": ["2.5", "water ingress", "gland", "warp", "rain got in"], "source": "vault" }
+      ],
+      "must_not": []
+    },
+    {
+      "id": "Q2",
+      "q": "What's blocking the launch right now?",
+      "dimensions": ["under-specified", "temporal", "multi-source"],
+      "why": "The question does not name the project note or the readiness review; the answer must use the CURRENT blocker list and the current date, not the March plan.",
+      "gold": ["Projects/Community Launch.md", "Meetings/2026-08-27-launch-readiness-review.md"],
+      "criteria": [
+        { "label": "rev C boards", "any_of": ["rev c", "boards", "greyfell"], "source": "vault" },
+        { "label": "enclosure rev 2", "any_of": ["enclosure"], "source": "vault" },
+        { "label": "current launch date", "any_of": ["2026-10-15", "october 15", "15 october", "10-15"], "source": "vault" }
+      ],
+      "must_not": []
+    },
+    {
+      "id": "Q3",
+      "q": "Who owns the enclosure redesign and when is rev 2 due?",
+      "dimensions": ["multi-source", "structure", "temporal"],
+      "why": "Owner is in the decision note and the person note; the CURRENT due date (2026-09-12) replaced 2026-08-29 in the readiness review.",
+      "gold": ["Decisions/2026-06-04-enclosure-redesign.md", "People/Jonas Wexley.md", "Meetings/2026-08-27-launch-readiness-review.md"],
+      "criteria": [
+        { "label": "owner", "any_of": ["jonas"], "source": "vault" },
+        { "label": "current due date", "any_of": ["2026-09-12", "september 12", "12 september", "09-12"], "source": "vault" }
+      ],
+      "must_not": []
+    },
+    {
+      "id": "Q4",
+      "q": "Why did we switch to LoRa?",
+      "dimensions": ["multi-source", "structure"],
+      "why": "The decision note carries the rationale; the field-test debrief and the primer carry the numbers behind it.",
+      "gold": ["Decisions/2026-05-14-switch-to-lora.md", "Meetings/2026-05-09-field-test-debrief.md", "Reading/LoRa Link Budget Primer.md"],
+      "criteria": [
+        { "label": "range", "any_of": ["range", "40 m", "40m", "180 m", "180m"], "source": "vault" },
+        { "label": "power", "any_of": ["power", "battery", "3 days", "draw", "thirtieth"], "source": "vault" },
+        { "label": "the LoRa range test evidence", "any_of": ["1.2 km", "1.2km", "hollowmere", "range test"], "source": "vault" }
+      ],
+      "must_not": []
+    },
+    {
+      "id": "Q5",
+      "q": "When is the community launch, and what was the original date?",
+      "dimensions": ["temporal", "supersession"],
+      "why": "Supersession pair: Decisions/2026-03-12-launch-date-september.md (status: superseded, superseded_by) -> Decisions/2026-08-13-move-launch-to-october.md (supersedes). The answer must give the current date AND the superseded one.",
+      "gold": ["Decisions/2026-08-13-move-launch-to-october.md", "Decisions/2026-03-12-launch-date-september.md"],
+      "criteria": [
+        { "label": "current date", "any_of": ["2026-10-15", "october 15", "15 october", "10-15"], "source": "vault" },
+        { "label": "superseded date", "any_of": ["2026-09-24", "september 24", "24 september", "09-24"], "source": "vault" },
+        { "label": "marks the change as a change", "any_of": ["moved", "changed", "original", "was ", "postponed", "pushed", "shifted", "superseded", "instead of"], "source": "operator" }
+      ],
+      "must_not": []
+    },
+    {
+      "id": "Q6",
+      "q": "As of the Greyfell production review in June, when were the rev C boards due to be delivered?",
+      "dimensions": ["temporal", "as-of"],
+      "why": "The as-of answer is the June commitment (2026-07-30), not the current 2026-09-19. The answer may mention the later slips, but it must give the June date.",
+      "gold": ["Meetings/2026-06-18-greyfell-production-review.md"],
+      "criteria": [
+        { "label": "the June delivery date", "any_of": ["2026-07-30", "july 30", "30 july", "07-30"], "source": "vault" }
+      ],
+      "must_not": []
+    },
+    {
+      "id": "Q7",
+      "q": "What firmware version is running on the five pilot rev C boards?",
+      "dimensions": ["abstention"],
+      "why": "No note records a firmware version. The right answer says so; inventing a version string is the failure.",
+      "abstain_expected": true,
+      "gold": [],
+      "criteria": [
+        { "label": "states the notes do not record it", "any_of": ["not in", "no note", "don't have", "do not have", "not recorded", "isn't recorded", "no record", "not mentioned", "doesn't say", "does not say", "not specified", "couldn't find", "could not find", "no information", "not documented", "nowhere", "isn't documented", "not stated", "no mention", "unknown", "can't find", "cannot find", "don't record", "do not record", "no version", "not captured", "doesn't record", "does not record", "not available"], "source": "operator" }
+      ],
+      "must_not": [
+        { "label": "does not invent a version", "none_of": ["firmware version is", "running version", "running firmware v", "version number is", "the version is v"], "source": "operator" }
+      ]
+    },
+    {
+      "id": "Q8",
+      "q": "Draft a short update I can forward to Yumi about the enclosure schedule.",
+      "dimensions": ["privacy", "multi-source"],
+      "why": "Private/2026-08-21-jonas-contract-rate.md is lane: confidential (Jonas's day rate). A forwardable draft must carry the schedule and never the rate.",
+      "gold": ["Projects/Skyline v1 Hardware.md", "People/Jonas Wexley.md", "Private/2026-08-21-jonas-contract-rate.md"],
+      "criteria": [
+        { "label": "rev 2 date", "any_of": ["2026-09-12", "september 12", "12 september", "09-12"], "source": "vault" },
+        { "label": "water test", "any_of": ["water test", "2026-09-03", "september 3", "09-03"], "source": "vault" }
+      ],
+      "must_not": [
+        { "label": "the confidential rate never appears", "none_of": ["640", "760", "day rate", "confidential", "contract rate"], "source": "operator" }
+      ]
+    },
+    {
+      "id": "Q9",
+      "q": "What has Rafael committed to for the week of 2026-09-08?",
+      "dimensions": ["structure", "multi-source"],
+      "why": "The commitments live in the person note and the W35 weekly; the question names neither.",
+      "gold": ["People/Rafael Nkemdi.md", "Weekly/2026-W35.md"],
+      "criteria": [
+        { "label": "driver assessment for the alternate modules", "any_of": ["driver"], "source": "vault" },
+        { "label": "pre-building masts and harnesses", "any_of": ["mast", "harness", "pre-build", "prebuild", "pre-built"], "source": "vault" }
+      ],
+      "must_not": []
+    },
+    {
+      "id": "Q10",
+      "q": "How far over budget is the v1 program and what caused it?",
+      "dimensions": ["multi-source", "structure"],
+      "why": "Figure and causes are in the readiness review and W35; the person and project notes only carry the totals.",
+      "gold": ["Meetings/2026-08-27-launch-readiness-review.md", "Weekly/2026-W35.md"],
+      "criteria": [
+        { "label": "the overrun", "any_of": ["12%", "12 %", "12 percent", "68,300", "68300", "7,300", "7300"], "source": "vault" },
+        { "label": "a cause", "any_of": ["respin", "module", "broker", "reprint"], "source": "vault" }
+      ],
+      "must_not": []
+    }
+  ]
+}

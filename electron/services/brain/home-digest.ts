@@ -29,6 +29,7 @@
 
 import type { Insight, OpenLoop, CalibrationReport, CausalGraph } from './types'
 import type { OwedPerson } from './people-owed-native'
+import { mt, mtf } from '../main-i18n'
 
 export interface DigestItem {
   id: string
@@ -70,6 +71,10 @@ export interface HomeDigest {
    *  top thing owed / to resume / noticed, or a friendly "as your brain fills" nudge
    *  when the vault is empty. */
   returnReason: string
+  /** True when `returnReason` is the generic "as your brain fills" nudge rather than something
+   *  concrete — a first-run surface shows the concrete kind and leaves the filler out. Optional
+   *  only so hand-built fixtures elsewhere stay valid; buildHomeDigest always sets it. */
+  returnReasonIsDefault?: boolean
   generatedAt: string
 }
 
@@ -407,8 +412,15 @@ export function buildHomeDigest(input: HomeDigestInput): HomeDigest {
     needs: needItems,
     away,
     returnReason,
+    returnReasonIsDefault: returnReason === defaultReturnReason(),
     generatedAt: new Date().toISOString()
   }
+}
+
+/** The nudge a sparse or empty vault gets — localized like every other operator-facing line
+ *  produced in main, so the first-run screen does not switch languages mid-page. */
+export function defaultReturnReason(): string {
+  return mt('As your brain fills, I\'ll surface what needs you — check back tomorrow.')
 }
 
 /** The session-end "come back for X" line. Picks the single most compelling reason
@@ -425,23 +437,23 @@ export function computeReturnReason(
   const need = needs[0]
   if (need) {
     if (need.subtype === 'operator-review') {
-      return `${need.title} — a quick review keeps your brain learning what fits you.`
+      return mtf('{title} — a quick review keeps your brain learning what fits you.', { title: need.title })
     }
     if (need.subtype === 'person-owed') {
-      return `You still owe ${need.title} a reply (${need.reason}) — I'll keep it up top.`
+      return mtf('You still owe {title} a reply ({reason}) — I\'ll keep it up top.', { title: need.title, reason: need.reason })
     }
-    return `${need.title} is still waiting on your call (${need.reason}).`
+    return mtf('{title} is still waiting on your call ({reason}).', { title: need.title, reason: need.reason })
   }
   const track = tracks[0]
   if (track) {
-    return `Pick back up on ${track.label} — ${track.reason}.`
+    return mtf('Pick back up on {label} — {reason}.', { label: track.label, reason: track.reason })
   }
   const ins = insights[0]
   if (ins) {
-    return `Come back for what I noticed: ${ins.title}.`
+    return mtf('Come back for what I noticed: {title}.', { title: ins.title })
   }
   if (away) {
-    return `Since you were away: ${away}.`
+    return mtf('Since you were away: {away}.', { away })
   }
-  return "As your brain fills, I'll surface what needs you — check back tomorrow."
+  return defaultReturnReason()
 }

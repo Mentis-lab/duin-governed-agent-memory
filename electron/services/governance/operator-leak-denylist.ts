@@ -24,8 +24,9 @@
 //
 // Nothing here is loaded at runtime — it is test-only data.
 
+import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { dirname, resolve } from 'node:path'
 
 /** A denylisted token plus why it matters, so a failing scan explains itself. */
 export interface DenyToken {
@@ -61,8 +62,48 @@ export const REPO_ROOT = resolve(__dirname, '..', '..', '..')
  * Read the operator's private denylist. Never throws: a missing, unreadable or malformed file
  * yields an empty list, so a clone without one still runs the sample-backed scan.
  */
+/**
+ * The MAIN worktree's root, or null when this is not a linked worktree (or git is unavailable).
+ *
+ * WHY THIS EXISTS. The local denylist is gitignored, so it exists in exactly ONE checkout — and
+ * SESSION-LANES.md mandates one WORKTREE PER LANE, where the file is absent. loadLocalDenylist
+ * therefore returned [] in every lane, the scan fell back to the fictional SAMPLE_DENYLIST, and
+ * it passed while asserting nothing about the operator's real identities. It was not a weak gate,
+ * it was an ABSENT gate that reported PASS, which is the worst of the three states.
+ *
+ * Found 2026-09-03 by running the suite in the shared tree after a night of lane merges: four
+ * files carrying the operator's project, his own name and two colleagues' names had reached
+ * trunk through worktrees where this scan was green.
+ *
+ * `--git-common-dir` resolves to the SHARED `.git` from any worktree, so its parent is the main
+ * checkout. Best-effort by construction: any failure returns null and the caller degrades to the
+ * previous behaviour rather than breaking a public clone that has no git at all.
+ */
+function mainWorktreeRoot(): string | null {
+  try {
+    const out = execFileSync('git', ['rev-parse', '--git-common-dir'], {
+      cwd: REPO_ROOT,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore']
+    }).trim()
+    if (!out) return null
+    const common = resolve(REPO_ROOT, out)
+    if (!/(^|[\\/])\.git$/.test(common)) return null
+    const root = dirname(common)
+    return root && root !== REPO_ROOT ? root : null
+  } catch {
+    return null
+  }
+}
+
 export function loadLocalDenylist(file?: string): DenyToken[] {
-  const path = file ?? process.env.DUIN_LEAK_DENYLIST_FILE ?? resolve(REPO_ROOT, LOCAL_DENYLIST_FILE)
+  const explicit = file ?? process.env.DUIN_LEAK_DENYLIST_FILE
+  let path = explicit ?? resolve(REPO_ROOT, LOCAL_DENYLIST_FILE)
+  if (!explicit && !existsSync(path)) {
+    // A linked worktree keeps no copy; read the main checkout's instead.
+    const main = mainWorktreeRoot()
+    if (main) path = resolve(main, LOCAL_DENYLIST_FILE)
+  }
   if (!existsSync(path)) return []
   let raw: unknown
   try {

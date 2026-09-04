@@ -119,7 +119,10 @@ export interface AgentRunNotifyEvent {
 
 export interface ForkAgentDeps {
   runner: ForkAgentRunner
-  defaultModel: string
+  /** The engine every fork runs on when `opts.modelId` is absent — the parent turn's
+   *  resolved model. Absent too → the `agentic` role is resolved from the provider
+   *  policy at fork time (roles.ts). There is no default model. */
+  model?: string
   /** Defaults to subagent-types#getSubagentType. */
   loadType?: SubagentTypeResolver
   /** Parent's view of available tools. Used to intersect with the type's allowedTools. */
@@ -143,7 +146,7 @@ export interface ForkAgentOptions {
   allowedTools?: AllowedTools
   /** If supplied, the subagent is forced to return JSON conforming to this schema. */
   schema?: JsonSchemaLike
-  /** Defaults to deps.defaultModel. */
+  /** Explicit engine for this fork. Absent → deps.model, else the `agentic` role. */
   modelId?: string
   /** Optional context block injected as the first user-message segment. */
   context?: string
@@ -568,9 +571,19 @@ export function forkAgent<T = string | Record<string, unknown>>(
       }
 
       const messages = buildForkAgentMessages(validated.type, opts)
+      // Engine precedence: the fork's explicit model → the parent's engine → the
+      // `agentic` role from the provider policy. The registry import stays dynamic so
+      // this module never drags provider/keychain initialization into test processes
+      // (the same reason model-compaction.ts imports it lazily).
+      let modelId = opts.modelId ?? deps.model
+      if (!modelId) {
+        const { routeModel } = await import('./providers/registry')
+        modelId = routeModel('agentic') ?? undefined
+      }
+      if (!modelId) throw new Error('forkAgent: no usable model for the agentic role')
       const runnerInput: ForkAgentRunnerInput = {
         messages,
-        modelId: opts.modelId ?? deps.defaultModel,
+        modelId,
         allowedTools: validated.allowedTools,
         schema: opts.schema,
         schemaToolName: opts.schema ? SUBAGENT_SCHEMA_TOOL_NAME : undefined,

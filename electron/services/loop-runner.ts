@@ -4,6 +4,7 @@ import { getDb } from './database'
 import { saveMessage, getConversation } from './conversation-store'
 import { boundedJsonPreview, recordEvent } from './event-log'
 import { readSettings } from './settings-helper'
+import { AUTO_ENGINE } from './providers/roles'
 
 export type LoopWakeupStatus = 'pending' | 'fired' | 'cancelled' | 'error'
 
@@ -216,7 +217,9 @@ export function fireDueWakeups(now = Date.now()): LoopWakeup[] {
       // `=== true` (not `!== false`) keeps a missing key default-safe.
       if (turnRunner && readSettings().backgroundAutonomy === true) {
         const conv = getConversation(wakeup.conversationId)
-        const model = conv?.model ?? 'deepseek-v4-pro'
+        // The conversation's explicit pin, else AUTO_ENGINE: the headless turn resolves
+        // the chat role from the provider policy. No default model.
+        const model = conv?.model || AUTO_ENGINE
         // BOUND the wake-up turn. LoopTurnRunner takes a signal precisely so an
         // iteration timeout can interrupt a turn, and this call passed neither a signal
         // nor any deadline — so a self-paced loop's auto-approved schedule_wakeup fired a

@@ -1,5 +1,6 @@
 import { appendFileSync, existsSync, statSync, renameSync, readFileSync } from 'fs'
 import { join } from 'path'
+import { flushMainLog, initMainLog, installConsoleMirror, setMainLogVerbose } from './main-log'
 
 // Diagnostic trace writer for the Stall & Timeout phase follow-up. Writes
 // timestamped JSONL records to userData/lamprey-debug.log so we can see the
@@ -11,6 +12,12 @@ import { join } from 'path'
 // The writer is opt-in via `debugTrace: true` in settings.json. The Stall &
 // Timeout debug build ships with the flag forced on; production builds leave
 // it off so users aren't writing trace logs by default.
+//
+// The ALWAYS-ON sink is a different file: main-log.ts keeps `<userData>/logs/main.log` at warn
+// level on every install (console.warn/error mirrored, 2 MB × 5). It is wired from the same
+// bootstrap call main.ts already makes here (setDebugTraceUserDataPath), so the opt-in verbose
+// trace above and the always-on warn log share one seam and main.ts needed no change. When the
+// verbose trace is on, main.log also takes `info` lines.
 
 const MAX_LOG_BYTES = 20 * 1024 * 1024 // 20 MB then rotate to .prev
 const BUFFER_FLUSH_MS = 250
@@ -26,6 +33,15 @@ let flushTimer: ReturnType<typeof setTimeout> | null = null
 
 export function setDebugTraceUserDataPath(fn: (() => string) | null): void {
   userDataPathProvider = fn
+  // The provider just changed, so a cached answer is stale: a trace() before this call cached
+  // "no provider → off" for ENABLED_TTL_MS, and initMainLog read that cache — which is how an
+  // instance seeded with `debugTrace: true` booted with main.log non-verbose (P0 audit E2,
+  // 2026-09-03). Re-read from disk here; isEnabled() keeps main-log in step on every later read.
+  enabledCache = null
+  // Always-on warn-level sink (main-log.ts). Idempotent, and cheap before app-ready: the
+  // directory is resolved lazily on the first flush.
+  initMainLog(fn, { verbose: isEnabled() })
+  if (fn) installConsoleMirror()
 }
 
 /** Force the trace on regardless of settings — used by the debug build's
@@ -33,6 +49,7 @@ export function setDebugTraceUserDataPath(fn: (() => string) | null): void {
 export function forceDebugTraceOn(): void {
   forceEnabled = true
   enabledCache = true
+  setMainLogVerbose(true)
 }
 
 function isEnabled(): boolean {
@@ -51,13 +68,18 @@ function isEnabled(): boolean {
     const settingsPath = join(userDataPathProvider(), 'settings.json')
     if (!existsSync(settingsPath)) {
       enabledCache = false
+      setMainLogVerbose(false)
       return false
     }
     const raw = JSON.parse(readFileSync(settingsPath, 'utf-8')) as { debugTrace?: unknown }
     enabledCache = raw.debugTrace === true
+    // main.log's info gate follows the flag on every fresh read (≤ ENABLED_TTL_MS behind a
+    // settings change), so verbose neither needs a restart to apply nor to stop applying.
+    setMainLogVerbose(enabledCache)
     return enabledCache
   } catch {
     enabledCache = false
+    setMainLogVerbose(false)
     return false
   }
 }
@@ -132,4 +154,5 @@ export function flushTrace(): void {
     flushTimer = null
   }
   flushNow()
+  flushMainLog()
 }

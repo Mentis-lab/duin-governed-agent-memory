@@ -17,11 +17,12 @@
 // Errors → RUN_ERROR.
 //
 // Provider reuse: the grounded answer is produced by the user's chosen
-// provider via the registry's `chatStream` (NO reimplemented HTTP). The model
-// is resolved from settings.defaultModel; since that defaults to 'duin-brain'
-// (which is THIS connector, not a real API), we resolve it to the first
-// catalog model whose provider has a stored API key. With no key, we stream a
-// friendly message telling the user to add one in Settings.
+// provider via the registry's `chatStream` (NO reimplemented HTTP). The engine
+// is the CHAT ROLE (resolveAnswerEngine → registry resolveRole): the request's
+// per-conversation pin when callable, else the operator's providerPolicy
+// filtered by live provider health — there is no stored default model (P0
+// model plane, roles.ts). With nothing callable, the keyless composed answer
+// ends with a plain call to connect a model in Settings.
 
 import { handleExecutiveRequest } from '../executive-api/exec-endpoint'
 import {
@@ -75,6 +76,7 @@ import { recordVerdict } from '../brain/decision-verdict-native'
 import { saveProjectLogo, clearProjectLogo } from '../brain/project-logo-native'
 import { retrieveContext, toGraphView, graphNeighbors, liveWholeNotes, liveGraph, type Citation, renderComputed } from '../brain/retrieve-agent'
 import { buildWholeNoteContext } from '../brain/wholenote-ground'
+import { buildCurrencyBlock, supersessionsIn, superseders } from '../brain/grounding-currency'
 import { buildGraphExpandContext, graphExpandGroundEnabled } from '../brain/graph-expand-adapt'
 import { compileContext } from '../brain/context-compiler'
 import { detectCommunities } from '../brain/graph-insight'
@@ -189,13 +191,15 @@ import {
   buildBrain
 } from '../brain'
 import { automaticCloudWorkAllowed } from '../brain/cloud-consent'
-import { chatStream, chatOnce, routeModel, routeDistinctModels, routeWithinProvider, getProviderForModel, resolveModel, detectOllama, wholeNoteEgressAllowed } from '../providers/registry'
+import { chatStream, chatOnce, routeModel, resolveRole, envRoutePin, routeWithinProvider, getProviderForModel, resolveModel, detectOllama, wholeNoteEgressAllowed, emitRoleFailure, isCallableModel, PROVIDERS } from '../providers/registry'
 import type { ProviderId } from '../providers/registry'
 import {
-  failoverReason,
-  isModelNotFoundError,
+  classifyProviderError,
   isProviderFailoverError
 } from '../providers/quota-error'
+import { AUTO_ENGINE, isBenchRequest, type RoleResolution, type ProviderHealthReason } from '../providers/roles'
+import { nextFailoverHop, exhaustionMessage } from '../providers/router'
+import { scheduleBootProbes, getProviderHealth, coolingDownClass } from '../providers/provider-health'
 import { CONTINUE_PROMPT, continuationVerdict, maxContinuations } from './continuation'
 import type { ContinuationVerdict } from './continuation'
 import { composeKeylessAnswer } from './keyless-answer'
@@ -448,33 +452,26 @@ function clearGrace(runId: string): void {
 // ──────────────────── model resolution ────────────────────
 
 /**
- * Pick a REAL model to answer with. settings.defaultModel is typically
- * 'duin-brain' (this connector), which is not callable. The registry resolves:
- * a BYO-key catalog model first, else a local Ollama model (keyless), else null.
+ * Resolve the CHAT role for this turn (P0 model plane, roles.ts). The request's `model` is the
+ * per-conversation pin unless it is the AUTO_ENGINE sentinel ('duin-brain' — "no pin, resolve from
+ * policy"); a DUIN_ROUTE_CHAT env pin applies when no request pin does. There is no stored default
+ * model any more: the answer comes from the operator's provider policy filtered by live health,
+ * and `chain` is the ordered failover list the round loop walks. Null = nothing callable at all
+ * (no keyed provider, no local runtime) → the keyless composed answer.
  */
-function resolveAnswerModel(requested?: string): string | null {
-  // P1 — a per-turn `requested` model (the user's picker choice, threaded from
-  // the chat send through duin-bridge) is the brain's ENGINE for THIS answer.
-  // routeModel honours it when usable and otherwise falls through to the tier
-  // policy → Ollama → keyless, so an unusable/'duin-brain'/absent value behaves
-  // EXACTLY as before. The 'duin-brain' sentinel is never usable (isUsableModel),
-  // so passing it through is safe — it just defers to the settings/auto path.
-  if (requested && requested !== 'duin-brain') {
-    const routed = routeModel('chat', requested)
-    if (routed) return routed
-  }
-  // F3 (A2) — the brain's ENGINE is `brainEngine` (the LLM powering the language),
-  // independent of the top-level pick. 'auto'/unset → fall back to defaultModel,
-  // then routeModel's tier policy → Ollama → keyless. An explicit engine wins.
-  const s = readSettings()
-  const engine = typeof s.brainEngine === 'string' ? s.brainEngine : ''
-  const preferred =
-    engine && engine !== 'auto'
-      ? engine
-      : typeof s.defaultModel === 'string'
-        ? s.defaultModel
-        : undefined
-  return routeModel('chat', preferred)
+function resolveAnswerEngine(requested?: string): RoleResolution | null {
+  const pin = requested && requested !== AUTO_ENGINE ? requested : (envRoutePin('chat') ?? undefined)
+  return resolveRole('chat', { pin })
+}
+
+/** Why a requested model is not the engine: computed from the key/health record, never typed. */
+function describeUnavailable(modelId: string): string {
+  if (!isCallableModel(modelId)) return 'no key or unknown id'
+  const provider = resolveModel(modelId).provider
+  const parked = coolingDownClass(provider)
+  const h = getProviderHealth(provider)
+  const reason: ProviderHealthReason = parked ?? (h && h.healthy === false ? h.reason : 'unknown')
+  return h?.detail ? `${reason} — ${h.detail}` : reason
 }
 
 /**
@@ -1069,6 +1066,18 @@ export async function handleAgui(req: IncomingMessage, res: ServerResponse): Pro
   let run: RunState | null = null
   /** Sealed into the journal's TURN_END record from the `finally`, which is the only block that
    *  runs on every exit path — the in-try `acc` / `turnCost` are not in scope there. */
+  // Deny-first execution gate: is THIS turn authorized to run host-exec / irreversible tools?
+  // The trusted renderer (and the main-process bridge) send the per-launch token; an
+  // unauthenticated local caller does not → gated tools are refused (agui-guard.ts). Reads,
+  // reasoning, search, and vault note writes proceed regardless. Decided here, before the journal
+  // opens, because the bench marker below is only honoured for an authorized caller.
+  const execOk = execAuthorized(req.headers['x-duin-exec'], brainExecToken)
+  // Bench / evaluation marker (roles.ts BENCH_HEADER, decision D3): accepted ONLY with the exec
+  // token. A bench turn answers exactly like any other turn but teaches nothing — both learn sites,
+  // taste capture, the turn-beat prediction and the govern trigger are skipped — and is tagged
+  // `bench: true` in its journal (TURN_START + TURN_END, so /debug/turns shows it). Without the
+  // token the header is ignored and this is an ordinary turn (S7, 2026-09-02).
+  const bench = isBenchRequest(req.headers, execOk)
   const turnOutcome = {
     answerChars: 0,
     costUsd: 0,
@@ -1076,7 +1085,19 @@ export async function handleAgui(req: IncomingMessage, res: ServerResponse): Pro
     /** How privileged this turn was. DUIN already ENFORCES this boundary with execOk at the gate;
      *  recording it does not add a control, it NAMES the one that exists — so a journalled turn
      *  says whether a human was behind it without re-deriving that from headers after the fact. */
-    origin: 'unknown' as 'authorized' | 'deprivileged' | 'unknown'
+    origin: 'unknown' as 'authorized' | 'deprivileged' | 'unknown',
+    /** Evaluation traffic (never learned from). Always stated, so a reader can tell "not bench"
+     *  from "written before the field existed". */
+    bench,
+    /** WHICH grounding branch produced this turn's context — see the `groundingPath` declaration in
+     *  handleAgui. The branches are first-wins and silently skip each other; without this the turn
+     *  record cannot say whether the hybrid retriever ran at all. */
+    groundingPath: 'none' as 'graph-expand' | 'whole-note' | 'agentic' | 'ranking-stages' | 'none',
+    /** The engine that produced the answer, the ordered engines tried, and whether the answer came
+     *  from a failover hop — the vitals footer's `engine X after Y (reason)`. */
+    engine: null as string | null,
+    engineChain: [] as string[],
+    recovered: false
   }
   let subToken: symbol | null = null
   if (resumeOn && parsed.resume === true && typeof parsed.runId === 'string' && parsed.runId) {
@@ -1149,7 +1170,7 @@ export async function handleAgui(req: IncomingMessage, res: ServerResponse): Pro
     runForRes.set(res, run)
     journalForRes.set(
       res,
-      openTurnJournal(rid, { threadId: parsed.threadId ?? null, model: parsed.model ?? null })
+      openTurnJournal(rid, { threadId: parsed.threadId ?? null, model: parsed.model ?? null, bench })
     )
   }
 
@@ -1289,11 +1310,7 @@ export async function handleAgui(req: IncomingMessage, res: ServerResponse): Pro
   // suspenders; it's also cleared on cut and at turn end).
   if (watchdogTimer) res.on('close', () => clearInterval(watchdogTimer))
 
-  // Deny-first execution gate: is THIS turn authorized to run host-exec / irreversible tools?
-  // The trusted renderer (and the main-process bridge) send the per-launch token; an
-  // unauthenticated local caller does not → gated tools are refused (agui-guard.ts). Reads,
-  // reasoning, search, and vault note writes proceed regardless.
-  const execOk = execAuthorized(req.headers['x-duin-exec'], brainExecToken)
+  // `execOk` was decided above the journal open (it gates the bench marker too).
   turnOutcome.origin = execOk ? 'authorized' : 'deprivileged'
   // Per-action approval posture for THIS turn. The composer's permissions pill can
   // only TIGHTEN below the env floor, never loosen it (meet of env + pill). Absent /
@@ -1322,7 +1339,9 @@ export async function handleAgui(req: IncomingMessage, res: ServerResponse): Pro
   // (predicted vs the "stay on current track" baseline) and persist the graded row.
   // Gated OFF by default → never called → no file, byte-identical to today. LOG-ONLY:
   // this reads nothing into the reply.
-  if (turnBeatsEnabled()) {
+  // A bench turn is not the operator's next beat: grading the prior staged prediction against an
+  // evaluation query would score calibration on traffic the operator never sent (D3).
+  if (turnBeatsEnabled() && !bench) {
     try {
       const vd = (readSettings().localBrainNotesDir as string) || null
       const actualTrack = loadOntology(vd).trackOf(query)
@@ -1451,7 +1470,9 @@ export async function handleAgui(req: IncomingMessage, res: ServerResponse): Pro
     // picker choice used as the brain's engine. resolveAnswerModel honours it
     // when usable, else falls back to today's settings/auto pick.
     const requestedModel = typeof parsed.model === 'string' ? parsed.model : undefined
-    const modelId = resolveAnswerModel(requestedModel)
+    const engine = resolveAnswerEngine(requestedModel)
+    const modelId = engine?.modelId ?? null
+    turnOutcome.engine = modelId
     if (!modelId) {
       // No LLM (no provider key, no Ollama) — still give a USEFUL grounded answer
       // composed deterministically from the keyless engines + retrieved notes,
@@ -1487,8 +1508,8 @@ export async function handleAgui(req: IncomingMessage, res: ServerResponse): Pro
       // gpt-5.5-oneai) are NOT the operator: their synthetic personas were compiling into live
       // taste ("Prefers single-sentence responses", fictional due-diligence projects) — QA
       // 2026-08-24, F4.
-      if (modelId && resolveModel(modelId)?.hidden === true) {
-        console.log('[local-brain] hidden bench model turn — learning ticks skipped')
+      if (bench || (modelId && resolveModel(modelId)?.hidden === true)) {
+        console.log(`[local-brain] ${bench ? 'bench-header' : 'hidden bench model'} turn — learning ticks skipped`)
       } else {
         void learnFromTurn(query, answer, execOk)
         successTick(parsed.threadId ?? '', query, answer)
@@ -1508,7 +1529,7 @@ export async function handleAgui(req: IncomingMessage, res: ServerResponse): Pro
       // WS2′ Phase A (turn-beats) — STORE side: run the cheap LOG-ONLY prediction pass and
       // stage the next-beat for turn N+1 to grade. Gated OFF by default. Fire-and-forget
       // (measurement); keyless/null model → no beat. Never touches the reply/grounding.
-      if (turnBeatsEnabled()) {
+      if (turnBeatsEnabled() && !bench) {
         const beatVd = (readSettings().localBrainNotesDir as string) || null
         void turnBeatTick({
           vaultDir: beatVd,
@@ -1517,7 +1538,7 @@ export async function handleAgui(req: IncomingMessage, res: ServerResponse): Pro
           grounding: buildBeatGrounding(beatVd, messages, query)
         })
       }
-      governTick()
+      if (!bench) governTick() // an evaluation turn never trips the govern debounce (D3)
       void consolidationTick(query)
       forecastTick()
       projectTick()
@@ -1540,7 +1561,13 @@ export async function handleAgui(req: IncomingMessage, res: ServerResponse): Pro
     // reasoning trace. Additive + guarded (only when a model resolved); a
     // failure here must never block the answer.
     try {
-      sseFrame(res, { type: 'STEP', label: `engine: ${modelId}` })
+      // A requested pin that lost to health is said out loud: the operator asked for X and gets
+      // Y, and the reason is the one the classifier recorded (never "the model changed").
+      const pinLost =
+        requestedModel && requestedModel !== AUTO_ENGINE && engine?.source !== 'pin'
+          ? ` (requested ${requestedModel} unavailable: ${describeUnavailable(requestedModel)})`
+          : ''
+      sseFrame(res, { type: 'STEP', label: `engine: ${modelId}${pinLost}` })
     } catch {
       // best-effort indicator — ignore
     }
@@ -1570,6 +1597,17 @@ export async function handleAgui(req: IncomingMessage, res: ServerResponse): Pro
     // (default on when a model exists); ANY null/throw → fall back to today's
     // `hits` EXACTLY. Zero regression.
     let contextOverride: string | undefined
+    /** WHICH grounding branch actually produced this turn's context.
+     *
+     *  The branches below are FIRST-WINS: setting `contextOverride` in an earlier one silently skips
+     *  every later one, including the agentic retriever and the four ranking stages. That is by
+     *  design, but it was INVISIBLE — nothing in the turn record said which path ran. It cost a whole
+     *  benchmark on 2026-09-04: `DUIN_WHOLENOTE_GROUND=1` (the operator's own launcher setting) put
+     *  all 120 probes through plain BM25 whole-note grounding, with the hybrid retriever, reranker,
+     *  graph expansion and agentic loop bypassed on every single one — and the run was written up as
+     *  "DUIN vs naive BM25" when it was BM25 vs BM25. Recording the path is not a behaviour change;
+     *  it is the one thing that would have caught it. Surfaced on TURN_END and in GET /debug/turns. */
+    let groundingPath: 'graph-expand' | 'whole-note' | 'agentic' | 'ranking-stages' | 'none' = 'none'
     /** Whole-corpus values the retrieval agent computed. Threaded separately from contextOverride
      *  because it must reach the prompt on BOTH paths and with zero citations. */
     let computedBlock: string | undefined
@@ -1606,6 +1644,7 @@ export async function handleAgui(req: IncomingMessage, res: ServerResponse): Pro
         })
         if (context) {
           contextOverride = context
+          groundingPath = 'graph-expand'
           console.log(
             `[local-brain] graph-expand-ground: corpus=${notes.length} note(s), used=${used.length}, hops=${hopsUsed}, ${context.length} chars`
           )
@@ -1667,12 +1706,53 @@ export async function handleAgui(req: IncomingMessage, res: ServerResponse): Pro
         const rawCap = process.env.DUIN_WHOLENOTE_NOTECAP
         const perNoteBudget = rawCap != null && rawCap !== '' ? Number(rawCap) : 20000
         const sem = mode === 'bm25' ? [] : await search(query, 24)
-        const { context, used } = buildWholeNoteContext(
+        // CURRENCY (2026-09-03): co-retrieve the note that SUPERSEDES anything the ranking picked, then
+        // label the superseded statements after the notes. Measured on bench/stale: in 2 of 4 read
+        // failures the superseding note ranked #1 and the answer still came from the older one; in the
+        // other 2 the superseder never entered the top-8 while an older note on the same topic did.
+        // Ranking scores topical similarity, so a long stale note beats a brief update. Both halves are
+        // fixed here WITHOUT reordering general search and WITHOUT dropping any text.
+        // Kill switch: DUIN_GROUNDING_CURRENCY=0.
+        const currencyOn = process.env.DUIN_GROUNDING_CURRENCY !== '0'
+        const ledger = currencyOn
+          ? (() => {
+              try {
+                const d = readSettings().localBrainNotesDir
+                return typeof d === 'string' && d ? loadPersistedLedger(d) : []
+              } catch {
+                return []
+              }
+            })()
+          : []
+        let { context, used } = buildWholeNoteContext(
           query,
           notes.map((n) => ({ id: n.id, text: n.text })),
           sem.map((h) => ({ note: h.file, score: h.score })),
           { topK, perNoteBudget }
         )
+        if (ledger.length > 0 && used.length > 0) {
+          // (b) pull in the updates for whatever was retrieved, then re-assemble so they are IN context.
+          const extra = superseders(used, ledger).filter((id) => notes.some((n) => n.id === id))
+          if (extra.length > 0) {
+            const re = buildWholeNoteContext(
+              query,
+              notes.map((n) => ({ id: n.id, text: n.text })),
+              sem.map((h) => ({ note: h.file, score: h.score })),
+              { topK: topK + extra.length, perNoteBudget, pin: extra }
+            )
+            if (re.context) {
+              context = re.context
+              used = re.used
+              console.log(`[local-brain] currency: co-retrieved ${extra.length} superseding note(s)`)
+            }
+          }
+          // (a) label what is no longer current. Appends only — the stale text stays in context.
+          const block = buildCurrencyBlock(supersessionsIn(used, ledger))
+          if (block) {
+            context = context + block
+            console.log(`[local-brain] currency: labelled ${supersessionsIn(used, ledger).length} superseded statement(s)`)
+          }
+        }
         if (context) {
           // NOTE (measured 2026-07-13): a prepended "answer strictly / don't infer absent values"
           // directive was tried here and REGRESSED the benchmark (temporal-reasoning 96%→85% — it made
@@ -1681,6 +1761,7 @@ export async function handleAgui(req: IncomingMessage, res: ServerResponse): Pro
           // 87% vs naive-RAG 88% (tie, within judge noise) and BEATS it on knowledge-update (+6) and
           // temporal (+4). Keep the context clean; don't reintroduce answer-behavior directives here.
           contextOverride = context
+          groundingPath = 'whole-note'
           console.log(
             `[local-brain] wholenote-ground[${mode}]: corpus=${notes.length} note(s), used=${used.length}, ${context.length} chars`
           )
@@ -1737,6 +1818,7 @@ export async function handleAgui(req: IncomingMessage, res: ServerResponse): Pro
             // reaches queries short enough to be non-substantive — which are also the queries the
             // agentic pass almost never returns citations for.
             agenticCitations = retrieved.citations
+        if (groundingPath === 'none') groundingPath = 'agentic'
             hits = citationsToHits(retrieved.citations)
             console.log(
               `[local-brain] agentic retrieve: ${retrieved.citations.length} citation(s), ` +
@@ -1751,6 +1833,7 @@ export async function handleAgui(req: IncomingMessage, res: ServerResponse): Pro
               flatFallback: citationsToContext
             })
             contextOverride = compiled.context
+        groundingPath = 'ranking-stages'
             console.log(
               `[local-brain] agentic retrieve: ${retrieved.citations.length} citation(s), ` +
                 `${retrieved.turns} turn(s), ${retrieved.toolCalls} tool call(s); ` +
@@ -1816,8 +1899,10 @@ export async function handleAgui(req: IncomingMessage, res: ServerResponse): Pro
 
     // ── Shared cross-encoder rerank (item 3) ──
     // Reuse the attachment-RAG reranker on the notes-brain path so ONE setting
-    // (rag.rerankMode) reorders BOTH pipelines. Off by default → fusion order
-    // unchanged. This used to be qualified "one-shot path only — the agentic pass already ranks its
+    // (rag.rerankMode) reorders BOTH pipelines. ON by default (DEFAULT_RERANK_MODE =
+    // 'local-cross-encoder'); an operator opts OUT in Settings → RAG. The comment here said
+    // 'off by default' until 2026-09-04 -- true before item 6 flipped the default, and stale
+    // after it. This used to be qualified "one-shot path only — the agentic pass already ranks its
     // own citations"; that claim was never measured and is now REFUTED (see agenticRankStagesEnabled),
     // so the agentic citations arrive here as `hits` too and get cross-encoded like any other
     // candidate set. Best-effort inside rerankHits.
@@ -2071,6 +2156,9 @@ export async function handleAgui(req: IncomingMessage, res: ServerResponse): Pro
     // A successful quota/billing fallback (below) carries forward across tool-rounds so we don't
     // re-hit the dead provider every round — it holds the working model for the rest of the turn.
     let activeModel = modelId
+    // Every engine this turn actually called, in order — the journal's `engineChain`. Turn-scoped
+    // (the per-round `triedModels` below is not), so TURN_END can say what the answer cost in hops.
+    const engineTried: string[] = [modelId]
     // Repeat-failure ladder state: the streak of consecutive identical failing calls, and the root
     // cause once it trips. Turn-scoped by construction — a fresh turn starts with a clean streak.
     let repeatState = emptyRepeatState()
@@ -2155,6 +2243,7 @@ export async function handleAgui(req: IncomingMessage, res: ServerResponse): Pro
       // model they never chose, a provider they may not have known was in play, and no
       // sign that the first one failed for a completely different reason.
       const attemptLog: string[] = []
+      const attemptReasons: ProviderHealthReason[] = []
       for (;;) {
         triedModels.add(attemptModel)
         // Cost ceiling, checked before EVERY attempt (a failover hop is another paid call, so it
@@ -2226,43 +2315,58 @@ export async function handleAgui(req: IncomingMessage, res: ServerResponse): Pro
               onError: (error: string) => fail(error)
             },
             turnAbort.signal,
-            { reasoningEffort: roundEffort }
+            { reasoningEffort: roundEffort },
+            // Audit context so the brain path emits model.request.started/completed (usage +
+            // costUsd) like chatOnce callers do — lane C's cost ledger missed every chat turn
+            // while this was undefined. The thread is the conversation; the role names the face.
+            { conversationId: parsed.threadId ?? undefined, role: 'brain-turn', purpose: 'main' }
           ).catch((err) => fail((err as Error)?.message ?? 'provider error'))
         })
         if (!failoverErr || turnAbort.signal.aborted) break
-        attemptLog.push(`${attemptModel} (${failoverReason(failoverErr)})`)
         const failedProvider = getProviderForModel(attemptModel)
-        // Stale/unknown id (model_not_found/404): exhaust the SAME provider's other catalog ids first —
-        // a single-key operator has no other provider to fail over to (e.g. the shipped default
-        // `deepseek-v4-pro` 404s → try `deepseek-v4-flash`). A dry/rate-limited account can't be fixed
-        // by another id on the same account, so skip straight to a different keyed provider.
-        const staleId = isModelNotFoundError(failoverErr)
-        let fallback = staleId ? routeWithinProvider(failedProvider, 'chat', triedModels) : null
-        // Walk EVERY untried provider, not just one. routeDistinctModel avoids a single
-        // provider and rescans the tier policy from the top, so it has no memory of what
-        // already failed: on a second quota failure it hands back the first keyed model
-        // again — usually the one that just died — which trips the triedModels guard below
-        // and ends the turn. With three funded providers, the third was never reached.
+        // One verdict per hop (roles.ts ClassifiedProviderError): the STEP line, the event and the
+        // exhaustion message all read the same reason. chatStream already formatted the message
+        // as `provider: reason (status) — detail`, so this parses exactly rather than re-guessing.
+        const classified = classifyProviderError({ message: failoverErr }, failedProvider, PROVIDERS[failedProvider].label)
+        attemptLog.push(`${attemptModel} (${classified.reason})`)
+        attemptReasons.push(classified.reason)
+        // Stale/unknown id (not-found): exhaust the SAME provider's other catalog ids first — a
+        // single-key operator has no other provider to fail over to (e.g. a retired default 404s →
+        // try the provider's next id). Any ACCOUNT-level reason (no credit, bad key, no access,
+        // rate limit, unreachable, 5xx) walks the role's CHAIN instead — resolveRole ordered it by
+        // policy then health — never re-entering a provider that already failed this turn.
+        const fallback = nextFailoverHop({
+          chain: engine?.chain ?? [],
+          triedModels,
+          providerOf: getProviderForModel,
+          reason: classified.reason,
+          failedModelId: attemptModel,
+          withinProvider: () => routeWithinProvider(failedProvider, 'chat', triedModels)
+        })
         if (!fallback) {
-          const triedProviders = new Set<ProviderId>([failedProvider])
-          for (const m of triedModels) triedProviders.add(getProviderForModel(m))
-          fallback = routeDistinctModels(triedProviders, 'chat', 1)[0] ?? null
-        }
-        if (!fallback || triedModels.has(fallback)) {
-          // Nothing untried left. Report the WHOLE chain, front-loaded: this string is
-          // truncated to 157 chars downstream, so the per-model verdicts come first and
-          // the raw provider text last. Each model is named with the reason IT failed —
-          // an operator whose Claude ran dry and whose OpenAI key is bad needs to see
-          // both facts, because they are two different jobs to fix.
+          // Chain exhausted (router.exhaustionMessage: every engine with the reason IT failed
+          // for, the fix hint for the operator's first preference, the raw text last).
           errored = true
-          const chain = attemptLog.join(' → ')
-          const msg = `All ${attemptLog.length} model(s) failed: ${chain}. Fix in Settings → API Keys. Last error: ${failoverErr}`
+          const headProvider = getProviderForModel(engineTried[0])
+          const msg = exhaustionMessage(
+            attemptLog.map((_, i) => ({ modelId: engineTried[i] ?? attemptModel, reason: attemptReasons[i] ?? classified.reason })),
+            PROVIDERS[headProvider].label,
+            failoverErr
+          )
+          emitRoleFailure(
+            { role: 'chat', provider: failedProvider, modelId: attemptModel, reason: classified.reason, detail: classified.detail, recovered: false },
+            { conversationId: parsed.threadId ?? undefined, role: 'brain-turn' }
+          )
           if (!turnAbort.signal.aborted) sseFrame(res, { type: 'RUN_ERROR', message: msg })
           break
         }
-        const reason = failoverReason(failoverErr)
-        console.warn(`[local-brain] ${attemptModel} ${reason} error (${failoverErr.slice(0, 60)}) → fallback to ${fallback}`)
-        sseFrame(res, { type: 'STEP', label: `engine ${attemptModel} unavailable (${reason}) → ${fallback}` })
+        emitRoleFailure(
+          { role: 'chat', provider: failedProvider, modelId: attemptModel, reason: classified.reason, detail: classified.detail, recovered: true, nextModelId: fallback },
+          { conversationId: parsed.threadId ?? undefined, role: 'brain-turn' }
+        )
+        console.warn(`[local-brain] engine ${attemptModel} failed: ${classified.reason} (${failoverErr.slice(0, 80)}) → trying ${fallback}`)
+        sseFrame(res, { type: 'STEP', label: `engine ${attemptModel} failed: ${classified.reason} → trying ${fallback}` })
+        engineTried.push(fallback)
         attemptModel = fallback
       }
       // Remember a working fallback for the rest of the turn (skip the dead provider next round).
@@ -2624,8 +2728,16 @@ export async function handleAgui(req: IncomingMessage, res: ServerResponse): Pro
     // dollar figure on every reply is noise. `metered` can be 0 on a provider that returns no usage
     // chunk; saying so is better than printing a confident $0.00.
     turnOutcome.answerChars = acc.length
+    // Which engine answered, every engine tried, and whether the answer came from a hop — so the
+    // journal's TURN_END (and /debug/turns) reads `engine X after Y (reason)` rather than the
+    // requested id. `recovered` is true only when the answer came from somewhere other than the
+    // first engine; an exhausted chain leaves it false with the whole walk in `engineChain`.
+    turnOutcome.engine = errored && !acc ? null : activeModel
+    turnOutcome.engineChain = [...engineTried]
+    turnOutcome.recovered = !errored && activeModel !== modelId
     turnOutcome.costUsd = Number(turnCost.spentUsd.toFixed(6))
     turnOutcome.meteredCalls = turnCost.metered
+    turnOutcome.groundingPath = groundingPath
     if (turnCost.metered > 0) {
       console.log(
         `[agui] turn cost $${turnCost.spentUsd.toFixed(4)} over ${turnCost.metered} model call(s) — ${turnCost.inputTokens} in / ${turnCost.outputTokens} out`
@@ -2678,8 +2790,8 @@ export async function handleAgui(req: IncomingMessage, res: ServerResponse): Pro
       // from grounding) rather than trusted as operator/machine teaching.
       // Bench-gateway turns (hidden catalog models — the LongMemEval harness et al.) must not
       // teach the live operator model, session taste, or recall calibration (QA 2026-08-24, F4).
-      if (resolveModel(activeModel)?.hidden === true) {
-        console.log('[local-brain] hidden bench model turn — learning ticks skipped')
+      if (bench || resolveModel(activeModel)?.hidden === true) {
+        console.log(`[local-brain] ${bench ? 'bench-header' : 'hidden bench model'} turn — learning ticks skipped`)
       } else {
         void learnFromTurn(query, acc, execOk)
         successTick(parsed.threadId ?? '', query, acc)
@@ -2695,7 +2807,7 @@ export async function handleAgui(req: IncomingMessage, res: ServerResponse): Pro
       // WS2′ Phase A (turn-beats) — STORE side: run the cheap LOG-ONLY prediction pass and
       // stage the next-beat for turn N+1 to grade. Gated OFF by default. Fire-and-forget
       // (measurement); keyless/null model → no beat. Never touches the reply/grounding.
-      if (turnBeatsEnabled()) {
+      if (turnBeatsEnabled() && !bench) {
         const beatVd = (readSettings().localBrainNotesDir as string) || null
         void turnBeatTick({
           vaultDir: beatVd,
@@ -2704,7 +2816,7 @@ export async function handleAgui(req: IncomingMessage, res: ServerResponse): Pro
           grounding: buildBeatGrounding(beatVd, messages, query)
         })
       }
-      governTick()
+      if (!bench) governTick() // an evaluation turn never trips the govern debounce (D3)
       void consolidationTick(query)
       forecastTick()
       projectTick()
@@ -2953,6 +3065,24 @@ export async function startLocalBrain(): Promise<void> {
   // Live-watch the folder so edits re-index + refresh the Brain graph with no
   // manual "Reindex" (no-op when no folder is set).
   restartNotesWatcher(notesDir)
+
+  // P0 model plane: learn which provider ACCOUNTS answer (health = a completion, not a key check).
+  // One 1-token completion per keyed provider, staggered off the boot path, never blocking; the
+  // results reach the picker/Status through model:health-changed. Ollama detection above runs
+  // first (<1s) so the local runtime is probed as keyed when it is up.
+  setTimeout(() => {
+    try {
+      const n = scheduleBootProbes()
+      // Logged for every count, 0 included: "no keyed provider — nothing to probe" is itself the
+      // boot fact a keyless install's log has to state (unkeyed providers read `no-key` without a
+      // call, so health is still populated).
+      console.log(
+        `[local-brain] provider health probes scheduled: ${n} keyed provider(s)${n === 0 ? ' — none keyed, nothing to probe' : ''}`
+      )
+    } catch (err) {
+      console.warn('[local-brain] provider health probes not scheduled:', (err as Error)?.message)
+    }
+  }, 1_500).unref?.()
 
   // Background-warm the embedder in parallel with the reindex above, so the first real query doesn't pay
   // worker-spawn + model-load as first-turn latency (efficiency: cold.background-warm / grounding.embedder-warm).

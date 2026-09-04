@@ -317,7 +317,29 @@ const SECRET_KEY_PATTERNS: RegExp[] = [
   /session[_-]?id/i
 ]
 
-function looksSensitive(key: string): boolean {
+/**
+ * Numeric usage counters that the secret patterns above would otherwise swallow. `/token/i`
+ * matched `inputTokens`, so every `model.request.completed` shipped
+ * `usage: { inputTokens: '[redacted]', … }` and spend was unobservable from inside the app
+ * (2026-09-02 evaluation, L7 F7). Exempt by EXACT key name, and only when the value is a finite
+ * NUMBER: a string under one of these keys is still redacted, so a key or token can never hide
+ * behind a counter's name. Every secret pattern stays in force for everything else.
+ */
+export const USAGE_COUNTER_KEYS: ReadonlySet<string> = new Set([
+  'inputTokens',
+  'outputTokens',
+  'promptTokens',
+  'completionTokens',
+  'cachedTokens',
+  'cacheReadTokens',
+  'cacheWriteTokens',
+  'totalTokens',
+  'costUsd',
+  'durationMs'
+])
+
+function looksSensitive(key: string, value: unknown): boolean {
+  if (USAGE_COUNTER_KEYS.has(key) && typeof value === 'number' && Number.isFinite(value)) return false
   return SECRET_KEY_PATTERNS.some((re) => re.test(key))
 }
 
@@ -350,7 +372,7 @@ export function redactPayload(value: unknown): {
     }
     const out: Record<string, unknown> = {}
     for (const [k, raw] of Object.entries(v)) {
-      if (looksSensitive(k)) {
+      if (looksSensitive(k, raw)) {
         anyRedacted = true
         out[k] = '[redacted]'
       } else {
@@ -585,6 +607,36 @@ export function isUsingMemoryFallback(): boolean {
   return useFallback
 }
 
+// ──────────────────── listeners ────────────────────
+
+type EventListener = (ev: EventRecord) => void
+const listeners = new Set<EventListener>()
+
+/**
+ * Subscribe to every persisted event, in-process and synchronous. The spine was write-only: a
+ * `model.request.failed` landed in SQLite and nothing could react to it, which is how 23 failed
+ * cloud calls accrued over a week with an empty inbox (2026-09-02, L7 F2). A listener runs AFTER
+ * the row is persisted and inside its own try/catch, so it can never break or delay recording;
+ * it must return fast (it runs on the writer's thread) and must not record events itself in a
+ * way that recurses. Returns the unsubscribe function.
+ */
+export function onEventRecorded(fn: EventListener): () => void {
+  listeners.add(fn)
+  return () => {
+    listeners.delete(fn)
+  }
+}
+
+function notifyListeners(record: EventRecord): void {
+  for (const fn of listeners) {
+    try {
+      fn(record)
+    } catch (e) {
+      console.debug('[event-log] listener failed (event already persisted):', messageOf(e))
+    }
+  }
+}
+
 // ──────────────────── writer ────────────────────
 
 /**
@@ -667,9 +719,11 @@ export function recordEvent(input: RecordEventInput): EventRecord {
       // intact, later writes may well succeed, and a permanent swap would blank
       // the timeline reads too (see the fallback docblock above).
     }
+    notifyListeners(record)
     return record
   }
   memoryFallback.push(record)
+  notifyListeners(record)
   return record
 }
 
@@ -1115,6 +1169,7 @@ export function listTimeline(filter: TimelineFilter): EventRecord[] {
 export function __resetEventLog(): void {
   memoryFallback.length = 0
   useFallback = false
+  listeners.clear()
 }
 
 /** Test-only: force the memory fallback path. */

@@ -63,7 +63,7 @@ export function ChannelCapabilities({
       {capabilities.map((cap) => (
         <span
           key={cap}
-          className="rounded border border-[var(--border)] px-1.5 py-0.5 text-[10px] leading-none text-[var(--text-muted)]"
+          className="rounded border border-[var(--panel-border)] px-1.5 py-0.5 text-[10px] leading-none text-[var(--text-muted)]"
         >
           {capabilityLabel(cap)}
         </span>

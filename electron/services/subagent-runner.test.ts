@@ -39,7 +39,7 @@ import type { WorktreeManager, FinalizeResult, WorktreeContext } from './worktre
 
 function makeDeps(overrides: Partial<ForkAgentDeps> & { runner: ForkAgentRunner }): ForkAgentDeps {
   return {
-    defaultModel: 'test-model',
+    model: 'test-model',
     ...overrides
   }
 }

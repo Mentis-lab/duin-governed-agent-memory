@@ -77,7 +77,7 @@ const { registerWorkflowsHandlers, setWorkflowChatRunner } = await import('./wor
 // at startup; our fake runWorkflow never reads forkDeps either way, but the
 // handler builds them before calling runWorkflow(), so this must be set for
 // the call to be reached at all.
-setWorkflowChatRunner({ runner: async () => 'ok', defaultModel: 'test-model' })
+setWorkflowChatRunner({ runner: async () => 'ok' })
 registerWorkflowsHandlers()
 
 function call(channel: string, args?: unknown): Promise<unknown> {

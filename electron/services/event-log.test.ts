@@ -25,7 +25,10 @@ import {
   recordInfo,
   recordWarning,
   redactPayload,
-  serializePayload
+  serializePayload,
+  onEventRecorded,
+  USAGE_COUNTER_KEYS,
+  type EventRecord
 } from './event-log'
 
 beforeEach(() => {
@@ -350,5 +353,92 @@ describe('EVENT_TYPES catalogue', () => {
       'settings.updated'
     ]
     for (const t of required) expect(EVENT_TYPES).toContain(t)
+  })
+})
+
+// ──────────────────── listeners + usage counters (cohesion P0, lane C) ────────────────────
+
+describe('onEventRecorded — the spine can be listened to', () => {
+  it('invokes each listener synchronously with the persisted record, and unsubscribe stops it', () => {
+    const seen: EventRecord[] = []
+    const off = onEventRecorded((ev) => {
+      seen.push(ev)
+    })
+    const rec = recordEvent({
+      type: 'model.request.failed',
+      actorKind: 'model',
+      payload: { provider: 'deepseek', role: 'jury', reason: 'no-credit', recovered: false }
+    })
+    expect(seen).toHaveLength(1)
+    expect(seen[0].id).toBe(rec.id)
+    expect(seen[0].payload).toMatchObject({ provider: 'deepseek', reason: 'no-credit' })
+    off()
+    recordEvent({ type: 'model.request.failed', actorKind: 'model' })
+    expect(seen).toHaveLength(1)
+  })
+
+  it('a throwing listener never breaks recording, and the listeners after it still run', () => {
+    const order: string[] = []
+    onEventRecorded(() => {
+      order.push('a')
+      throw new Error('listener boom')
+    })
+    onEventRecorded(() => {
+      order.push('b')
+    })
+    expect(() => recordEvent({ type: 'chat.error', actorKind: 'system' })).not.toThrow()
+    expect(order).toEqual(['a', 'b'])
+    expect(listEvents({ type: 'chat.error' })).toHaveLength(1)
+  })
+
+  it('__resetEventLog drops listeners so tests stay independent', () => {
+    let calls = 0
+    onEventRecorded(() => {
+      calls++
+    })
+    __resetEventLog()
+    __forceMemoryFallback()
+    recordEvent({ type: 'chat.error', actorKind: 'system' })
+    expect(calls).toBe(0)
+  })
+})
+
+describe('redaction — usage counters are not secrets (L7 F7)', () => {
+  it('keeps numeric usage counters while still redacting key-shaped fields', () => {
+    const { value, redacted } = redactPayload({
+      usage: { inputTokens: 120, outputTokens: 30, cacheReadTokens: 100, cacheWriteTokens: 0, promptTokens: 220 },
+      costUsd: 0.0031,
+      durationMs: 812,
+      apiKey: 'sk-live-1'
+    })
+    expect(redacted).toBe(true)
+    expect(value).toEqual({
+      usage: { inputTokens: 120, outputTokens: 30, cacheReadTokens: 100, cacheWriteTokens: 0, promptTokens: 220 },
+      costUsd: 0.0031,
+      durationMs: 812,
+      apiKey: '[redacted]'
+    })
+  })
+
+  it('a STRING under a counter name is still redacted — a token cannot hide behind a counter', () => {
+    const { value, redacted } = redactPayload({ inputTokens: 'sk-live-abc', totalTokens: 'Bearer xyz' })
+    expect(redacted).toBe(true)
+    expect(value).toEqual({ inputTokens: '[redacted]', totalTokens: '[redacted]' })
+  })
+
+  it('a number under a non-exempt secret name is still redacted', () => {
+    expect(redactPayload({ accessToken: 12345 }).value).toEqual({ accessToken: '[redacted]' })
+    expect(USAGE_COUNTER_KEYS.has('inputTokens')).toBe(true)
+    expect(USAGE_COUNTER_KEYS.has('accessToken')).toBe(false)
+  })
+
+  it('a recorded model.request.completed keeps its usage on the record and stays metadata', () => {
+    const rec = recordEvent({
+      type: 'model.request.completed',
+      actorKind: 'model',
+      payload: { provider: 'deepseek', model: 'deepseek-v4-flash', usage: { inputTokens: 5, outputTokens: 7 } }
+    })
+    expect((rec.payload.usage as { inputTokens: number }).inputTokens).toBe(5)
+    expect(rec.redaction).toBe('metadata')
   })
 })

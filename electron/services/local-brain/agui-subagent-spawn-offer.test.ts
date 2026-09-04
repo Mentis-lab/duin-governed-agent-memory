@@ -37,7 +37,7 @@ describe('runSubagent — spawn_agent survives the per-run allow-list filter', (
 
   it('offers SPAWN_AGENT_TOOL to a depth-0 subagent resolved from a bare {task}', async () => {
     // Exactly what server.ts threads at depth 0: a config resolved from the model's bare spawn args.
-    const cfg = resolveSubagentConfig({ task: 'summarize the docs' }, { defaultModelId: 'model-x' })
+    const cfg = resolveSubagentConfig({ task: 'summarize the docs' }, { parentModelId: 'model-x' })
     expect(cfg.allowedToolNames.length).toBeGreaterThan(0) // the condition that armed the bug
     expect(cfg.allowedToolNames).not.toContain('spawn_agent') // ...and why it stripped
 
@@ -47,7 +47,7 @@ describe('runSubagent — spawn_agent survives the per-run allow-list filter', (
   })
 
   it('still applies the allow-list to every other tool (least-privilege intact)', async () => {
-    const cfg = resolveSubagentConfig({ task: 'summarize the docs' }, { defaultModelId: 'model-x' })
+    const cfg = resolveSubagentConfig({ task: 'summarize the docs' }, { parentModelId: 'model-x' })
 
     await runSubagent('summarize the docs', '/vault', 'model-x', undefined, 6, true, cfg, 0)
 
@@ -57,7 +57,7 @@ describe('runSubagent — spawn_agent survives the per-run allow-list filter', (
   })
 
   it('does NOT offer spawn_agent at the depth cap', async () => {
-    const cfg = resolveSubagentConfig({ task: 'summarize the docs' }, { defaultModelId: 'model-x' })
+    const cfg = resolveSubagentConfig({ task: 'summarize the docs' }, { parentModelId: 'model-x' })
     // Default DUIN_SUBAGENT_MAX_DEPTH is 2; depth 2 is at the cap, so canSpawn is false.
     await runSubagent('summarize the docs', '/vault', 'model-x', undefined, 6, true, cfg, 2)
 

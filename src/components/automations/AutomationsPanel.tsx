@@ -249,7 +249,7 @@ export function AutomationsPanel() {
                         anyone who wants it. `0 21 * * 0` is not something to read at a glance. */}
                     <span
                       className="block truncate text-[11px] text-[var(--text-muted)]"
-                      title={`${a.cron} · ${a.model || 'deepseek-v4-flash'}`}
+                      title={`${a.cron} · ${a.model || 'auto (provider policy)'}`}
                     >
                       {describeSchedule(a.cron, a.scheduleLabel)}
                       {a.enabled && a.nextRunAt ? ` · next ${formatWhen(a.nextRunAt)}` : ''}

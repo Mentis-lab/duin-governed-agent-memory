@@ -15,6 +15,7 @@ import yaml from 'js-yaml'
 import { readSettings } from './settings-helper'
 import { readLoopConfig } from './loop-config'
 import { runHeadlessAgent, type HeadlessAgentResult, type HeadlessAgentSpec } from './headless-agent'
+import { routeModel } from './providers/registry'
 import { recordEvent, boundedJsonPreview } from './event-log'
 import { mapCcToolNames } from './cc-tool-map'
 import { messageOf } from './guarded'
@@ -158,7 +159,10 @@ export async function runLoopAgentic(loopName: string): Promise<LoopAgenticOutco
     return { ran: false, loop: loopName, reason: `executor '${executor}' is not agentic (skipped)` }
   }
 
-  const model = (readSettings().defaultModel as string) || 'deepseek-v4-flash'
+  // A loop runs the raw tool loop unattended: the `agentic` role, resolved from the
+  // provider policy at run time. No default model; nothing routable is an honest skip.
+  const model = routeModel('agentic')
+  if (!model) return { ran: false, loop: loopName, reason: 'no usable model for the agentic role' }
   const spec = buildSpec(loop, vault, model)
   const result = await runHeadlessAgent(spec)
 

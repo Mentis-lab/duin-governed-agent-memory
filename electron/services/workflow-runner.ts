@@ -369,10 +369,14 @@ export function runWorkflow(input: WorkflowRunInput, deps: WorkflowRunnerDeps): 
         const label = opts.label ?? agentType
 
         // B5: resolve the symbolic 'cheap'/'pro' tier name to a concrete
-        // model ID (production wiring registers per-provider mappings). The
-        // tier is captured for budget tracking + progress events.
-        const resolvedModelId = resolveModelId(opts.model, deps.forkSeam.forkDeps.defaultModel)
-        const tier = tierOfModel(resolvedModelId)
+        // model ID against live provider state; undefined means the fork resolves
+        // the `agentic` role itself. The tier is captured for budget tracking +
+        // progress events.
+        const resolvedModelId = resolveModelId(opts.model, deps.forkSeam.forkDeps.model)
+        // A symbolic `model: 'cheap' | 'pro'` IS the tier the workflow asked for; only a
+        // concrete id needs the substring guess. Budget rows carry it explicitly so the
+        // attribution survives whatever engine the fork resolves.
+        const tier = opts.model === 'cheap' || opts.model === 'pro' ? opts.model : tierOfModel(resolvedModelId)
 
         // B2: cache lookup before doing any real work. As soon as cache misses
         // for ANY seq, it stays inactive for the rest of the run — calls
@@ -393,7 +397,7 @@ export function runWorkflow(input: WorkflowRunInput, deps: WorkflowRunnerDeps): 
                 return prior.resultJson as unknown as string
               }
             })()
-            budgetTracker.record(resolvedModelId, prior.tokensUsedEstimate ?? 0)
+            budgetTracker.record(resolvedModelId, prior.tokensUsedEstimate ?? 0, tier)
             // Write the replay-from-cache record to THIS run's journal so a
             // chained resume sees the same sequence.
             if (journalPath) {
@@ -455,7 +459,7 @@ export function runWorkflow(input: WorkflowRunInput, deps: WorkflowRunnerDeps): 
           }
           const handle = deps.forkSeam.forkAgent(forkOpts, deps.forkSeam.forkDeps)
           const result = (await handle.promise) as ForkAgentResult
-          budgetTracker.record(resolvedModelId, result.tokensUsedEstimate ?? 0)
+          budgetTracker.record(resolvedModelId, result.tokensUsedEstimate ?? 0, tier)
           const finishedAgentAt = clock()
           emit({
             runId,

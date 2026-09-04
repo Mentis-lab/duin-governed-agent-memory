@@ -17,7 +17,7 @@
 // The result is CACHED to userData keyed by the notes dir, so the graph/panels
 // read constructed structure on boot without re-running the LLM every launch.
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync } from 'fs'
 import { createHash } from 'crypto'
 import { join, dirname } from 'path'
 import type {
@@ -42,6 +42,7 @@ import { migrateRetiredKinds } from './construct-kind-migration'
 import { chatStream, routeModel, routeDistinctModel, routeWithinProvider, getProviderForModel } from '../providers/registry'
 import { isModelNotFoundError, isProviderFailoverError } from '../providers/quota-error'
 import { buildDuinGraph } from './build-duin-graph'
+import { entityKey, isConstructionCorpusPath, noteOptsOutOfExtraction, pathUnderFence } from './entity-key'
 import { envNum } from '../../shared/env-number'
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions'
 import { atomicWriteDurable } from './durable-write'
@@ -462,10 +463,18 @@ export function applyConstruction(base: CausalGraph, c: ConstructedData): Causal
 export function convergeConstruction(
   prior: ConstructedData | null,
   current: ConstructedData,
-  liveNoteIds: Set<string>
+  liveNoteIds: Set<string>,
+  coveredNoteIds: Set<string> = new Set()
 ): ConstructedData {
   if (!prior) return current
   const SEP = '\0'
+  // COVERED notes are the ones this run actually re-extracted (their batch returned a parse).
+  // Before 2026-09-03 a prior entity was retained whenever its note still EXISTED, so a note
+  // re-read fifty times kept every variant every run and every model ever produced for it:
+  // the store was a monotone union (15,274 entities for 1,181 notes, half attached to nothing).
+  // Now an entity of a covered note survives only by being re-extracted, with ONE miss
+  // tolerated (extraction is flaky on a 1,500-char slice) and retirement on the second.
+  const MISS_TOLERANCE = 1
 
   // Entities: current ∪ (prior entities the run missed whose source note still exists).
   //
@@ -477,8 +486,7 @@ export function convergeConstruction(
   // 2026-07-31, after partial runs began accumulating: 2,277 entities carrying only 1,970 distinct
   // kind+label pairs, with 204 labels holding more than one id — the worst offenders were common
   // orgs and projects at 5-7 copies each. Two merge paths over one concept, only one ever fixed.
-  const labelKey = (e: ConstructedEntity): string =>
-    String(e.kind) + SEP + String(e.label ?? '').trim().toLowerCase().normalize('NFKC')
+  const labelKey = (e: ConstructedEntity): string => entityKey(String(e.kind), String(e.label ?? ''))
   //
   // BOTH keys are checked, not one instead of the other. Same-id-different-label is the model
   // RENAMING an entity it kept the slug for; different-id-same-label is it re-slugging one it kept
@@ -495,20 +503,34 @@ export function convergeConstruction(
   const seenLabels = new Set<string>()
   const supersededBy = new Map<string, string>()
   const winnerFor = new Map<string, string>() // labelKey -> surviving id
-  for (const e of current.entities) {
+  // THE ID IS THE ONE THE ENTITY WAS FIRST KNOWN BY. The model re-slugs on every run
+  // (`person:liang-jianbin`, then `person:liangjianbin`), and "current wins" used to carry the
+  // new slug into the store: after one converged run 765 of 5,078 map entities (15%) had a new
+  // id, so their carried positions, locks and cluster memberships were lost and they jumped.
+  // Content still comes from the current run (label, kind, note); only the id is inherited, and
+  // the current run's own edges and triples follow it through `supersededBy`.
+  const priorIdByKey = new Map<string, string>()
+  for (const e of prior.entities) {
     const lk = labelKey(e)
+    if (!priorIdByKey.has(lk)) priorIdByKey.set(lk, e.id)
+  }
+  for (const e0 of current.entities) {
+    const lk = labelKey(e0)
+    const inherited = priorIdByKey.get(lk)
+    const e = inherited && inherited !== e0.id ? { ...e0, id: inherited } : e0
+    if (inherited && inherited !== e0.id) supersededBy.set(e0.id, inherited)
     if (seenIds.has(e.id) || seenLabels.has(lk)) {
       const w = winnerFor.get(lk)
-      if (w && w !== e.id) supersededBy.set(e.id, w)
+      if (w && w !== e0.id) supersededBy.set(e0.id, w)
       continue
     }
     seenIds.add(e.id)
     seenLabels.add(lk)
     winnerFor.set(lk, e.id)
-    entities.push(e)
+    entities.push(e.missed ? { ...e, missed: undefined } : e)
   }
   for (const e of prior.entities) {
-    // A prior entity whose source note is gone is a REAL deletion — drop it without superseding.
+    // A prior entity whose source note is gone (or no longer in the corpus) is a REAL deletion.
     if (!liveNoteIds.has(e.note)) continue
     const lk = labelKey(e)
     if (seenIds.has(e.id) || seenLabels.has(lk)) {
@@ -516,10 +538,17 @@ export function convergeConstruction(
       if (w && w !== e.id) supersededBy.set(e.id, w)
       continue
     }
+    // Its note was re-extracted and it did not come back: one miss is tolerated, the second retires it.
+    let keep: ConstructedEntity = e
+    if (coveredNoteIds.has(e.note)) {
+      const missed = (e.missed ?? 0) + 1
+      if (missed > MISS_TOLERANCE) continue
+      keep = { ...e, missed }
+    }
     seenIds.add(e.id)
     seenLabels.add(lk)
     winnerFor.set(lk, e.id)
-    entities.push(e)
+    entities.push(keep)
   }
 
   // A superseded id must not take its EDGES down with it. Remap those endpoints onto the surviving
@@ -531,14 +560,19 @@ export function convergeConstruction(
   const keptIds = new Set(entities.map((e) => e.id))
   const resolves = (id: string): boolean => keptIds.has(id) || liveNoteIds.has(id)
   const edgeKey = (e: ConstructedEdge): string => e.source + SEP + e.target + SEP + e.type
-  const curEdgeKeys = new Set(current.edges.map(edgeKey))
+  // The current run's edges reference the current run's ids; where an id was inherited from the
+  // prior, the edge follows it (and a remap that lands on a self-loop is dropped).
+  const currentEdges = current.edges
+    .map((e) => (supersededBy.has(e.source) || supersededBy.has(e.target) ? { ...e, source: remap(e.source), target: remap(e.target) } : e))
+    .filter((e) => e.source !== e.target)
+  const curEdgeKeys = new Set(currentEdges.map(edgeKey))
   const retainedEdges = prior.edges
     .map((e) => (supersededBy.has(e.source) || supersededBy.has(e.target)
       ? { ...e, source: remap(e.source), target: remap(e.target) }
       : e))
     // Drop self-loops the remap may have created (two duplicate ids collapsing onto one entity).
     .filter((e) => e.source !== e.target && !curEdgeKeys.has(edgeKey(e)) && resolves(e.source) && resolves(e.target))
-  const edges = [...current.edges, ...retainedEdges]
+  const edges = [...currentEdges, ...retainedEdges]
 
   // Classifications: current wins per note; retain prior for still-live notes the run didn't reclassify.
   const curClassNotes = new Set(current.classifications.map((c) => c.note))
@@ -551,10 +585,19 @@ export function convergeConstruction(
   const tripleKey = (t: ConstructedTriple): string => t.subject + SEP + t.relation + SEP + t.object + SEP + t.note
   const curTriples = current.triples ?? []
   const curTripleKeys = new Set(curTriples.map(tripleKey))
-  const retainedTriples = (prior.triples ?? []).filter(
-    (t) => !curTripleKeys.has(tripleKey(t)) && (t.note === '' || liveNoteIds.has(t.note))
-  )
-  const triples = [...curTriples, ...retainedTriples]
+  // Triples follow the same covered-note rule: a triple from a re-extracted note that did not come
+  // back is tolerated once, then retired. Unattributed triples (note '') are kept as before.
+  const retainedTriples: ConstructedTriple[] = []
+  for (const t of prior.triples ?? []) {
+    if (curTripleKeys.has(tripleKey(t))) continue
+    if (t.note !== '' && !liveNoteIds.has(t.note)) continue
+    if (t.note !== '' && coveredNoteIds.has(t.note)) {
+      const missed = (t.missed ?? 0) + 1
+      if (missed > MISS_TOLERANCE) continue
+      retainedTriples.push({ ...t, missed })
+    } else retainedTriples.push(t)
+  }
+  const triples = [...curTriples.map((t) => (t.missed ? { ...t, missed: undefined } : t)), ...retainedTriples]
 
   return { entities, edges, classifications, triples }
 }
@@ -631,6 +674,39 @@ function readCachePaths(): string[] {
   return [brainStateCachePath(), legacyCachePath()].filter((p): p is string => !!p)
 }
 
+/** `<brain root>/.brain/state/construction-exclude.json` → `{ "folders": [...] }`. Missing or
+ *  malformed = no fence. Read per build; it is one small file. */
+export function readConstructionFence(): string[] {
+  try {
+    const root = brainRootPath(notesDirProvider())
+    if (!root) return []
+    const p = join(root, BRAIN_STATE_DIR, 'construction-exclude.json')
+    if (!existsSync(p)) return []
+    const raw = JSON.parse(readFileSync(p, 'utf-8')) as { folders?: unknown }
+    return Array.isArray(raw.folders) ? raw.folders.filter((f): f is string => typeof f === 'string' && f.trim() !== '') : []
+  } catch {
+    return []
+  }
+}
+
+/**
+ * The cache file, parsed once per (path, size, mtime). Three helpers used to `JSON.parse` the whole
+ * store independently — 28.6 MB on the live brain — and one of them ran on the main thread every
+ * 15 minutes for the construction floor check. Same bytes, one parse.
+ */
+const _cacheMemo = new Map<string, { size: bigint; mtimeNs: bigint; raw: ConstructionCacheFile }>()
+function readCacheFile(p: string): ConstructionCacheFile {
+  // Nanosecond mtime, not milliseconds: two rewrites of a same-size file inside one tick (the
+  // tests do exactly that) must not be served from the memo. This module's own writers also
+  // clear it, so a value written here is never read back stale.
+  const st = statSync(p, { bigint: true })
+  const hit = _cacheMemo.get(p)
+  if (hit && hit.size === st.size && hit.mtimeNs === st.mtimeNs) return hit.raw
+  const raw = JSON.parse(readFileSync(p, 'utf-8')) as ConstructionCacheFile
+  _cacheMemo.set(p, { size: st.size, mtimeNs: st.mtimeNs, raw })
+  return raw
+}
+
 function dirKey(): string {
   const dir = notesDirProvider() ?? ''
   return createHash('sha1').update(dir).digest('hex').slice(0, 16)
@@ -654,7 +730,7 @@ function persistedNextBatch(): number {
   for (const p of readCachePaths()) {
     if (!existsSync(p)) continue
     try {
-      const raw = JSON.parse(readFileSync(p, 'utf-8')) as ConstructionCacheFile
+      const raw = readCacheFile(p)
       if (raw.key !== dirKey()) continue
       const n = Number(raw.nextBatch)
       return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0
@@ -669,7 +745,7 @@ export function constructionBuiltAtMs(): number | null {
   for (const p of readCachePaths()) {
     if (!existsSync(p)) continue
     try {
-      const raw = JSON.parse(readFileSync(p, 'utf-8')) as ConstructionCacheFile
+      const raw = readCacheFile(p)
       if (raw.key !== dirKey()) continue
       const ms = Date.parse(raw.builtAt)
       if (Number.isFinite(ms)) return ms
@@ -697,7 +773,7 @@ export function constructionCacheUnreadable(): boolean {
   for (const p of readCachePaths()) {
     if (!existsSync(p)) continue
     try {
-      const raw = JSON.parse(readFileSync(p, 'utf-8')) as ConstructionCacheFile
+      const raw = readCacheFile(p)
       if (raw.key !== dirKey()) continue // a different vault's cache is not ours to protect
       const ok =
         raw.data &&
@@ -720,7 +796,7 @@ export function getConstruction(): ConstructedData | null {
   for (const p of readCachePaths()) {
     if (!existsSync(p)) continue
     try {
-      const raw = JSON.parse(readFileSync(p, 'utf-8')) as ConstructionCacheFile
+      const raw = readCacheFile(p)
       // Only honor the cache if it matches the current notes dir.
       if (raw.key !== dirKey()) continue
       if (
@@ -820,10 +896,11 @@ export function invalidateResolvedConstruction(): void {
  * check on that timestamp.
  */
 function advanceCursorOnly(nextBatch: number): void {
+  _cacheMemo.clear()
   const p = cachePath()
   if (!p || !existsSync(p)) return
   try {
-    const raw = JSON.parse(readFileSync(p, 'utf-8')) as ConstructionCacheFile
+    const raw = readCacheFile(p)
     if (raw.key !== dirKey()) return // a different vault's cache — never touch it
     writeFileSync(p, JSON.stringify({ ...raw, nextBatch }), 'utf-8')
   } catch (err) {
@@ -840,6 +917,7 @@ function advanceCursorOnly(nextBatch: number): void {
  *  `brain:updated`, and the 24h construction floor kept keying staleness on a `builtAt` that had
  *  never moved — the exact stall shape this campaign spent a night on, one layer down. */
 function persistConstruction(data: ConstructedData, nextBatch = 0): boolean {
+  _cacheMemo.clear()
   const p = cachePath()
   if (!p) return false
   try {
@@ -968,7 +1046,13 @@ export async function constructBrain(): Promise<ConstructResult | null> {
     persistConstruction(inMemory)
     return { entities: 0, edges: 0, status: 'built' }
   }
-  const notes = groupChunksByFile(chunks).map(({ file, text }) => ({ id: file, text }))
+  // Documents only. The index holds DUIN's own memory projections, machine state, archives and
+  // code so retrieval can reach them; extraction must not read them (isConstructionCorpusPath):
+  // it was turning the brain's own memory files into "knowledge" and code files into topics.
+  const fence = readConstructionFence()
+  const notes = groupChunksByFile(chunks)
+    .filter(({ file, text }) => isConstructionCorpusPath(file) && !pathUnderFence(file, fence) && !noteOptsOutOfExtraction(text))
+    .map(({ file, text }) => ({ id: file, text }))
 
   // Batch over the WHOLE vault: one construction LLM call per MAX_NOTES-note
   // window, results merged with de-dup (entities by id, edges by src/tgt/type,
@@ -1270,7 +1354,7 @@ export async function constructBrain(): Promise<ConstructResult | null> {
     // genuine org-vs-person collision on the same surface form is preserved for the alias
     // whitelist to adjudicate, rather than being silently collapsed here.
     for (const e of data.entities) {
-      const key = String(e.kind) + NUL + String(e.label ?? '').trim().toLowerCase().normalize('NFKC')
+      const key = entityKey(String(e.kind), String(e.label ?? ''))
       if (!seenE.has(key)) { seenE.add(key); entities.push(e) }
     }
     for (const e of data.edges) {
@@ -1389,7 +1473,10 @@ export async function constructBrain(): Promise<ConstructResult | null> {
   // count converges to the stable superset. (temperature:0 above cuts run-to-run id variance so it
   // settles fast.) The degraded-clobber guard above still short-circuits an obviously-broken run before
   // we even merge; convergence handles the common clean-but-variant runs the guard can't touch.
-  const converged = convergeConstruction(getConstruction(), data, new Set(notes.map((n) => n.id)))
+  // Covered = every note in a batch that returned a parse this run (the notes actually re-read).
+  const coveredNoteIds = new Set<string>()
+  for (let i = 0; i < batchList.length; i++) if (results[i]) for (const n of batchList[i]) coveredNoteIds.add(n.id)
+  const converged = convergeConstruction(getConstruction(), data, new Set(notes.map((n) => n.id)), coveredNoteIds)
   inMemory = converged
   inMemoryKey = dirKey()
   const persisted = persistConstruction(converged, cursorAfter(lastConsumedIdx))

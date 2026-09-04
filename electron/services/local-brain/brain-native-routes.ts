@@ -17,7 +17,7 @@ import { globalSearch } from './global-search'
 import { mergedGraph } from '../brain/merged-graph'
 import { readGraphNative, nativeGraphMtime } from '../brain/graph-native'
 import { buildBrainGraph } from '../brain/brain-graph-native'
-import { deriveGraph } from './graph-derive'
+import { deriveGraph, deriveNodeMtimes } from './graph-derive'
 import { detectCommunities } from '../brain/graph-insight'
 import { deriveTopicTracks, materializeTracks } from '../brain/topic-tracks'
 import { conceptMemoryDir } from '../brain/concept-materialize'
@@ -232,7 +232,7 @@ let _brainGraphSummary: { servedKey: string; nodes: number; links: number } | nu
 /** Both graph endpoints must populate the shared cache with identical bytes.
  * If the counts route wins the first-request race, the later full route must
  * still receive the recency metadata. */
-function cachedBrainGraph(vault: string) {
+export function cachedBrainGraph(vault: string) {
   const logoDir = join(brainAssetsDir(), 'web', 'public', 'project-logos')
   const key = `${vault}:${nativeGraphMtime(vault)}`
   return brainGraphCache.get(
@@ -240,10 +240,11 @@ function cachedBrainGraph(vault: string) {
     () => {
       const g = buildBrainGraph(vault, { prod: readGraphNative(vault), logoDir, now: new Date() })
       try {
-        const mt = new Map<string, number>()
-        for (const dn of deriveGraph(vault).nodes as Array<{ id: string; mtime?: number }>) {
-          if (dn.mtime) mt.set(dn.id, dn.mtime)
-        }
+        // deriveNodeMtimes, not deriveGraph: this needs id→mtime, and deriveGraph
+        // structuredClones the entire causal graph to hand it over safely. The clone
+        // was the whole cost of the call and none of its value — it was read once and
+        // dropped — inside a rebuild that blocks main for seconds.
+        const mt = deriveNodeMtimes(vault)
         for (const node of g.nodes as Array<{ id: string; mtime?: number }>) {
           if (node.mtime == null) {
             const value = mt.get(node.id)
@@ -1330,10 +1331,11 @@ export function handleRequestNativeImpl(req: IncomingMessage, res: ServerRespons
     return
   }
 
-  // /state/config — persist vault dir / model / auto-track to native settings (was
-  // proxied to Python, which set the SIDECAR's dir — leaving the in-process brain on
-  // the old vault). Writing localBrainNotesDir re-points the native brain (it reads
-  // per-request). Returns the current dir/model/auto_track.
+  // /state/config — persist auto-track to native settings (was proxied to Python, which
+  // set the SIDECAR's dir — leaving the in-process brain on the old vault). Returns the
+  // current dir/auto_track. `dir` is owned by the picker-backed settings IPC (409) and
+  // `model` is no longer a setting at all (400): the brain resolves roles from the
+  // provider policy, and the only stored model id is a per-conversation pin.
   if (method === 'POST' && url.split('?')[0] === '/state/config') {
     void (async () => {
       try {
@@ -1354,11 +1356,18 @@ export function handleRequestNativeImpl(req: IncomingMessage, res: ServerRespons
           }))
           return
         }
-        if (b.model) writeSettings({ defaultModel: String(b.model) })
+        if ('model' in b) {
+          res.writeHead(400, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({
+            ok: false,
+            error: 'model is not a setting: DUIN resolves roles from the provider policy; pin a model per conversation instead'
+          }))
+          return
+        }
         if ('auto_track' in b) writeSettings({ autoTrack: !!b.auto_track })
         const s = readSettings()
         res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ ok: true, dir: s.localBrainNotesDir ?? '', model: s.defaultModel ?? '', auto_track: s.autoTrack === true }))
+        res.end(JSON.stringify({ ok: true, dir: s.localBrainNotesDir ?? '', auto_track: s.autoTrack === true }))
       } catch (err) {
         res.writeHead(500, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ ok: false, error: (err as Error)?.message ?? 'config error' }))

@@ -1,4 +1,5 @@
-import { chatOnce } from './providers/registry'
+import { chatOnce, routeModel } from './providers/registry'
+import { AUTO_ENGINE } from './providers/roles'
 import { toolRegistry } from './tool-registry'
 import {
   classifyMultiAgentRunResult,
@@ -83,15 +84,18 @@ toolRegistry.registerNative(
   },
   async (rawArgs, ctx) => {
     const args = validateMultiAgentArgs(rawArgs)
-    if (!ctx.model) {
-      throw new Error(
-        'multi_agent_run: active chat model is not available in tool context (internal error).'
-      )
+    // Sub-agents run on the parent turn's engine when it is a usable concrete model;
+    // otherwise (AUTO_ENGINE, an unusable pin, no model in context) the `agentic` role
+    // resolves from the provider policy. No stored default anywhere on this path.
+    const parentModel = ctx.model && ctx.model !== AUTO_ENGINE ? ctx.model : undefined
+    const model = routeModel('agentic', parentModel)
+    if (!model) {
+      throw new Error('multi_agent_run: no usable model for the agentic role (add a provider key or fix the provider order).')
     }
     const parentCallId = ctx.callId
     const result: MultiAgentRunResult = await executeMultiAgentRun({
       args,
-      defaultModel: ctx.model,
+      model,
       parentSignal: ctx.signal,
       parentCallId,
       // R2: chatOnce returns {content, reasoning?}. R3 will widen the

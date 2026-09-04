@@ -27,10 +27,10 @@ const check = (name, ok, detail = '') => {
   if (!ok) failures++
 }
 
-function makeScratchRepo(laneBoard) {
+function makeScratchRepo(laneBoard, branch = 'duin/lane-ci') {
   const dir = mkdtempSync(join(tmpdir(), 'lane-guard-'))
   const g = (...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' })
-  g('init', '-q', '-b', 'duin/lane-ci')
+  g('init', '-q', '-b', branch)
   g('config', 'user.email', 'selftest@example.invalid')
   g('config', 'user.name', 'lane-guard selftest')
   g('config', 'commit.gpgsign', 'false')
@@ -136,6 +136,42 @@ console.log('lane-guard self-test')
   g('add', '-A')
   const ok = commit(dir, 'in-lane change')
   check('in-lane commit is ALLOWED', ok.code === 0, `exit=${ok.code}`)
+  rmSync(dir, { recursive: true, force: true })
+}
+
+// ------------------------------------------------- case 3b: trunk is never somebody's lane
+// The board's rows all NAME the trunk they branched from, so before 2026-09-03 a commit made
+// on trunk matched the first row mentioning it and inherited that lane's files as its scope.
+{
+  const board = [
+    '| Session | Lane / files owned |',
+    '|---|---|',
+    '| **reading-surfaces** MERGED (2026-09-03) | trunk `duin/unify-backend-ui` in the shared tree. Owns `src/styles/markdown.css`, `electron/main.ts` |',
+    ''
+  ].join('\n')
+  const { dir, g } = makeScratchRepo(board, 'duin/unify-backend-ui')
+  writeFileSync(join(dir, 'anything.ts'), 'export const z = 1\n')
+  g('add', '-A')
+  const ok = commit(dir, 'an ordinary commit on trunk')
+  check('a commit ON TRUNK is not scoped to a row that merely names trunk', ok.code === 0, `exit=${ok.code}`)
+  check('and trunk degrades to the advisory path', /scope check skipped/.test(ok.out))
+  rmSync(dir, { recursive: true, force: true })
+}
+
+// $DUIN_TRUNK is the same source of truth lane-lint reads, so a fork that renames trunk is
+// covered without editing the set.
+{
+  const board = [
+    '| Session | Lane / files owned |',
+    '|---|---|',
+    '| **panels** | trunk `release/mainline`. Owns `src/components/**` |',
+    ''
+  ].join('\n')
+  const { dir, g } = makeScratchRepo(board, 'release/mainline')
+  writeFileSync(join(dir, 'anything.ts'), 'export const q = 1\n')
+  g('add', '-A')
+  const ok = commit(dir, 'ordinary commit on a renamed trunk', { DUIN_TRUNK: 'release/mainline' })
+  check('$DUIN_TRUNK names trunk for the guard too', ok.code === 0, `exit=${ok.code}`)
   rmSync(dir, { recursive: true, force: true })
 }
 

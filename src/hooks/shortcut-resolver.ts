@@ -127,6 +127,10 @@ export function resolveShortcut(e: ShortcutKeyEvent, ctx: ShortcutContext): Shor
 
   // Esc — cancel stream, or close settings, or clear search
   if (e.key === 'Escape') {
+    // A modal dialog (ApiKeyModal) owns Escape while it is open. It dismisses itself on the
+    // same keydown, and because focus sits on one of its buttons — not an editable target —
+    // the resolver used to fire too and close the whole Settings view underneath it.
+    if (typeof document !== 'undefined' && document.querySelector('[role="dialog"][aria-modal="true"]')) return null
     if (ctx.isStreaming) return 'cancelStream'
     // U8: this guard used to sit BELOW `settingsOpen`, which made the
     // Foundations editors unrecoverable. Sidebar's search input and the chat

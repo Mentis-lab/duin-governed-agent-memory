@@ -1,4 +1,12 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
+
+// The pane reads and writes through src/lib/ipc-client.ts, which dereferences
+// `window.api` at import time. This node-only environment has no window, and the
+// pure helpers under test never touch the bridge, so give the import an inert one.
+vi.hoisted(() => {
+  ;(globalThis as { window?: unknown }).window = { api: {} }
+})
+
 import {
   FOUNDATION_FILES,
   capState,
@@ -14,11 +22,13 @@ import {
 // existing renderer-test convention (SeedContextChip.test.tsx tests a pure fn).
 
 describe('FoundationsSettings config', () => {
-  // SOUL leads: it is read into context ahead of BRAIN.md, because an imperative
-  // rule only covers what someone anticipated while character generalizes to the
-  // rest — so the pane presents them in the order the model receives them.
-  it('drives exactly the four editable foundation files, in SOUL→ME→BRAIN→GOALS order', () => {
-    expect(FOUNDATION_FILES.map((f) => f.name)).toEqual(['SOUL.md', 'ME.md', 'BRAIN.md', 'GOALS.md'])
+  // The editors sit in the order the model receives the files: SOUL → BRAIN → ME is
+  // IDENTITY_FOUNDATION_ORDER (electron/services/brain/foundation-files.ts) — SOUL
+  // leads because character generalizes to what no rule anticipated, and BRAIN's rules
+  // come before the operator profile — then GOALS.md, which reaches the model through
+  // the graph rather than the identity block.
+  it('drives exactly the four editable foundation files, in SOUL→BRAIN→ME→GOALS order', () => {
+    expect(FOUNDATION_FILES.map((f) => f.name)).toEqual(['SOUL.md', 'BRAIN.md', 'ME.md', 'GOALS.md'])
   })
 
   // The pane used to advertise ME.md as sharing the 6 KB memory budget. It does not:
@@ -39,10 +49,11 @@ describe('FoundationsSettings config', () => {
     expect(MEMORY_GROUNDING_CAP).toBe(6000)
   })
 
+  // Badge and note resolve lazily so they follow the UI language; each must still say something.
   it('every file carries a badge and a non-empty "how this is used" note', () => {
     for (const f of FOUNDATION_FILES) {
-      expect(f.badge.length).toBeGreaterThan(0)
-      expect(f.howUsed.length).toBeGreaterThan(0)
+      expect(f.badge().length).toBeGreaterThan(0)
+      expect(f.howUsed().length).toBeGreaterThan(0)
     }
   })
 })
@@ -64,10 +75,17 @@ describe('capState — the indicator state machine', () => {
   })
 })
 
-describe('memoryNearCap — read-only MEMORY.md eviction warning', () => {
-  it('warns at/above 80% of the 6 KB memory grounding budget', () => {
+describe('MEMORY.md against the 6 KB memory grounding budget', () => {
+  it('memoryNearCap warns at/above 80% of the budget', () => {
     expect(memoryNearCap(4799)).toBe(false)
     expect(memoryNearCap(4800)).toBe(true) // 80% of 6000
     expect(memoryNearCap(5000)).toBe(true) // the spec's 5,000-char amber case
+  })
+  // loadBrain (brain-root.ts) keeps the SMALLEST memory files first and drops the biggest
+  // until the block fits, so a MEMORY.md over the budget is itself the file that is cut.
+  // The pane shows that as a distinct `over` state, not as "near".
+  it('is over, not near, once MEMORY.md itself exceeds the budget', () => {
+    expect(capState(6000, MEMORY_GROUNDING_CAP)).toBe('near')
+    expect(capState(6001, MEMORY_GROUNDING_CAP)).toBe('over')
   })
 })

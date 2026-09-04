@@ -57,17 +57,19 @@ export const PROVIDER_CANARY_MODEL: Partial<Record<ImageGenProviderId, string>> 
   seedream: 'doubao-seedream-4-0-250828'
 }
 
-export function defaultModelFor(provider: ImageGenProviderId): string {
+/** The provider's primary image model (first catalog entry). Image models are a
+ *  per-provider catalog fact, unrelated to the language-model plane (roles.ts). */
+export function primaryModelFor(provider: ImageGenProviderId): string {
   return PROVIDER_MODELS[provider][0]
 }
 
-/** A model the provider recognises, or that provider's default. */
+/** A model the provider recognises, or that provider's primary model. */
 export function resolveModel(
   provider: ImageGenProviderId,
   model: string | undefined
 ): string {
   if (model && PROVIDER_MODELS[provider].includes(model)) return model
-  return defaultModelFor(provider)
+  return primaryModelFor(provider)
 }
 
 export interface ImageGenSettings {
@@ -226,7 +228,7 @@ class OpenAIImageGenProvider implements ImageGenProvider {
 
   constructor(
     private apiKey: string | null,
-    private model: string = defaultModelFor('openai'),
+    private model: string = primaryModelFor('openai'),
     /** The operator's persisted Settings → Image Generation canvas size.
      *
      *  getImageGenProvider read settings.model and passed it, but read settings.size
@@ -252,7 +254,7 @@ class OpenAIImageGenProvider implements ImageGenProvider {
     const key = this.requireKey()
     const size = normalizeSize(args.size, this.defaultSize)
     const quality = normalizeQuality(args.quality)
-    const model = args.model || this.model || defaultModelFor('openai')
+    const model = args.model || this.model || primaryModelFor('openai')
 
     const body: Record<string, unknown> = { model, prompt: args.prompt, size, n: 1 }
     if (quality) body.quality = quality
@@ -279,7 +281,7 @@ class OpenAIImageGenProvider implements ImageGenProvider {
   async edit(args: EditArgs): Promise<ImageBytes[]> {
     const key = this.requireKey()
     const size = normalizeSize(args.size, this.defaultSize)
-    const model = args.model || this.model || defaultModelFor('openai')
+    const model = args.model || this.model || primaryModelFor('openai')
 
     const image = readImageFile(args.imagePath)
     let mask: { buf: Buffer; mime: string } | null = null
@@ -610,7 +612,7 @@ class SeedreamImageGenProvider implements ImageGenProvider {
 
   constructor(
     private apiKey: string | null,
-    private model: string = defaultModelFor('seedream'),
+    private model: string = primaryModelFor('seedream'),
     private defaultSize: string = '1024x1024'
   ) {}
 

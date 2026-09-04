@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync, statSync, existsSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
-import { join, resolve, relative } from 'node:path'
+import { dirname, join, resolve, relative } from 'node:path'
 import { tmpdir } from 'node:os'
+import { execFileSync } from 'node:child_process'
 import {
   OPERATOR_DENYLIST,
   SAMPLE_DENYLIST,
@@ -132,6 +133,39 @@ describe('operator leak denylist — sources', () => {
 })
 
 describe('operator leak scan — production source', () => {
+  // THE GATE'S OWN FAILURE MODE IS SILENCE, so this asserts the gate can see.
+  //
+  // The local denylist is gitignored, so it exists in exactly one checkout, and this repo
+  // mandates one WORKTREE PER LANE. loadLocalDenylist resolved it from the worktree root
+  // alone, so in every lane it returned [] — the scan fell back to the fictional sample list
+  // and passed while asserting nothing about the operator's real identities. Four files
+  // carrying his project, his own name and two colleagues' names reached trunk that way
+  // (2026-09-03), each through a worktree where this suite was green.
+  //
+  // Skips on a public clone, which legitimately has no local list; there is nothing to see
+  // there and nothing to assert.
+  it('reads the main checkout\'s denylist even from a linked worktree', () => {
+    let mainRoot: string | null = null
+    try {
+      const common = resolve(
+        REPO,
+        execFileSync('git', ['rev-parse', '--git-common-dir'], {
+          cwd: REPO,
+          encoding: 'utf-8',
+          stdio: ['ignore', 'pipe', 'ignore']
+        }).trim()
+      )
+      if (/(^|[\\/])\.git$/.test(common)) mainRoot = dirname(common)
+    } catch {
+      return // no git: nothing to resolve, nothing to assert
+    }
+    const candidates = [join(REPO, LOCAL_DENYLIST_FILE)]
+    if (mainRoot) candidates.push(join(mainRoot, LOCAL_DENYLIST_FILE))
+    const present = candidates.find((p) => existsSync(p))
+    if (!present) return // public clone
+    expect(loadLocalDenylist().length).toBeGreaterThan(0)
+  })
+
   // Every exclusion is a hole in the guard, so the SET is pinned: widening it has to be a
   // deliberate, reviewed edit to this list rather than a one-line addition nobody notices.
   it('the exclusion set is exactly the audited one', () => {

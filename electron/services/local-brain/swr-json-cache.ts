@@ -59,6 +59,28 @@ export interface SwrJsonCacheOptions {
    * change no key input reflects takes longer to appear.
    */
   revalidateAfterMs: number
+  /**
+   * FLOOR between rebuilds. A key change is a reason to rebuild, not a licence to
+   * rebuild at whatever rate the key changes — and here the key moves far faster
+   * than the graph is worth re-deriving.
+   *
+   * Measured on the live vault 2026-09-02: `nativeGraphMtime` folds in the mtime of
+   * `.duin/_state`, so ANY channel-ingest write (`channel-anchors.jsonl` at 17:09:16)
+   * changes the key, and the next request rebuilds — 3 rebuilds in 40 seconds, each
+   * 2.8-3.5s of blocked main thread with a ~5s heartbeat stall beside it. The cache
+   * was doing exactly what it was told; nothing bounded how OFTEN "the key moved"
+   * could cost three seconds.
+   *
+   * Narrowing the key is the wrong lever — the graph genuinely derives from those
+   * files, so a key that ignored them would serve a graph that is wrong rather than
+   * merely old. Old is what stale-while-revalidate is FOR. Under the floor the
+   * request is still served instantly from the previous entry, and the first request
+   * after the floor lapses schedules the rebuild, so content still converges.
+   *
+   * Omit (or 0) for no floor — every key change may schedule a rebuild, the original
+   * behaviour.
+   */
+  minRebuildIntervalMs?: number
   /** Injected for tests. */
   now?: () => number
   /** Injected for tests; defaults to a macrotask so a rebuild never runs inside the request. */
@@ -93,6 +115,7 @@ export interface SwrGetOptions {
 export class SwrJsonCache {
   private entry: SwrEntry | null = null
   private rebuilding = false
+  private lastRebuildAt = 0
   private generation = 0
   private skipDiskHydration = false
   private readonly opts: SwrJsonCacheOptions
@@ -160,7 +183,14 @@ export class SwrJsonCache {
    */
   private rebuild(key: string, build: () => string, scope?: string): void {
     if (this.rebuilding) return
+    // The floor. Scheduling is what costs — the build blocks the main thread — so it
+    // is checked here rather than at the call site, where every caller would have to
+    // remember it. A suppressed rebuild is not a lost one: the entry stays stale, and
+    // the first request after the floor lapses schedules it.
+    const floor = this.opts.minRebuildIntervalMs ?? 0
+    if (floor > 0 && this.lastRebuildAt > 0 && this.now() - this.lastRebuildAt < floor) return
     this.rebuilding = true
+    this.lastRebuildAt = this.now()
     const generation = this.generation
     this.schedule(() => {
       try {
@@ -178,6 +208,9 @@ export class SwrJsonCache {
     this.generation++
     this.entry = null
     this.rebuilding = false
+    // A scope change is not ordinary staleness — the next build must not be held off
+    // by a floor earned under the previous vault.
+    this.lastRebuildAt = 0
     // Do not immediately rehydrate the entry this call invalidated if disk
     // removal fails. The next successful build persists the new scope.
     this.skipDiskHydration = true
@@ -207,7 +240,10 @@ export class SwrJsonCache {
 
     if (!this.entry) {
       // Nothing anywhere. This is the one path that makes the caller wait, and
-      // it happens once per machine rather than once per launch.
+      // it happens once per machine rather than once per launch. It starts the floor
+      // clock too: a blocking build is still a build, and a rebuild scheduled one
+      // request later would pay the cost twice inside a second.
+      this.lastRebuildAt = this.now()
       const entry = this.store(key, build(), options.scope)
       return { json: entry.json, servedKey: entry.key, stale: false, blocked: true }
     }

@@ -14,6 +14,8 @@ const mocks = vi.hoisted(() => ({
   restartWatcher: vi.fn(),
   switchMoat: vi.fn(),
   recordSwitch: vi.fn(),
+  pauseMemoryWatcher: vi.fn(async () => undefined),
+  resumeMemoryWatcher: vi.fn(),
   readSettingsFile: vi.fn(() => ({ data: { localBrainNotesDir: 'vault-a' } })),
   writeSettingsFile: vi.fn(),
   send: vi.fn()
@@ -44,6 +46,10 @@ vi.mock('./local-brain/index-store', () => ({
   reindexUntilReady: mocks.reindexReady
 }))
 vi.mock('./local-brain/notes-watcher', () => ({ restartNotesWatcher: mocks.restartWatcher }))
+vi.mock('./memory-store', () => ({
+  pauseMemoryStoreWatcher: mocks.pauseMemoryWatcher,
+  resumeMemoryStoreWatcher: mocks.resumeMemoryWatcher
+}))
 vi.mock('./moat-durability', () => ({
   recordSwitchOutcome: mocks.recordSwitch,
   switchMoatVault: mocks.switchMoat
@@ -162,5 +168,64 @@ describe('commitReadyBrainVault', () => {
     expect(mocks.reindexReady.mock.calls.map(([dir]) => dir)).toEqual(['vault-b', 'vault-a'])
     expect(mocks.restartWatcher.mock.calls.map(([dir]) => dir)).toEqual(['vault-b', 'vault-a'])
     expect(mocks.send).not.toHaveBeenCalled()
+  })
+
+  // The memory store's watcher holds <userData>/lamprey-memory open; the moat switch removes that
+  // directory. On Windows that is ENOTEMPTY/EPERM at the cleanup step — the first-run folder pick
+  // failed there for every new operator. The watcher must be released BEFORE the first switch and
+  // re-armed only AFTER the last one, rollback included.
+  it('releases the memory watcher before the moat switch and re-arms it after, on a first pick', async () => {
+    const result = await commitReadyBrainVault(
+      { localBrainNotesDir: 'vault-b' },
+      { localBrainNotesDir: '' },
+      false
+    )
+
+    expect(result.success).toBe(true)
+    expect(mocks.pauseMemoryWatcher).toHaveBeenCalledTimes(1)
+    expect(mocks.resumeMemoryWatcher).toHaveBeenCalledTimes(1)
+    expect(mocks.pauseMemoryWatcher.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.switchMoat.mock.invocationCallOrder[0]
+    )
+    expect(mocks.resumeMemoryWatcher.mock.invocationCallOrder[0]).toBeGreaterThan(
+      mocks.switchMoat.mock.invocationCallOrder[0]
+    )
+    // Re-armed before the adoption is announced, so the first memory written after the pick is seen.
+    expect(mocks.resumeMemoryWatcher.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.send.mock.invocationCallOrder[0]
+    )
+  })
+
+  it('keeps the watcher released across the rollback switch and re-arms it once, even on failure', async () => {
+    mocks.writeSettingsFile.mockImplementationOnce(() => {
+      throw new Error('settings disk full')
+    })
+
+    await expect(
+      commitReadyBrainVault(
+        { localBrainNotesDir: 'vault-b' },
+        { localBrainNotesDir: 'vault-a' },
+        true
+      )
+    ).rejects.toThrow('settings disk full')
+
+    expect(mocks.switchMoat).toHaveBeenCalledTimes(2)
+    expect(mocks.pauseMemoryWatcher).toHaveBeenCalledTimes(1)
+    expect(mocks.resumeMemoryWatcher).toHaveBeenCalledTimes(1)
+    const [forward, reverse] = mocks.switchMoat.mock.invocationCallOrder
+    expect(mocks.pauseMemoryWatcher.mock.invocationCallOrder[0]).toBeLessThan(forward)
+    expect(mocks.resumeMemoryWatcher.mock.invocationCallOrder[0]).toBeGreaterThan(reverse)
+  })
+
+  it('leaves the watcher alone when the vault does not change', async () => {
+    await commitReadyBrainVault(
+      { localBrainNotesDir: 'vault-a', language: 'en' },
+      { localBrainNotesDir: 'vault-a' },
+      true
+    )
+
+    expect(mocks.switchMoat).not.toHaveBeenCalled()
+    expect(mocks.pauseMemoryWatcher).not.toHaveBeenCalled()
+    expect(mocks.resumeMemoryWatcher).not.toHaveBeenCalled()
   })
 })

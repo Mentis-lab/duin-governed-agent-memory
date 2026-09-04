@@ -17,7 +17,8 @@ vi.mock('./providers/registry', () => ({
       callbacks.onDone(t.content, t.toolCalls.map((x) => ({ id: x.id, type: 'function', function: x.function })))
     }
   ),
-  resolveModel: () => ({ supportsTools: true })
+  resolveModel: () => ({ supportsTools: true }),
+  routeModel: () => null
 }))
 
 vi.mock('./tool-exec', () => ({
