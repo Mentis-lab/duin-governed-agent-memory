@@ -494,8 +494,15 @@ function App(): React.ReactElement {
 
         {/* On desktop the right panel is part of the flex row (rail when
             collapsed, full panel when expanded). On narrow viewports it's
-            lifted out into a fixed slide-over drawer (see block below). */}
-        {!isNarrow && rightPanelCollapsed && (
+            lifted out into a fixed slide-over drawer (see block below).
+            The RAIL is drawn at every width, though. It used to be desktop-only,
+            and the visible control that brings the panel back lives inside the
+            panel (SecondaryToolbar), so once the panel was collapsed under 960px
+            every affordance for reopening it was gone at once and the only route
+            back was View → Expand side panel in the menu bar. Un-maximizing the
+            window is enough to reach that state, which is how it was reported.
+            Eight pixels short of a thousand should not cost a control. */}
+        {rightPanelCollapsed && (
           <div className="panel-shadow flex h-full w-8 flex-col items-center rounded-[var(--panel-radius)] bg-[var(--panel-bg)] py-2">
             <IconButton
               onClick={() => setRightPanelCollapsed(false)}
@@ -589,8 +596,13 @@ function App(): React.ReactElement {
 
       {/* Narrow-viewport drawer. Slides in from the right with a backdrop
           when the right panel is "open" on narrow viewports. Doesn't render
-          when collapsed (the chat takes full width); the user re-opens via
-          the right-panel toggle in Titlebar row 1. */}
+          when collapsed (the chat takes full width); the user re-opens from
+          the collapsed rail above, which is why that rail is drawn at every
+          width. This comment used to name "the right-panel toggle in Titlebar
+          row 1" — there is no such control. The toggle it meant lives in
+          SecondaryToolbar, which mounts INSIDE the panel, so it is gone
+          exactly when it is needed. The View menu's entry was the only real
+          way back, and a menu item is not a discoverable one. */}
       {isNarrow && !rightPanelCollapsed && (
         <>
           <div
