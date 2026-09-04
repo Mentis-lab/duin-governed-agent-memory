@@ -63,7 +63,7 @@ function ModelRow({
                 : 'bg-[var(--bg-primary)] text-[var(--text-muted)]'
             }`}
           >
-            {model.supportsTools ? 'Tools' : 'No tools'}
+            {model.supportsTools ? t('Tools') : t('No tools')}
           </span>
           {model.supportsVision && (
             <span className="rounded bg-[var(--accent-dim)] px-1.5 py-0.5 text-[var(--accent)]">
@@ -116,8 +116,8 @@ export function ModelSwitcher() {
         onClick={() => setOpen((v) => !v)}
         title={
           activeIsReasoner
-            ? 'Reasoner does not support tool use. MCP tools unavailable while this model is active.'
-            : 'Switch model'
+            ? t('Reasoner does not support tool use. MCP tools unavailable while this model is active.')
+            : t('Switch model')
         }
       >
         <span>{activeName}</span>

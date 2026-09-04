@@ -2398,5 +2398,6 @@
   "✓ Read {n} files": "✓ 已读取 {n} 个文件",
   "凭证与基础信息 on your 自建应用.": "你自建应用下的「凭证与基础信息」",
   "开放平台 → your app → 凭证与基础信息.": "开放平台 → 你的应用 → 凭证与基础信息",
-  "管理工具 → 智能机器人 → API 模式.": "管理工具 → 智能机器人 → API 模式"
+  "管理工具 → 智能机器人 → API 模式.": "管理工具 → 智能机器人 → API 模式",
+  "Reasoner does not support tool use. MCP tools unavailable while this model is active.": "推理模型不支持工具调用。选中它时，MCP 工具不可用。"
 }
