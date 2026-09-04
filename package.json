@@ -1,7 +1,7 @@
 {
   "name": "duin",
   "productName": "DUIN",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Agents that earn your trust: a harness that keeps an agent's long-term memory, model of your world and permissions as Markdown you own, governed at every step. Facts labelled by who said them and proven before believed; your word never revised by a model; autonomy granted by you.",
   "main": "./out/main/index.js",
   "bin": {

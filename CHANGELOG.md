@@ -16,6 +16,8 @@ All notable changes to **DUIN** are documented here. The project follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-04
+
 ### Added
 - **Claude Fable 5.1 and Gemini 3.8 Flash are in the model picker.** Fable 5.1 is Anthropic's
   most capable widely released model (1M context, 128K output); Gemini 3.8 Flash is Google's newest
