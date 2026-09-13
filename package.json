@@ -96,7 +96,7 @@
     "grapesjs": "^0.23.2",
     "gray-matter": "^4.0.3",
     "imapflow": "^1.7.6",
-    "js-yaml": "^4.1.0",
+    "js-yaml": "^4.3.2",
     "jszip": "^3.10.1",
     "lucide-react": "^1.21.0",
     "mammoth": "^1.12.0",
